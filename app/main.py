@@ -1,3 +1,6 @@
+from app.providers.huggingface_image import (
+    HuggingFaceImageProvider,
+)
 import asyncio
 import os
 import uvicorn
