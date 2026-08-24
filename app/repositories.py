@@ -4,6 +4,7 @@ from app.database.models import Character, User
 
 
 class CharacterRepository:
+
     def __init__(self, session):
         self.session = session
 
@@ -27,6 +28,7 @@ class CharacterRepository:
 
 
 class UserRepository:
+
     def __init__(self, session):
         self.session = session
 
@@ -40,7 +42,10 @@ class UserRepository:
         return result.scalar_one_or_none()
 
     async def get_or_create(self, telegram_id: int):
-        user = await self.get_by_telegram_id(telegram_id)
+
+        user = await self.get_by_telegram_id(
+            telegram_id
+        )
 
         if user:
             return user
