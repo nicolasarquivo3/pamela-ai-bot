@@ -99,7 +99,17 @@ class ImageGeneration(Base):
     character_id: Mapped[int] = mapped_column(Integer, index=True)
     provider: Mapped[str | None] = mapped_column(String(50))
     job_id: Mapped[str | None] = mapped_column(String(255))
-    status: Mapped[ImageStatus] = mapped_column(SAEnum(ImageStatus, name="image_status"), nullable=False)
+    status: Mapped[ImageStatus] = mapped_column(
+    SAEnum(
+        ImageStatus,
+        name="image_status",
+        values_callable=lambda enum_class: [
+            item.value
+            for item in enum_class
+        ],
+    ),
+    nullable=False,
+)
     scene: Mapped[str] = mapped_column(Text, nullable=False)
     prompt: Mapped[str | None] = mapped_column(Text)
     negative_prompt: Mapped[str | None] = mapped_column(Text)
