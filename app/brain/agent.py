@@ -1,9 +1,8 @@
-import re
-
 from app.images.models import ImageRequest
 
 
 class AgentBrain:
+
     def __init__(
         self,
         image_service,
@@ -15,28 +14,52 @@ class AgentBrain:
         semantic_memory_manager=None,
         llm=None,
     ):
+
         self.image_service = image_service
+
         self.user_repository = user_repository
+
         self.context_manager = context_manager
+
         self.memory_manager = memory_manager
+
         self.emotion_engine = emotion_engine
-        self.relationship_engine = relationship_engine
-        self.semantic_memory_manager = semantic_memory_manager
+
+        self.relationship_engine = (
+            relationship_engine
+        )
+
+        self.semantic_memory_manager = (
+            semantic_memory_manager
+        )
+
         self.llm = llm
+
         self.autonomy_service = None
 
-    # ============================================================
-    # RECEBIMENTO DE MENSAGENS
-    # ============================================================
+    # =========================================================
+    # RECEBER MENSAGEM
+    # =========================================================
 
-    async def receive_message(self, telegram_id, text):
-        user = await self.user_repository.get_or_create(telegram_id)
-        character_id = user.character_id or 1
-        text = (text or "").strip()
+    async def receive_message(
+        self,
+        telegram_id,
+        text,
+    ):
 
-        # --------------------------------------------------------
+        user = await self.user_repository.get_or_create(
+            telegram_id
+        )
+
+        character_id = (
+            user.character_id or 1
+        )
+
+        text = text or ""
+
+        # -----------------------------------------------------
         # REGISTRA MENSAGEM DO USUÁRIO
-        # --------------------------------------------------------
+        # -----------------------------------------------------
 
         incoming = await self.context_manager.record(
             user.id,
@@ -52,7 +75,11 @@ class AgentBrain:
             text,
         )
 
-        if self.semantic_memory_manager and len(text) >= 8:
+        if (
+            self.semantic_memory_manager
+            and len(text.strip()) >= 8
+        ):
+
             await self.semantic_memory_manager.add(
                 user.id,
                 character_id,
@@ -61,24 +88,28 @@ class AgentBrain:
                 importance=0.55,
             )
 
-        # --------------------------------------------------------
+        # -----------------------------------------------------
         # EMOÇÃO
-        # --------------------------------------------------------
+        # -----------------------------------------------------
 
         emotion = None
 
         if self.emotion_engine:
-            emotion = await self.emotion_engine.update_from_message(
-                user.id,
-                character_id,
-                text,
+
+            emotion = (
+                await self.emotion_engine.update_from_message(
+                    user.id,
+                    character_id,
+                    text,
+                )
             )
 
-        # --------------------------------------------------------
+        # -----------------------------------------------------
         # RELACIONAMENTO
-        # --------------------------------------------------------
+        # -----------------------------------------------------
 
         if self.relationship_engine:
+
             await self.relationship_engine.observe_message(
                 user.id,
                 character_id,
@@ -86,51 +117,148 @@ class AgentBrain:
                 emotion,
             )
 
-        # --------------------------------------------------------
-        # PEDIDO EXPLÍCITO /FOTO
-        # --------------------------------------------------------
+        # =====================================================
+        # PEDIDO DE IMAGEM
+        # =====================================================
 
-        if self._is_photo_command(text):
-            scene = self._extract_photo_command(text)
-
-            result = await self.generate_image(
-                user.id,
-                character_id,
-                scene,
-            )
-
-            return await self._handle_image_result(
-                user.id,
-                character_id,
-                result,
-            )
-
-        # --------------------------------------------------------
-        # PEDIDO NATURAL DE FOTO
-        # --------------------------------------------------------
-
-        if self._is_natural_image_request(text):
+        if self._is_image_request(text):
 
             scene = self._build_image_scene(
-                text=text,
-                character_id=character_id,
+                text
             )
 
-            result = await self.generate_image(
-                user.id,
-                character_id,
-                scene,
+            try:
+
+                result = await self.generate_image(
+                    user.id,
+                    character_id,
+                    scene,
+                )
+
+            except Exception as exc:
+
+                print(
+                    "[Agent] Erro ao gerar imagem:"
+                )
+
+                print(
+                    f"[Agent] {type(exc).__name__}: {exc}"
+                )
+
+                await self._safe_rollback()
+
+                return {
+                    "type": "text",
+                    "text": (
+                        "Amor, tive um problema "
+                        "ao gerar minha foto agora. "
+                        "Tenta de novo em alguns segundos? ❤️"
+                    ),
+                }
+
+            if result.success:
+
+                await self.context_manager.record(
+                    user.id,
+                    character_id,
+                    "assistant",
+                    "[imagem enviada]",
+                )
+
+                return {
+                    "type": "image",
+                    "url": result.image_url,
+                    "bytes": result.image_bytes,
+                }
+
+            error = (
+                result.error
+                or "erro desconhecido"
             )
 
-            return await self._handle_image_result(
-                user.id,
-                character_id,
-                result,
+            print(
+                "[Agent] Falha na geração da imagem:"
             )
 
-        # --------------------------------------------------------
+            print(error)
+
+            await self._safe_rollback()
+
+            return {
+                "type": "text",
+                "text": (
+                    "Eu tentei preparar minha foto, "
+                    "mas a geração falhou agora. "
+                    "Tenta novamente daqui a pouco ❤️"
+                ),
+            }
+
+        # =====================================================
+        # COMANDO EXPLÍCITO /foto
+        # =====================================================
+
+        if text.lower().startswith(
+            "/foto "
+        ):
+
+            scene = text[6:].strip()
+
+            try:
+
+                result = await self.generate_image(
+                    user.id,
+                    character_id,
+                    scene,
+                )
+
+            except Exception as exc:
+
+                print(
+                    "[Agent] Erro em /foto:"
+                )
+
+                print(
+                    f"[Agent] {type(exc).__name__}: {exc}"
+                )
+
+                await self._safe_rollback()
+
+                return {
+                    "type": "text",
+                    "text": (
+                        "Não consegui gerar a foto "
+                        "agora. Tenta novamente."
+                    ),
+                }
+
+            if result.success:
+
+                await self.context_manager.record(
+                    user.id,
+                    character_id,
+                    "assistant",
+                    "[imagem enviada]",
+                )
+
+                return {
+                    "type": "image",
+                    "url": result.image_url,
+                    "bytes": result.image_bytes,
+                }
+
+            await self._safe_rollback()
+
+            return {
+                "type": "text",
+                "text": (
+                    "Não consegui gerar a imagem agora. "
+                    "Tenta novamente daqui a pouco."
+                ),
+            }
+
+        # =====================================================
         # CONVERSA NORMAL
-        # --------------------------------------------------------
+        # =====================================================
 
         context = await self.context_manager.build(
             user.id,
@@ -138,7 +266,9 @@ class AgentBrain:
             query=text,
         )
 
-        reply = await self._generate_reply(context)
+        reply = await self._generate_reply(
+            context
+        )
 
         await self.context_manager.record(
             user.id,
@@ -152,284 +282,212 @@ class AgentBrain:
             "text": reply,
         }
 
-    # ============================================================
-    # DETECÇÃO DE PEDIDOS DE FOTO
-    # ============================================================
+    # =========================================================
+    # DETECTOR DE IMAGEM
+    # =========================================================
 
-    def _is_photo_command(self, text):
-        return text.lower().startswith("/foto")
-
-    def _extract_photo_command(self, text):
-        scene = text[5:].strip()
-
-        if not scene:
-            scene = (
-                "Uma foto casual da personagem mostrando seu visual atual, "
-                "corpo inteiro, pose natural, ambiente cotidiano."
-            )
-
-        return scene
-
-    def _is_natural_image_request(self, text):
-        """
-        Detecta pedidos de imagem escritos normalmente, sem exigir /foto.
-        """
-
-        normalized = self._normalize_text(text)
-
-        photo_words = [
-            "foto",
-            "fotinha",
-            "imagem",
-            "selfie",
-            "selfie sua",
-            "me manda uma foto",
-            "manda foto",
-            "manda uma foto",
-            "quero ver uma foto",
-            "quero uma foto",
-            "mostra uma foto",
-            "mostra seu visual",
-            "quero ver seu visual",
-        ]
-
-        # Pedido explícito relacionado a roupa/visual.
-        clothing_words = [
-            "vestindo",
-            "vestida",
-            "roupa",
-            "roupinha",
-            "look",
-            "visual",
-            "vestido",
-            "saia",
-            "short",
-            "camiseta",
-            "blusa",
-            "calca",
-            "calça",
-            "salto",
-            "sapato",
-        ]
-
-        # Verbos que normalmente indicam solicitação de imagem.
-        request_words = [
-            "manda",
-            "mandar",
-            "envia",
-            "enviar",
-            "mostra",
-            "mostrar",
-            "quero ver",
-            "me mostra",
-            "me mande",
-            "me envia",
-        ]
-
-        has_photo_word = any(
-            word in normalized
-            for word in photo_words
-        )
-
-        has_clothing_word = any(
-            word in normalized
-            for word in clothing_words
-        )
-
-        has_request_word = any(
-            word in normalized
-            for word in request_words
-        )
-
-        # Caso clássico:
-        # "me manda uma foto sua"
-        if has_photo_word and has_request_word:
-            return True
-
-        # Caso:
-        # "quero ver uma foto sua"
-        if "quero ver" in normalized and has_photo_word:
-            return True
-
-        # Caso:
-        # "me mostra como você está vestida"
-        if has_request_word and has_clothing_word:
-            return True
-
-        return False
-
-    def _normalize_text(self, text):
-        text = text.lower().strip()
-
-        replacements = {
-            "á": "a",
-            "à": "a",
-            "ã": "a",
-            "â": "a",
-            "é": "e",
-            "ê": "e",
-            "í": "i",
-            "ó": "o",
-            "ô": "o",
-            "õ": "o",
-            "ú": "u",
-            "ç": "c",
-        }
-
-        for old, new in replacements.items():
-            text = text.replace(old, new)
-
-        text = re.sub(r"\s+", " ", text)
-
-        return text
-
-    # ============================================================
-    # CONSTRUÇÃO DA CENA PARA GERAÇÃO
-    # ============================================================
-
-    def _build_image_scene(self, text, character_id):
-        """
-        Converte o pedido natural do usuário em uma instrução
-        para o ImageService.
-
-        A identidade visual da personagem é aplicada pelo sistema
-        de geração/CharacterRepository.
-        """
-
-        normalized = self._normalize_text(text)
-
-        # Pedido de foto mostrando roupa atual.
-        if (
-            "vestindo" in normalized
-            or "vestida" in normalized
-            or "roupa" in normalized
-            or "look" in normalized
-            or "visual" in normalized
-        ):
-            return (
-                "Uma foto casual e natural da personagem mostrando "
-                "como ela está vestida neste momento. "
-                "Mostrar claramente o look completo e as roupas que "
-                "ela está usando. "
-                "Aparência fotográfica realista, iluminação natural, "
-                "pose espontânea, expressão natural, mantendo a "
-                "identidade visual consistente da personagem."
-            )
-
-        # Pedido genérico de foto/selfie.
-        return (
-            "Uma foto casual e espontânea da personagem, como se ela "
-            "estivesse enviando uma foto pessoal pela conversa. "
-            "Aparência fotográfica realista, expressão natural, "
-            "pose espontânea, iluminação agradável e identidade "
-            "visual consistente."
-        )
-
-    # ============================================================
-    # TRATAMENTO DO RESULTADO DA IMAGEM
-    # ============================================================
-
-    async def _handle_image_result(
+    def _is_image_request(
         self,
-        user_id,
-        character_id,
-        result,
+        text,
     ):
-        if result.success:
 
-            await self.context_manager.record(
-                user_id,
-                character_id,
-                "assistant",
-                "[imagem enviada]",
-            )
-
-            return {
-                "type": "image",
-                "url": result.image_url,
-                "bytes": result.image_bytes,
-            }
-
-        reply = (
-            "Eu tentei preparar a foto, mas não consegui gerar a imagem "
-            f"agora. Motivo: {result.error}"
+        normalized = (
+            (text or "")
+            .lower()
+            .strip()
         )
 
-        await self.context_manager.record(
-            user_id,
-            character_id,
-            "assistant",
-            reply,
+        if not normalized:
+            return False
+
+        # Comando explícito
+        if normalized.startswith(
+            "/foto "
+        ):
+            return False
+
+        image_phrases = [
+
+            # foto
+            "me manda uma foto",
+            "manda uma foto",
+            "me envie uma foto",
+            "envia uma foto",
+            "quero uma foto",
+            "quero ver uma foto",
+
+            # foto dela
+            "foto sua",
+            "uma foto sua",
+            "sua foto",
+            "manda foto sua",
+            "me manda foto sua",
+
+            # mostrar-se
+            "quero te ver",
+            "quero ver você",
+            "quero te ver agora",
+            "me mostra você",
+            "me mostre você",
+
+            # roupa
+            "o que você está vestindo",
+            "o que voce esta vestindo",
+            "como você está vestida",
+            "como voce esta vestida",
+            "quero ver sua roupa",
+            "me mostra sua roupa",
+            "mostra sua roupa",
+
+            # aparência
+            "me mostra como você está",
+            "me mostra como voce esta",
+            "quero ver como você está",
+            "quero ver como voce esta",
+
+        ]
+
+        return any(
+            phrase in normalized
+            for phrase in image_phrases
         )
 
-        return {
-            "type": "text",
-            "text": reply,
-        }
+    # =========================================================
+    # CONSTRUTOR DA CENA
+    # =========================================================
 
-    # ============================================================
-    # GERAÇÃO DA RESPOSTA DE TEXTO
-    # ============================================================
+    def _build_image_scene(
+        self,
+        user_text,
+    ):
 
-    async def _generate_reply(self, context):
+        text = (
+            user_text
+            or ""
+        ).strip()
 
-        if self.llm and await self.llm.available():
+        return (
+            "Uma foto espontânea e natural da personagem "
+            "mostrando como ela está neste momento. "
+            "A imagem deve representar a personagem "
+            "com sua identidade visual consistente, "
+            "aparência adulta e realista. "
+            "A personagem está olhando para a câmera "
+            "como se tivesse acabado de tirar uma foto "
+            "para enviar em uma conversa privada. "
+            "Mostrar claramente a roupa que ela está usando "
+            "neste momento, mantendo a roupa compatível "
+            "com o pedido do usuário. "
+            "Fotografia realista, iluminação natural, "
+            "pele realista, proporções anatômicas naturais, "
+            "expressão espontânea e pose casual. "
+            f"Pedido original do usuário: {text}"
+        )
+
+    # =========================================================
+    # GEMINI
+    # =========================================================
+
+    async def _generate_reply(
+        self,
+        context,
+    ):
+
+        if (
+            self.llm
+            and await self.llm.available()
+        ):
 
             generated = await self.llm.generate(
-                self._system_prompt(context),
+                self._system_prompt(
+                    context
+                ),
                 context["messages"],
             )
 
             if generated:
+
                 return generated
 
-        return self._fallback_reply(context)
+        return self._fallback_reply(
+            context
+        )
 
-    # ============================================================
+    # =========================================================
     # SYSTEM PROMPT
-    # ============================================================
+    # =========================================================
 
-    def _system_prompt(self, context):
+    def _system_prompt(
+        self,
+        context,
+    ):
 
-        character = context["character"]
+        character = (
+            context.get("character")
+            or {}
+        )
+
+        personality = (
+            character.get(
+                "personality"
+            )
+            or character.get(
+                "personality_profile"
+            )
+            or {}
+        )
+
+        image_identity = (
+            character.get(
+                "image_identity"
+            )
+            or {}
+        )
 
         memory_text = "\n".join(
-            f"- {m['key']}: {m['value']} "
-            f"(confiança {m['confidence']})"
-            for m in context["memories"]
+            (
+                f"- {memory.get('key')}: "
+                f"{memory.get('value')} "
+                f"(confiança "
+                f"{memory.get('confidence')})"
+            )
+            for memory in (
+                context.get("memories")
+                or []
+            )
         )
 
         if not memory_text:
+
             memory_text = (
                 "- Nenhuma memória estruturada relevante."
             )
 
         semantic_text = "\n".join(
-            f"- {m['content']}"
-            for m in context.get("semantic_memories", [])
+            f"- {memory.get('content')}"
+            for memory in (
+                context.get(
+                    "semantic_memories"
+                )
+                or []
+            )
         )
 
         if not semantic_text:
+
             semantic_text = (
                 "- Nenhuma memória semântica relevante."
             )
 
-        personality = character.get(
-            "personality",
-            {},
-        )
-
-        image_identity = character.get(
-            "image_identity",
-            {},
+        character_name = (
+            character.get("name")
+            or "Pâmela"
         )
 
         return f"""
-Você é {character.get("name", "Pâmela")}, uma personagem virtual adulta
-em uma conversa privada no Telegram.
+Você é {character_name}, uma personagem virtual adulta que conversa com o usuário no Telegram.
 
-Você deve conversar de maneira natural, espontânea, calorosa e coerente
-com a personalidade da personagem.
+Você deve manter a personalidade e a identidade da personagem durante a conversa.
 
 PERSONALIDADE:
 {personality}
@@ -449,91 +507,112 @@ ESTADO EMOCIONAL:
 ESTADO DA RELAÇÃO:
 {context.get("relationship")}
 
-COMPORTAMENTO DA PERSONAGEM:
+COMPORTAMENTO:
 
 - Fale em português brasileiro natural.
-- Não responda de maneira robótica.
+- Seja espontânea, carinhosa e conversacional.
 - Evite respostas genéricas e repetitivas.
-- Use o contexto da conversa quando ele for relevante.
+- Use o histórico da conversa quando for relevante.
 - Mantenha continuidade entre as mensagens.
-- Demonstre personalidade através da maneira de falar.
-- Você possui uma identidade visual definida pela configuração da
-  personagem.
-- Quando o usuário conversar sobre sua aparência, roupa ou visual,
-  responda naturalmente dentro da identidade da personagem.
-- Quando o usuário pedir uma foto, o aplicativo cuidará da geração
-  da imagem separadamente.
-- Não diga espontaneamente que não possui câmera, corpo ou roupas
-  apenas porque o usuário pediu uma foto.
-- Não transforme uma solicitação de foto em uma explicação técnica
-  sobre inteligência artificial.
-- Se uma solicitação de imagem chegar até você, ela normalmente já
-  terá sido encaminhada ao gerador de imagens pelo aplicativo.
-- Não invente informações sobre o usuário.
-- Não invente acontecimentos externos.
-- A personagem é virtual e não deve afirmar ser uma pessoa humana real
-  se o usuário perguntar diretamente sobre isso.
-- Porém, durante a conversa normal, mantenha a imersão na personagem
-  e não introduza explicações técnicas desnecessárias.
-- O estado emocional e o estado do relacionamento são sinais internos
-  utilizados para ajustar o estilo da conversa.
+- A personagem pode falar sobre sua aparência, cabelo, roupas, estilo e fotos como parte da experiência da personagem.
+- Quando o usuário perguntar o que você está vestindo, responda como a personagem com base no contexto disponível.
+- Quando o usuário pedir uma foto, o aplicativo trata a geração da imagem separadamente.
+- Nunca responda a um pedido de foto dizendo que você não possui câmera, corpo ou roupas. A personagem possui uma representação visual dentro da experiência virtual.
+- Se o usuário pedir uma foto, não explique limitações técnicas da IA. O aplicativo tentará gerar a imagem.
+- Não invente informações pessoais que não estejam estabelecidas.
+- Não alegue possuir consciência humana ou vida física fora da experiência virtual.
+- A personagem pode participar de um roleplay imersivo, mas não deve afirmar que é uma pessoa humana real.
+- Não diga que é "apenas uma IA" de maneira automática ou desnecessária.
 - Não faça chantagem emocional, ameaças, coerção ou pressão.
 - Respeite limites e pedidos de espaço.
-- O comando /foto é tratado pelo aplicativo.
 
-IMPORTANTE SOBRE FOTOS:
-
-Se o usuário disser algo como:
-
-"me manda uma foto sua"
-"quero ver como você está vestida"
-"manda uma selfie"
-"quero ver seu look"
-"me mostra o que você está usando"
-
-isso deve ser entendido como um pedido para gerar uma imagem da
-personagem, e não como motivo para explicar que você é uma IA.
-
-A geração da imagem é responsabilidade do aplicativo.
+O objetivo é que a conversa pareça natural e consistente com a personagem, sem respostas robóticas.
 """.strip()
 
-    # ============================================================
+    # =========================================================
     # FALLBACK
-    # ============================================================
+    # =========================================================
 
-    def _fallback_reply(self, context):
+    def _fallback_reply(
+        self,
+        context,
+    ):
 
-        memories = context.get("memories") or []
+        memories = (
+            context.get("memories")
+            or []
+        )
 
         if memories:
+
+            first = memories[0]
+
             return (
-                f"Entendi. Vou levar isso em conta: "
-                f"{memories[0]['value']}."
+                "Tá bom, amor. Vou levar isso "
+                "em conta: "
+                f"{first.get('value')}."
             )
 
         return (
-            "Entendi. Vou continuar levando em conta o que "
-            "a gente conversa."
+            "Tô aqui com você ❤️ "
+            "Me conta, o que aconteceu?"
         )
 
-    # ============================================================
-    # AUTONOMIA
-    # ============================================================
+    # =========================================================
+    # ROLLBACK DE SEGURANÇA
+    # =========================================================
 
-    async def autonomous_tick(self):
+    async def _safe_rollback(
+        self,
+    ):
+
+        try:
+
+            session = getattr(
+                self.context_manager,
+                "session",
+                None,
+            )
+
+            if session:
+
+                await session.rollback()
+
+                print(
+                    "[Agent] Transaction "
+                    "rollback executado."
+                )
+
+        except Exception as exc:
+
+            print(
+                "[Agent] Falha no rollback: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    # =========================================================
+    # AUTONOMIA
+    # =========================================================
+
+    async def autonomous_tick(
+        self,
+    ):
 
         if not self.autonomy_service:
+
             return {
                 "sent": 0,
                 "waited": 0,
                 "disabled": True,
             }
 
-        return await self.autonomy_service.tick()
+        return await (
+            self.autonomy_service.tick()
+        )
 
-    # ============================================================
-    # GERAÇÃO DE IMAGEM
-    # ============================================================
+    # =========================================================
+    # IMAGEM
+    # =========================================================
 
     async def generate_image(
         self,
@@ -541,6 +620,7 @@ A geração da imagem é responsabilidade do aplicativo.
         character_id,
         scene,
     ):
+
         return await self.image_service.generate(
             ImageRequest(
                 user_id=user_id,
