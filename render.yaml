@@ -1,0 +1,75 @@
+services:
+  - type: web
+    name: telegram-ai-character
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: WEBHOOK_BASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: "gemini-2.5-flash-lite"
+      - key: LLM_TIMEOUT_SECONDS
+        value: "60"
+      - key: LLM_MAX_OUTPUT_TOKENS
+        value: "500"
+      - key: AUTONOMY_TOKEN
+        sync: false
+      - key: AUTONOMY_MIN_INTERVAL_MINUTES
+        value: "90"
+      - key: AUTONOMY_MAX_DAILY_MESSAGES
+        value: "3"
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+      - key: CLOUDFLARE_IMAGE_MODEL
+        value: "@cf/black-forest-labs/flux-2-klein-4b"
+      - key: POLLINATIONS_API_KEY
+        sync: false
+      - key: POLLINATIONS_IMAGE_MODEL
+        value: "flux"
+      - key: IMAGE_DAILY_LIMIT
+        value: "5"
+      - key: IMAGE_MONTHLY_LIMIT
+        value: "100"
+      - key: IMAGE_TIMEOUT_SECONDS
+        value: "120"
+      - key: FACE_SWAP_ENABLED
+        value: "true"
+      - key: FACE_SWAP_REQUIRED
+        value: "true"
+      - key: FACE_SWAP_PROVIDER
+        value: "huggingface"
+      - key: FACE_REFERENCE_IMAGE_PATH
+        value: "assets/pamela_face_reference.jpg"
+      - key: FACE_SWAP_TIMEOUT_SECONDS
+        value: "180"
+      - key: HF_FACE_SWAP_SPACE
+        value: "V0pr0S/FaceFusion-Face-Swap-Hyperswap"
+      - key: HF_FACE_SWAP_API_NAME
+        value: "/generate_image"
+      - key: HF_TOKEN
+        sync: false
+      - key: HF_FACE_SWAP_MODEL
+        value: "hyperswap_1b_256.onnx"
+      - key: HF_FACE_SWAP_TARGET_INDEX
+        value: "0"
+      - key: HF_FACE_RESTORE_MODEL
+        value: "none"
+      - key: HF_FACE_RESTORE_STRENGTH
+        value: "0.7"
+      - key: REPLICATE_API_TOKEN
+        sync: false
+      - key: REPLICATE_FACE_SWAP_VERSION
+        value: "codeplugtech/face-swap:278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34"
+      - key: TIMEZONE
+        value: "America/Sao_Paulo"
