@@ -1,9 +1,9 @@
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
-from aplicativo.config import settings
-from aplicativo.banco_de_dados.base import Base
-from aplicativo.banco_de_dados import modelos
+from app.config import settings
+from app.banco_de_dados.base import Base
+from app.banco_de_dados import modelos
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("+asyncpg", ""))
