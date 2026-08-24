@@ -299,13 +299,19 @@ class AgentBrain:
         character_id,
         scene,
     ):
-        try:
+                try:
             result = await self.generate_image(
                 user_id,
                 character_id,
                 scene,
             )
-        except Exception:
+
+        except Exception as exc:
+            print(
+                f"[IMAGE ERROR] Exception during image generation: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
             result = None
 
         # ---------------------------------------------------------
