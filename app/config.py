@@ -8,21 +8,36 @@ class Settings(BaseSettings):
     webhook_base_url: str | None = None
     webhook_secret: str = "change-me"
 
-    # Gemini
-    gemini_api_key: str | None = None
-    gemini_model: str = "gemini-3.5-flash-lite"
-    llm_timeout_seconds: int = 60
-    llm_max_output_tokens: int = 500
+    # =========================
+    # GEMINI
+    # =========================
 
-    # Autonomia
+    gemini_api_key: str | None = None
+
+    # Modelo atual.
+    gemini_model: str = "gemini-3.5-flash-lite"
+
+    llm_timeout_seconds: int = 60
+    llm_max_output_tokens: int = 1000
+
+    # =========================
+    # AUTONOMIA
+    # =========================
+
     autonomy_token: str
     autonomy_min_interval_minutes: int = 90
     autonomy_max_daily_messages: int = 3
 
-    # Imagens
+    # =========================
+    # IMAGENS
+    # =========================
+
     cloudflare_account_id: str | None = None
     cloudflare_api_token: str | None = None
-    cloudflare_image_model: str = "@cf/black-forest-labs/flux-2-klein-4b"
+
+    cloudflare_image_model: str = (
+        "@cf/black-forest-labs/flux-2-klein-4b"
+    )
 
     pollinations_api_key: str | None = None
     pollinations_image_model: str = "flux"
@@ -31,9 +46,13 @@ class Settings(BaseSettings):
     image_monthly_limit: int = 100
     image_timeout_seconds: int = 120
 
-    # Face swap
+    # =========================
+    # FACE SWAP
+    # =========================
+
     face_swap_enabled: bool = True
     face_swap_required: bool = True
+
     face_swap_provider: str = "huggingface"
 
     face_reference_image_path: str = (
@@ -59,7 +78,10 @@ class Settings(BaseSettings):
     hf_face_restore_model: str = "none"
     hf_face_restore_strength: float = 0.7
 
-    # Replicate - fallback opcional
+    # =========================
+    # REPLICATE
+    # =========================
+
     replicate_api_token: str | None = None
 
     replicate_face_swap_version: str = (
@@ -67,11 +89,15 @@ class Settings(BaseSettings):
         "278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34"
     )
 
+    # =========================
+    # GERAL
+    # =========================
+
     timezone: str = "America/Sao_Paulo"
 
     model_config = SettingsConfigDict(
         env_file=".env",
-        extra="ignore"
+        extra="ignore",
     )
 
 
