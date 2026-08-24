@@ -76,20 +76,16 @@ class AgentBrain:
         r"\bquero\s+ver\s+o\s+que\s+voce\s+esta\s+vestindo\b",
         r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+usando\b",
         r"\bquero\s+ver\s+o\s+que\s+voce\s+esta\s+usando\b",
-
         r"\bo\s+que\s+você\s+está\s+vestindo\b",
         r"\bo\s+que\s+voce\s+esta\s+vestindo\b",
         r"\bo\s+que\s+você\s+está\s+usando\b",
         r"\bo\s+que\s+voce\s+esta\s+usando\b",
-
         r"\bcomo\s+você\s+está\s+vestida\b",
         r"\bcomo\s+voce\s+esta\s+vestida\b",
-
         r"\bmostra\s+a\s+roupa\b",
         r"\bme\s+mostra\s+a\s+roupa\b",
         r"\bmostra\s+sua\s+roupa\b",
         r"\bme\s+mostra\s+sua\s+roupa\b",
-
         r"\bmostra\s+seu\s+look\b",
         r"\bme\s+mostra\s+seu\s+look\b",
     )
@@ -299,7 +295,7 @@ class AgentBrain:
         character_id,
         scene,
     ):
-                try:
+        try:
             result = await self.generate_image(
                 user_id,
                 character_id,
@@ -312,6 +308,7 @@ class AgentBrain:
                 f"{type(exc).__name__}: {exc}",
                 flush=True,
             )
+
             result = None
 
         # ---------------------------------------------------------
@@ -336,10 +333,14 @@ class AgentBrain:
         # FALHA
         # ---------------------------------------------------------
 
-                error_detail = None
+        error_detail = None
 
         if result is not None:
-            error_detail = getattr(result, "error", None)
+            error_detail = getattr(
+                result,
+                "error",
+                None,
+            )
 
         print(
             f"[IMAGE ERROR] Generation failed. "
