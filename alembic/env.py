@@ -6,7 +6,10 @@ from app.database.base import Base
 from app.database import models
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("+asyncpg", ""))
+config.set_main_option(
+    "sqlalchemy.url",
+    settings.database_url.replace("+asyncpg", "").replace("%", "%%")
+)
 if config.config_file_name:
     fileConfig(config.config_file_name)
 target_metadata = Base.metadata
