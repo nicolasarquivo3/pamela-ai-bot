@@ -16,27 +16,39 @@ class AgentBrain:
     """
 
     IMAGE_REQUEST_PATTERNS = (
-        # Envio de foto
+        # ---------------------------------------------------------
+        # ENVIO DE FOTO / IMAGEM
+        # ---------------------------------------------------------
         r"\bme\s+manda\s+(uma\s+)?foto\b",
         r"\bmanda\s+(uma\s+)?foto\b",
         r"\bme\s+envia\s+(uma\s+)?foto\b",
         r"\benvia\s+(uma\s+)?foto\b",
+        r"\bme\s+mostra\s+(uma\s+)?foto\b",
         r"\bme\s+manda\s+uma\s+imagem\b",
         r"\bmanda\s+uma\s+imagem\b",
         r"\bme\s+envia\s+uma\s+imagem\b",
 
-        # Tirar foto
+        # ---------------------------------------------------------
+        # TIRAR FOTO / SELFIE
+        # ---------------------------------------------------------
         r"\btira\s+(uma\s+)?foto\b",
         r"\btire\s+(uma\s+)?foto\b",
         r"\btirar\s+(uma\s+)?foto\b",
         r"\bfaz\s+(uma\s+)?foto\b",
+        r"\bfazer\s+(uma\s+)?foto\b",
         r"\bfaz\s+(uma\s+)?selfie\b",
         r"\bfazer\s+(uma\s+)?selfie\b",
-        r"\btira\s+uma\s+selfie\b",
-        r"\bme\s+manda\s+uma\s+selfie\b",
-        r"\bmanda\s+uma\s+selfie\b",
+        r"\btira\s+(uma\s+)?selfie\b",
+        r"\bme\s+manda\s+(uma\s+)?selfie\b",
+        r"\bmanda\s+(uma\s+)?selfie\b",
+        r"\bme\s+envia\s+(uma\s+)?selfie\b",
+        r"\benvia\s+(uma\s+)?selfie\b",
 
-        # Ver a personagem
+        # ---------------------------------------------------------
+        # QUERO VER A PERSONAGEM
+        # ---------------------------------------------------------
+        r"\bquero\s+(uma\s+)?foto\s+sua\b",
+        r"\bquero\s+ver\s+(uma\s+)?foto\s+sua\b",
         r"\bquero\s+(ver|uma)\s+foto\b",
         r"\bquero\s+ver\s+(você|voce)\b",
         r"\bquero\s+ver\s+(como\s+você|como\s+voce)\b",
@@ -47,7 +59,9 @@ class AgentBrain:
         r"\bquero\s+ver\s+você\b",
         r"\bquero\s+ver\s+voce\b",
 
-        # Mostrar
+        # ---------------------------------------------------------
+        # MOSTRAR A PERSONAGEM
+        # ---------------------------------------------------------
         r"\bmostra\s+(como\s+você\s+está|como\s+voce\s+esta)\b",
         r"\bmostra\s+(você|voce)\b",
         r"\bme\s+mostra\s+(você|voce)\b",
@@ -55,68 +69,29 @@ class AgentBrain:
         r"\bme\s+mostra\s+como\s+você\s+está\b",
         r"\bme\s+mostra\s+como\s+voce\s+esta\b",
 
-        # Roupa
+        # ---------------------------------------------------------
+        # ROUPA / VISUAL
+        # ---------------------------------------------------------
         r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+vestindo\b",
         r"\bquero\s+ver\s+o\s+que\s+voce\s+esta\s+vestindo\b",
+        r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+usando\b",
+        r"\bquero\s+ver\s+o\s+que\s+voce\s+esta\s+usando\b",
+
         r"\bo\s+que\s+você\s+está\s+vestindo\b",
         r"\bo\s+que\s+voce\s+esta\s+vestindo\b",
+        r"\bo\s+que\s+você\s+está\s+usando\b",
+        r"\bo\s+que\s+voce\s+esta\s+usando\b",
+
         r"\bcomo\s+você\s+está\s+vestida\b",
         r"\bcomo\s+voce\s+esta\s+vestida\b",
+
         r"\bmostra\s+a\s+roupa\b",
         r"\bme\s+mostra\s+a\s+roupa\b",
+        r"\bmostra\s+sua\s+roupa\b",
+        r"\bme\s+mostra\s+sua\s+roupa\b",
 
-        
-    # -----------------------------
-    # FOTO / SELFIE
-    # -----------------------------
-
-    r"\bme\s+manda\s+(uma\s+)?foto\b",
-    r"\bmanda\s+(uma\s+)?foto\b",
-    r"\bme\s+envia\s+(uma\s+)?foto\b",
-    r"\benvia\s+(uma\s+)?foto\b",
-    r"\bme\s+mostra\s+(uma\s+)?foto\b",
-
-    r"\bquero\s+(uma\s+)?foto\s+sua\b",
-    r"\bquero\s+ver\s+(uma\s+)?foto\s+sua\b",
-    r"\bquero\s+ver\s+você\b",
-
-    r"\bme\s+manda\s+(uma\s+)?selfie\b",
-    r"\bmanda\s+(uma\s+)?selfie\b",
-    r"\bme\s+envia\s+(uma\s+)?selfie\b",
-    r"\benvia\s+(uma\s+)?selfie\b",
-
-    r"\btira\s+(uma\s+)?foto\b",
-    r"\btira\s+(uma\s+)?selfie\b",
-
-    # -----------------------------
-    # MOSTRAR VOCÊ
-    # -----------------------------
-
-    r"\bmostra\s+(como\s+você\s+está|você)\b",
-    r"\bme\s+mostra\s+(como\s+você\s+está|você)\b",
-
-    r"\bquero\s+ver\s+como\s+você\s+está\b",
-    r"\bquero\s+ver\s+você\b",
-
-    # -----------------------------
-    # ROUPA / VISUAL
-    # -----------------------------
-
-    r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+vestindo\b",
-    r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+usando\b",
-
-    r"\bo\s+que\s+você\s+está\s+vestindo\b",
-    r"\bo\s+que\s+você\s+está\s+usando\b",
-
-    r"\bcomo\s+você\s+está\s+vestida\b",
-    r"\bcomo\s+você\s+está\s+usando\b",
-
-    r"\bmostra\s+sua\s+roupa\b",
-    r"\bme\s+mostra\s+sua\s+roupa\b",
-
-    r"\bmostra\s+seu\s+look\b",
-    r"\bme\s+mostra\s+seu\s+look\b",
-)
+        r"\bmostra\s+seu\s+look\b",
+        r"\bme\s+mostra\s+seu\s+look\b",
     )
 
     def __init__(
@@ -168,10 +143,7 @@ class AgentBrain:
             text,
         )
 
-        if (
-            self.semantic_memory_manager
-            and len(text) >= 8
-        ):
+        if self.semantic_memory_manager and len(text) >= 8:
             await self.semantic_memory_manager.add(
                 user.id,
                 character_id,
@@ -206,7 +178,7 @@ class AgentBrain:
             )
 
         # ---------------------------------------------------------
-        # /FOTO
+        # COMANDO /FOTO
         # ---------------------------------------------------------
 
         if text.lower().startswith("/foto"):
@@ -333,8 +305,7 @@ class AgentBrain:
                 character_id,
                 scene,
             )
-
-        except Exception as exc:
+        except Exception:
             result = None
 
         # ---------------------------------------------------------
@@ -342,7 +313,6 @@ class AgentBrain:
         # ---------------------------------------------------------
 
         if result and result.success:
-
             await self.context_manager.record(
                 user_id,
                 character_id,
@@ -383,9 +353,7 @@ class AgentBrain:
     # =============================================================
 
     async def _generate_reply(self, context):
-
         if self.llm and await self.llm.available():
-
             generated = await self.llm.generate(
                 self._system_prompt(context),
                 context["messages"],
@@ -401,7 +369,6 @@ class AgentBrain:
     # =============================================================
 
     def _system_prompt(self, context):
-
         character = context.get("character", {})
 
         name = character.get(
@@ -429,7 +396,6 @@ class AgentBrain:
         memory_lines = []
 
         for memory in context.get("memories", []):
-
             key = memory.get("key", "")
             value = memory.get("value", "")
             confidence = memory.get("confidence", "")
@@ -456,7 +422,6 @@ class AgentBrain:
             "semantic_memories",
             [],
         ):
-
             content = memory.get(
                 "content",
                 "",
@@ -488,7 +453,6 @@ class AgentBrain:
         recent_lines = []
 
         for message in messages[-14:]:
-
             role = message.get(
                 "role",
                 "user",
@@ -518,7 +482,7 @@ class AgentBrain:
             )
 
         # ---------------------------------------------------------
-        # PROMPT
+        # SYSTEM PROMPT
         # ---------------------------------------------------------
 
         return f"""
@@ -605,36 +569,16 @@ IMERSÃO DA PERSONAGEM
 Dentro da experiência ficcional, converse naturalmente como a
 personagem.
 
-Se o usuário perguntar:
-
-- o que você está fazendo;
-- onde você está;
-- como está vestida;
-- como está seu cabelo;
-- como está seu visual;
-- o que está fazendo naquele momento;
-
-responda naturalmente dentro da realidade ficcional da personagem.
+Se o usuário perguntar o que você está fazendo, onde está,
+como está vestida, como está seu cabelo, como está seu visual
+ou o que está fazendo naquele momento, responda naturalmente
+dentro da realidade ficcional da personagem.
 
 Não introduza espontaneamente explicações técnicas sobre IA,
 modelos, APIs, código, banco de dados ou limitações do sistema.
 
-Não responda automaticamente dizendo:
-
-"Sou uma inteligência artificial."
-
-"Não tenho corpo."
-
-"Não tenho roupas."
-
-"Não tenho câmera."
-
-"Não posso tirar fotos."
-
-"Não posso estar em um lugar."
-
-Essas respostas quebram desnecessariamente a experiência
-ficcional da personagem.
+Não responda automaticamente dizendo que não possui corpo,
+roupas ou câmera.
 
 A personagem pode conversar sobre roupas, lugares, aparência,
 atividades, fotos e situações cotidianas dentro da ficção.
@@ -649,9 +593,7 @@ FOTOS
 Pedidos de foto são tratados pelo aplicativo.
 
 Se o usuário pedir uma foto, selfie ou imagem da personagem,
-não explique que ela não possui câmera.
-
-Não diga que é impossível tirar uma foto.
+não responda que ela não possui câmera.
 
 O aplicativo detecta pedidos de imagem e pode gerar uma fotografia
 da personagem.
@@ -659,8 +601,6 @@ da personagem.
 Se uma imagem for efetivamente enviada pelo aplicativo, continue
 a conversa naturalmente considerando que a personagem acabou de
 enviar aquela imagem.
-
-Não diga que a foto é impossível depois que o aplicativo a enviou.
 
 Se o usuário perguntar sobre a roupa da foto, descreva a roupa
 de maneira coerente com a imagem e com o contexto.
@@ -679,7 +619,7 @@ do personagem.
 Use esses sinais para ajustar o tom.
 
 Se a relação estiver mais próxima, a personagem pode ser mais
-carinhosa e íntima dentro dos limites apropriados.
+carinhosa dentro dos limites apropriados.
 
 Não use chantagem emocional.
 
@@ -747,7 +687,6 @@ Essa resposta deve ser evitada.
     # =============================================================
 
     def _fallback_reply(self, context):
-
         character = context.get(
             "character",
             {},
@@ -769,9 +708,7 @@ Essa resposta deve ser evitada.
     # =============================================================
 
     async def autonomous_tick(self):
-
         if not self.autonomy_service:
-
             return {
                 "sent": 0,
                 "waited": 0,
@@ -790,7 +727,6 @@ Essa resposta deve ser evitada.
         character_id,
         scene,
     ):
-
         return await self.image_service.generate(
             ImageRequest(
                 user_id=user_id,
