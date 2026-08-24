@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     webhook_secret: str = "change-me"
 
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash-lite"
+    gemini_model: str = "gemini-3.5-flash-lite"
     llm_timeout_seconds: int = 60
     llm_max_output_tokens: int = 500
 
