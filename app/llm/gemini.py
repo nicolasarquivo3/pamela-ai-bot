@@ -3,10 +3,10 @@ import httpx
 
 class GeminiLLM:
     """
-    Adaptador REST para a Gemini API.
+    Adapter REST para Gemini GenerateContent.
 
-    Usa o endpoint GenerateContent e mantém o histórico
-    recebido pelo AgentBrain.
+    O modelo é recebido pela configuração:
+        GEMINI_MODEL=gemini-3.5-flash-lite
     """
 
     def __init__(
@@ -14,10 +14,10 @@ class GeminiLLM:
         api_key,
         model="gemini-3.5-flash-lite",
         timeout=60,
-        max_output_tokens=500,
+        max_output_tokens=1000,
     ):
         self.api_key = api_key
-        self.model = model
+        self.model = self._normalize_model(model)
         self.timeout = timeout
         self.max_output_tokens = max_output_tokens
 
@@ -26,8 +26,30 @@ class GeminiLLM:
             f"v1beta/models/{self.model}:generateContent"
         )
 
+    @staticmethod
+    def _normalize_model(model):
+        """
+        Aceita tanto:
+            gemini-3.5-flash-lite
+
+        quanto:
+            models/gemini-3.5-flash-lite
+
+        e sempre normaliza para o formato correto.
+        """
+
+        model = (model or "").strip()
+
+        if model.startswith("models/"):
+            model = model[len("models/"):]
+
+        return model
+
     async def available(self):
-        return bool(self.api_key)
+        return bool(
+            self.api_key
+            and self.model
+        )
 
     async def generate(
         self,
@@ -36,46 +58,61 @@ class GeminiLLM:
     ):
         if not await self.available():
             print(
-                "[Gemini] ERRO: GEMINI_API_KEY não configurada."
-            )
-            return None
-
-        if not messages:
-            print(
-                "[Gemini] ERRO: nenhum histórico de mensagens recebido."
+                "[Gemini] "
+                "GEMINI_API_KEY não configurada."
             )
             return None
 
         contents = []
 
         for message in messages:
-            content = message.get("content", "")
+
+            content = str(
+                message.get("content") or ""
+            ).strip()
 
             if not content:
                 continue
 
-            role = message.get("role", "user")
+            original_role = message.get(
+                "role",
+                "user",
+            )
 
-            # Gemini aceita apenas user/model no histórico.
-            if role == "assistant":
-                role = "model"
-            else:
-                role = "user"
+            role = (
+                "model"
+                if original_role == "assistant"
+                else "user"
+            )
 
             contents.append(
                 {
                     "role": role,
                     "parts": [
                         {
-                            "text": str(content)
+                            "text": content
                         }
                     ],
                 }
             )
 
+        # O Gemini precisa receber pelo menos uma mensagem.
         if not contents:
             print(
-                "[Gemini] ERRO: histórico vazio após conversão."
+                "[Gemini] Nenhuma mensagem válida "
+                "para enviar."
+            )
+            return None
+
+        # O último turno deve ser do usuário.
+        #
+        # Isso evita enviar um histórico terminado
+        # em "model", algo especialmente importante
+        # para os modelos Gemini 3.x.
+        if contents[-1]["role"] == "model":
+            print(
+                "[Gemini] Último turno era model. "
+                "Resposta não será gerada."
             )
             return None
 
@@ -83,13 +120,19 @@ class GeminiLLM:
             "system_instruction": {
                 "parts": [
                     {
-                        "text": system_instruction
+                        "text": (
+                            system_instruction or ""
+                        )
                     }
                 ]
             },
+
             "contents": contents,
+
             "generationConfig": {
-                "maxOutputTokens": self.max_output_tokens,
+                "maxOutputTokens": (
+                    self.max_output_tokens
+                ),
             },
         }
 
@@ -98,12 +141,20 @@ class GeminiLLM:
             "Content-Type": "application/json",
         }
 
-        print(
-            f"[Gemini] Enviando requisição para modelo: "
-            f"{self.model}"
-        )
-
         try:
+
+            print(
+                "[Gemini] Enviando requisição:"
+            )
+
+            print(
+                f"[Gemini] Modelo: {self.model}"
+            )
+
+            print(
+                f"[Gemini] URL: {self.url}"
+            )
+
             async with httpx.AsyncClient(
                 timeout=self.timeout
             ) as client:
@@ -140,7 +191,8 @@ class GeminiLLM:
             if not candidates:
 
                 print(
-                    "[Gemini] Nenhum candidate retornado."
+                    "[Gemini] Nenhum candidate "
+                    "retornado."
                 )
 
                 print(
@@ -170,15 +222,18 @@ class GeminiLLM:
                 text = part.get("text")
 
                 if text:
-                    text_parts.append(text)
+                    text_parts.append(
+                        text
+                    )
 
-            text = "".join(text_parts).strip()
+            text = "".join(
+                text_parts
+            ).strip()
 
             if not text:
 
                 print(
-                    "[Gemini] Candidate retornado "
-                    "sem texto."
+                    "[Gemini] Candidate sem texto."
                 )
 
                 print(
