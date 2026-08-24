@@ -1,18 +1,34 @@
-from app.providers.huggingface_image import (
-    HuggingFaceImageProvider,
-)
 import asyncio
 import os
+
 import uvicorn
+
 from app.config import settings
 from app.database.session import SessionLocal
-from app.images.repository import ImageQuota, ImageRepository
+
+from app.images.repository import (
+    ImageQuota,
+    ImageRepository,
+)
 from app.images.router import ImageProviderRouter
 from app.images.service import ImageService
 from app.images.face_swap import FaceSwapService
-from app.providers.cloudflare_image import CloudflareImageProvider
-from app.providers.pollinations_image import PollinationsImageProvider
-from app.repositories import CharacterRepository, UserRepository
+
+from app.providers.cloudflare_image import (
+    CloudflareImageProvider,
+)
+from app.providers.pollinations_image import (
+    PollinationsImageProvider,
+)
+from app.providers.huggingface_image import (
+    HuggingFaceImageProvider,
+)
+
+from app.repositories import (
+    CharacterRepository,
+    UserRepository,
+)
+
 from app.brain.agent import AgentBrain
 from app.brain.memory_extractor import MemoryExtractor
 from app.brain.deduplicator import Deduplicator
@@ -22,16 +38,27 @@ from app.brain.context_manager import ContextManager
 from app.brain.emotion_engine import EmotionEngine
 from app.brain.relationship_engine import RelationshipEngine
 from app.brain.autonomy import AutonomyService
+
 from app.telegram.bot import TelegramApp
 from app.llm.gemini import GeminiLLM
 from app.web import create_web_app
 
+
 def make_brain_components(session):
     extractor = MemoryExtractor()
-    memory_manager = MemoryManager(session, extractor, Deduplicator())
+
+    memory_manager = MemoryManager(
+        session,
+        extractor,
+        Deduplicator(),
+    )
+
     semantic_manager = SemanticMemoryManager(session)
+
     emotion_engine = EmotionEngine(session)
+
     relationship_engine = RelationshipEngine(session)
+
     context_manager = ContextManager(
         session,
         memory_manager,
@@ -39,24 +66,93 @@ def make_brain_components(session):
         relationship_engine,
         semantic_manager,
     )
-    return memory_manager, semantic_manager, emotion_engine, relationship_engine, context_manager
+
+    return (
+        memory_manager,
+        semantic_manager,
+        emotion_engine,
+        relationship_engine,
+        context_manager,
+    )
+
 
 async def main():
-    # This session is used by the webhook path. Autonomous ticks create their
-    # own short-lived sessions through SessionLocal.
+
+    # =========================================================
+    # BANCO DE DADOS
+    # =========================================================
+
+    # Esta sessão é utilizada pelo caminho do webhook.
+    # Os ticks de autonomia criam suas próprias sessões.
     session = SessionLocal()
+
     chars = CharacterRepository(session)
     users = UserRepository(session)
 
+    # =========================================================
+    # PROVIDERS DE IMAGEM
+    # =========================================================
+
     providers = []
 
-providers.append(
-    HuggingFaceImageProvider(
+    # ---------------------------------------------------------
+    # HUGGING FACE
+    # ---------------------------------------------------------
+    #
+    # Space público FLUX.2 Klein 4B.
+    #
+    # Pode ser sobrescrito no Render através de:
+    #
+    # HUGGINGFACE_SPACE_URL
+    #
+    # ---------------------------------------------------------
+
+    huggingface_space_url = os.getenv(
+        "HUGGINGFACE_SPACE_URL",
         "https://xurxowsky-flux2-klein-4b-playground.hf.space",
-        settings.image_timeout_seconds,
-    )
-)
+    ).rstrip("/")
+
+    if huggingface_space_url:
+
+        providers.append(
+            HuggingFaceImageProvider(
+                huggingface_space_url,
+                settings.image_timeout_seconds,
+            )
+        )
+
+    # ---------------------------------------------------------
+    # CLOUDFLARE
+    # ---------------------------------------------------------
+
+    if (
+        settings.cloudflare_account_id
+        and settings.cloudflare_api_token
+    ):
+
+        providers.append(
+            CloudflareImageProvider(
+                settings.cloudflare_account_id,
+                settings.cloudflare_api_token,
+                settings.cloudflare_image_model,
+                settings.image_timeout_seconds,
+            )
+        )
+
+    # ---------------------------------------------------------
+    # POLLINATIONS
+    # ---------------------------------------------------------
+    #
+    # Mantido apenas como fallback opcional.
+    #
+    # Como sua conta atualmente está retornando 402 Payment
+    # Required, ele NÃO será usado enquanto o Hugging Face
+    # funcionar.
+    #
+    # ---------------------------------------------------------
+
     if settings.pollinations_api_key:
+
         providers.append(
             PollinationsImageProvider(
                 settings.pollinations_api_key,
@@ -65,11 +161,21 @@ providers.append(
             )
         )
 
+    # =========================================================
+    # FACE SWAP
+    # =========================================================
+
     face_swap_service = None
+
     if settings.face_swap_enabled:
-        reference_path = settings.face_reference_image_path
+
+        reference_path = (
+            settings.face_reference_image_path
+        )
+
         if not reference_path.startswith("/"):
             reference_path = f"/app/{reference_path}"
+
         face_swap_service = FaceSwapService(
             reference_path=reference_path,
             required=settings.face_swap_required,
@@ -86,6 +192,10 @@ providers.append(
             timeout=settings.face_swap_timeout_seconds,
         )
 
+    # =========================================================
+    # IMAGE SERVICE
+    # =========================================================
+
     image_service = ImageService(
         chars,
         ImageProviderRouter(providers),
@@ -98,9 +208,21 @@ providers.append(
         face_swap_service=face_swap_service,
     )
 
-    memory_manager, semantic_manager, emotion_engine, relationship_engine, context_manager = (
-        make_brain_components(session)
-    )
+    # =========================================================
+    # MEMÓRIA / EMOÇÃO / RELACIONAMENTO
+    # =========================================================
+
+    (
+        memory_manager,
+        semantic_manager,
+        emotion_engine,
+        relationship_engine,
+        context_manager,
+    ) = make_brain_components(session)
+
+    # =========================================================
+    # LLM
+    # =========================================================
 
     llm = GeminiLLM(
         settings.gemini_api_key,
@@ -108,6 +230,11 @@ providers.append(
         settings.llm_timeout_seconds,
         settings.llm_max_output_tokens,
     )
+
+    # =========================================================
+    # AGENT BRAIN
+    # =========================================================
+
     agent = AgentBrain(
         image_service,
         users,
@@ -119,11 +246,28 @@ providers.append(
         llm,
     )
 
+    # =========================================================
+    # TELEGRAM
+    # =========================================================
+
     telegram = TelegramApp(agent)
+
     await telegram.set_webhook()
 
+    # =========================================================
+    # AUTONOMIA
+    # =========================================================
+
     def memory_factory(tick_session):
-        mm, sm, ee, re, cm = make_brain_components(tick_session)
+
+        (
+            mm,
+            sm,
+            ee,
+            re,
+            cm,
+        ) = make_brain_components(tick_session)
+
         return mm, sm, cm
 
     agent.autonomy_service = AutonomyService(
@@ -135,15 +279,45 @@ providers.append(
         settings.autonomy_max_daily_messages,
     )
 
-    app = create_web_app(agent, telegram)
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")), log_level="info")
+    # =========================================================
+    # WEB APP
+    # =========================================================
+
+    app = create_web_app(
+        agent,
+        telegram,
     )
+
+    # =========================================================
+    # UVICORN / RENDER
+    # =========================================================
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "8000",
+        )
+    )
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=port,
+            log_level="info",
+        )
+    )
+
     try:
+
         await server.serve()
+
     finally:
+
         await telegram.bot.session.close()
+
         await session.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
