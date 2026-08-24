@@ -336,6 +336,17 @@ class AgentBrain:
         # FALHA
         # ---------------------------------------------------------
 
+                error_detail = None
+
+        if result is not None:
+            error_detail = getattr(result, "error", None)
+
+        print(
+            f"[IMAGE ERROR] Generation failed. "
+            f"error={error_detail!r}",
+            flush=True,
+        )
+
         reply = (
             "Amor, tentei gerar minha foto agora, "
             "mas o gerador deu uma falhadinha. "
