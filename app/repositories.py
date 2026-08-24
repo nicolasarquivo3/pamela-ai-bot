@@ -3,10 +3,105 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 
 from app.database.models import (
+    Character,
+    User,
     ImageGeneration,
     ImageStatus,
     ImageUsage,
 )
+
+
+class CharacterRepository:
+
+    def __init__(self, session):
+        self.session = session
+
+    async def get_by_id(self, character_id):
+        result = await self.session.execute(
+            select(Character).where(
+                Character.id == character_id
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    async def get_default(self):
+        result = await self.session.execute(
+            select(Character)
+            .order_by(Character.id.asc())
+            .limit(1)
+        )
+
+        return result.scalar_one_or_none()
+
+    async def get_or_create_default(self):
+        character = await self.get_default()
+
+        if character:
+            return character
+
+        character = Character(
+            name="Pâmela",
+            image_identity={},
+            personality_profile={
+                "description": (
+                    "Mulher adulta, carinhosa, espontânea, "
+                    "afetuosa e conversacional."
+                )
+            },
+        )
+
+        self.session.add(character)
+
+        await self.session.flush()
+
+        return character
+
+
+class UserRepository:
+
+    def __init__(self, session):
+        self.session = session
+
+    async def get_by_telegram_id(self, telegram_id):
+        result = await self.session.execute(
+            select(User).where(
+                User.telegram_id == telegram_id
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    async def get_or_create(self, telegram_id):
+        user = await self.get_by_telegram_id(
+            telegram_id
+        )
+
+        if user:
+            return user
+
+        character = await self._get_default_character()
+
+        user = User(
+            telegram_id=telegram_id,
+            active=True,
+            character_id=character.id if character else 1,
+        )
+
+        self.session.add(user)
+
+        await self.session.flush()
+
+        return user
+
+    async def _get_default_character(self):
+        result = await self.session.execute(
+            select(Character)
+            .order_by(Character.id.asc())
+            .limit(1)
+        )
+
+        return result.scalar_one_or_none()
 
 
 class ImageRepository:
@@ -20,19 +115,13 @@ class ImageRepository:
         prompt,
         negative,
     ):
-
         row = ImageGeneration(
             user_id=request.user_id,
             character_id=request.character_id,
-
             scene=request.scene,
-
             prompt=prompt,
-
             negative_prompt=negative,
-
             status=ImageStatus.PROCESSING,
-
             metadata_json={
                 "width": request.width,
                 "height": request.height,
@@ -51,7 +140,6 @@ class ImageRepository:
         row,
         result,
     ):
-
         row.status = ImageStatus.COMPLETED
 
         row.provider = result.provider
@@ -60,8 +148,8 @@ class ImageRepository:
 
         row.image_url = result.image_url
 
-        row.completed_at = (
-            datetime.now(timezone.utc)
+        row.completed_at = datetime.now(
+            timezone.utc
         )
 
         row.metadata_json = {
@@ -78,7 +166,6 @@ class ImageRepository:
         row,
         error,
     ):
-
         row.status = ImageStatus.FAILED
 
         row.error = str(error)
@@ -102,7 +189,6 @@ class ImageQuota:
         self,
         user_id,
     ):
-
         today = date.today()
 
         month_start = today.replace(
@@ -141,7 +227,6 @@ class ImageQuota:
         user_id,
         provider,
     ):
-
         today = date.today()
 
         result = await self.session.execute(
@@ -155,11 +240,8 @@ class ImageQuota:
         row = result.scalar_one_or_none()
 
         if row:
-
             row.count += 1
-
         else:
-
             self.session.add(
                 ImageUsage(
                     user_id=user_id,
