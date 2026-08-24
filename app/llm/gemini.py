@@ -3,53 +3,31 @@ import httpx
 
 class GeminiLLM:
     """
-    Adapter REST para Gemini GenerateContent.
+    Adaptador REST para Gemini.
 
-    O modelo é recebido pela configuração:
-        GEMINI_MODEL=gemini-3.5-flash-lite
+    O Gemini recebe o prompt de personalidade separado do histórico
+    da conversa.
     """
 
     def __init__(
         self,
         api_key,
-        model="gemini-3.5-flash-lite",
+        model="gemini-2.5-flash-lite",
         timeout=60,
-        max_output_tokens=1000,
+        max_output_tokens=500,
     ):
         self.api_key = api_key
-        self.model = self._normalize_model(model)
+        self.model = model
         self.timeout = timeout
         self.max_output_tokens = max_output_tokens
 
         self.url = (
             "https://generativelanguage.googleapis.com/"
-            f"v1beta/models/{self.model}:generateContent"
+            f"v1beta/models/{model}:generateContent"
         )
-
-    @staticmethod
-    def _normalize_model(model):
-        """
-        Aceita tanto:
-            gemini-3.5-flash-lite
-
-        quanto:
-            models/gemini-3.5-flash-lite
-
-        e sempre normaliza para o formato correto.
-        """
-
-        model = (model or "").strip()
-
-        if model.startswith("models/"):
-            model = model[len("models/"):]
-
-        return model
 
     async def available(self):
-        return bool(
-            self.api_key
-            and self.model
-        )
+        return bool(self.api_key)
 
     async def generate(
         self,
@@ -58,30 +36,24 @@ class GeminiLLM:
     ):
         if not await self.available():
             print(
-                "[Gemini] "
-                "GEMINI_API_KEY não configurada."
+                "[Gemini] GEMINI_API_KEY não configurada."
             )
             return None
 
         contents = []
 
         for message in messages:
-
-            content = str(
-                message.get("content") or ""
+            content = (
+                message.get("content")
+                or ""
             ).strip()
 
             if not content:
                 continue
 
-            original_role = message.get(
-                "role",
-                "user",
-            )
-
             role = (
                 "model"
-                if original_role == "assistant"
+                if message.get("role") == "assistant"
                 else "user"
             )
 
@@ -90,49 +62,27 @@ class GeminiLLM:
                     "role": role,
                     "parts": [
                         {
-                            "text": content
+                            "text": content,
                         }
                     ],
                 }
             )
 
-        # O Gemini precisa receber pelo menos uma mensagem.
         if not contents:
-            print(
-                "[Gemini] Nenhuma mensagem válida "
-                "para enviar."
-            )
-            return None
-
-        # O último turno deve ser do usuário.
-        #
-        # Isso evita enviar um histórico terminado
-        # em "model", algo especialmente importante
-        # para os modelos Gemini 3.x.
-        if contents[-1]["role"] == "model":
-            print(
-                "[Gemini] Último turno era model. "
-                "Resposta não será gerada."
-            )
             return None
 
         payload = {
             "system_instruction": {
                 "parts": [
                     {
-                        "text": (
-                            system_instruction or ""
-                        )
+                        "text": system_instruction,
                     }
                 ]
             },
-
             "contents": contents,
-
             "generationConfig": {
-                "maxOutputTokens": (
-                    self.max_output_tokens
-                ),
+                "maxOutputTokens": self.max_output_tokens,
+                "temperature": 0.85,
             },
         }
 
@@ -142,23 +92,14 @@ class GeminiLLM:
         }
 
         try:
-
             print(
-                "[Gemini] Enviando requisição:"
-            )
-
-            print(
-                f"[Gemini] Modelo: {self.model}"
-            )
-
-            print(
-                f"[Gemini] URL: {self.url}"
+                "[Gemini] Enviando requisição para "
+                f"modelo: {self.model}"
             )
 
             async with httpx.AsyncClient(
                 timeout=self.timeout
             ) as client:
-
                 response = await client.post(
                     self.url,
                     headers=headers,
@@ -170,15 +111,10 @@ class GeminiLLM:
             )
 
             if response.status_code != 200:
-
                 print(
-                    "[Gemini] ERRO DA API:"
+                    "[Gemini] ERRO DA API:",
+                    response.text[:3000],
                 )
-
-                print(
-                    response.text[:5000]
-                )
-
                 return None
 
             data = response.json()
@@ -189,18 +125,13 @@ class GeminiLLM:
             )
 
             if not candidates:
-
                 print(
-                    "[Gemini] Nenhum candidate "
-                    "retornado."
+                    "[Gemini] Nenhum candidate retornado."
                 )
-
                 print(
-                    "[Gemini] Resposta:"
+                    "[Gemini] Resposta:",
+                    data,
                 )
-
-                print(data)
-
                 return None
 
             candidate = candidates[0]
@@ -215,33 +146,20 @@ class GeminiLLM:
                 or []
             )
 
-            text_parts = []
-
-            for part in parts:
-
-                text = part.get("text")
-
-                if text:
-                    text_parts.append(
-                        text
-                    )
-
             text = "".join(
-                text_parts
+                part.get("text", "")
+                for part in parts
+                if part.get("text")
             ).strip()
 
             if not text:
-
                 print(
                     "[Gemini] Candidate sem texto."
                 )
-
                 print(
-                    "[Gemini] Candidate:"
+                    "[Gemini] Candidate:",
+                    candidate,
                 )
-
-                print(candidate)
-
                 return None
 
             print(
@@ -252,26 +170,20 @@ class GeminiLLM:
             return text
 
         except httpx.TimeoutException as exc:
-
             print(
                 f"[Gemini] TIMEOUT: {exc}"
             )
-
             return None
 
         except httpx.HTTPError as exc:
-
             print(
                 f"[Gemini] ERRO HTTP: {exc}"
             )
-
             return None
 
         except Exception as exc:
-
             print(
                 "[Gemini] ERRO INESPERADO: "
                 f"{type(exc).__name__}: {exc}"
             )
-
             return None
