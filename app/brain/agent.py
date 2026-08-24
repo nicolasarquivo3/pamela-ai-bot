@@ -65,8 +65,58 @@ class AgentBrain:
         r"\bmostra\s+a\s+roupa\b",
         r"\bme\s+mostra\s+a\s+roupa\b",
 
-        # Selfie
-        r"\bselfie\b",
+        
+    # -----------------------------
+    # FOTO / SELFIE
+    # -----------------------------
+
+    r"\bme\s+manda\s+(uma\s+)?foto\b",
+    r"\bmanda\s+(uma\s+)?foto\b",
+    r"\bme\s+envia\s+(uma\s+)?foto\b",
+    r"\benvia\s+(uma\s+)?foto\b",
+    r"\bme\s+mostra\s+(uma\s+)?foto\b",
+
+    r"\bquero\s+(uma\s+)?foto\s+sua\b",
+    r"\bquero\s+ver\s+(uma\s+)?foto\s+sua\b",
+    r"\bquero\s+ver\s+você\b",
+
+    r"\bme\s+manda\s+(uma\s+)?selfie\b",
+    r"\bmanda\s+(uma\s+)?selfie\b",
+    r"\bme\s+envia\s+(uma\s+)?selfie\b",
+    r"\benvia\s+(uma\s+)?selfie\b",
+
+    r"\btira\s+(uma\s+)?foto\b",
+    r"\btira\s+(uma\s+)?selfie\b",
+
+    # -----------------------------
+    # MOSTRAR VOCÊ
+    # -----------------------------
+
+    r"\bmostra\s+(como\s+você\s+está|você)\b",
+    r"\bme\s+mostra\s+(como\s+você\s+está|você)\b",
+
+    r"\bquero\s+ver\s+como\s+você\s+está\b",
+    r"\bquero\s+ver\s+você\b",
+
+    # -----------------------------
+    # ROUPA / VISUAL
+    # -----------------------------
+
+    r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+vestindo\b",
+    r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+usando\b",
+
+    r"\bo\s+que\s+você\s+está\s+vestindo\b",
+    r"\bo\s+que\s+você\s+está\s+usando\b",
+
+    r"\bcomo\s+você\s+está\s+vestida\b",
+    r"\bcomo\s+você\s+está\s+usando\b",
+
+    r"\bmostra\s+sua\s+roupa\b",
+    r"\bme\s+mostra\s+sua\s+roupa\b",
+
+    r"\bmostra\s+seu\s+look\b",
+    r"\bme\s+mostra\s+seu\s+look\b",
+)
     )
 
     def __init__(
