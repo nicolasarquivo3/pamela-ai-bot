@@ -49,15 +49,13 @@ async def main():
     users = UserRepository(session)
 
     providers = []
-    if settings.cloudflare_account_id and settings.cloudflare_api_token:
-        providers.append(
-            CloudflareImageProvider(
-                settings.cloudflare_account_id,
-                settings.cloudflare_api_token,
-                settings.cloudflare_image_model,
-                settings.image_timeout_seconds,
-            )
-        )
+
+providers.append(
+    HuggingFaceImageProvider(
+        "https://xurxowsky-flux2-klein-4b-playground.hf.space",
+        settings.image_timeout_seconds,
+    )
+)
     if settings.pollinations_api_key:
         providers.append(
             PollinationsImageProvider(
