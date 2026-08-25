@@ -80,9 +80,15 @@ class ContextManager:
             rel = await self.relationship_engine.get(user_id, character_id)
             relationship = self.relationship_engine.guidance(rel)
 
+        raw_name = (character.name if character else "") or ""
+        if not raw_name.strip() or raw_name.strip().lower() in {"lia", "li a"}:
+            display_name = "Pâmela"
+        else:
+            display_name = raw_name.strip()
+
         return {
             "character": {
-                "name": character.name if character else "Lia",
+                "name": display_name,
                 "image_identity": character.image_identity if character else {},
                 "personality": character.personality_profile if character else {},
             },
