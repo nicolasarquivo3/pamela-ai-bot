@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     # ou deixe None para usar anonimo 0000000000 (mais lento)
     stable_horde_api_key: str | None = None
 
+    # Perchance PRIORIDADE (https://perchance.org/5yf90s8rdo)
+    # Renove PERCHANCE_USER_KEY quando log disser invalid_key
+    perchance_user_key: str | None = None
+    perchance_channel: str = "5yf90s8rdo"
+    # varios geradores (mesma API): separados por virgula
+    perchance_channels: str = (
+        "ai-photo-generator,image-generator-professional,"
+        "ai-text-to-image-generator,5yf90s8rdo"
+    )
+    perchance_resolution: str = "512x768" 
+
 
 
     image_daily_limit: int = 9999
