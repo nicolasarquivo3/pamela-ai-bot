@@ -51,11 +51,12 @@ class TelegramApp:
                 if result.get("type") == "image":
                     ok = await self._send_image_result(message, result)
                     if not ok:
-                        await message.answer(
-                            "Amor, a foto ficou pronta mas não consegui "
-                            "te entregar agora. Manda 'me manda uma foto' "
-                            "de novo? ❤️"
+                        fallback_text = (
+                            result.get("caption")
+                            or result.get("text")
+                            or "Amor, a foto nao saiu agora. Tenta de novo? ❤️"
                         )
+                        await message.answer(fallback_text)
                     return
 
                 await message.answer(
@@ -86,7 +87,6 @@ class TelegramApp:
                     )
 
     async def _send_image_result(self, message: Message, result: dict) -> bool:
-        """Prefere bytes (face swap). Se só URL, baixa e envia como arquivo."""
         image_url = result.get("url")
         image_bytes = result.get("bytes")
         caption = (result.get("caption") or "").strip() or None
