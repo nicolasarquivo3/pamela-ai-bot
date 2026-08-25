@@ -35,7 +35,7 @@ class TelegramApp:
                         flush=True,
                     )
                     await message.answer(
-                        "Amor, tive um probleminha agora. Tenta de novo? ❤️"
+                        "Amor, tive um probleminha agora. Tenta de novo? â¤ï¸"
                     )
                     return
 
@@ -43,25 +43,41 @@ class TelegramApp:
                     await message.answer(
                         result.get(
                             "text",
-                            "Desculpa, tive um probleminha agora. ❤️",
+                            "Desculpa, tive um probleminha agora. â¤ï¸",
                         )
                     )
                     return
 
                 if result.get("type") == "image":
-                    ok = await self._send_image_result(message, result)
-                    if not ok:
-                        fallback_text = (
-                            result.get("caption")
-                            or result.get("text")
-                            or "Amor, a foto nao saiu agora. Tenta de novo? ❤️"
+                    # SEMPRE manda o texto da personagem primeiro
+                    # (a legenda da foto some fÃ¡cil no celular)
+                    reply_text = (
+                        (result.get("text") or "").strip()
+                        or (result.get("caption") or "").strip()
+                    )
+                    if reply_text:
+                        # Telegram caption max 1024; texto completo vai na mensagem
+                        await message.answer(reply_text)
+
+                    # Foto com legenda curta (nÃ£o repetir o monÃ³logo)
+                    photo_result = dict(result)
+                    short = (result.get("photo_caption") or "â¤ï¸").strip()
+                    if len(short) > 200:
+                        short = short[:197] + "..."
+                    photo_result["caption"] = short
+                    # Evita reenviar o texto longo como caption se falhar
+                    photo_result["text"] = short
+
+                    ok = await self._send_image_result(message, photo_result)
+                    if not ok and not reply_text:
+                        await message.answer(
+                            "Amor, a foto nao saiu agora. Tenta de novo? â¤ï¸"
                         )
-                        await message.answer(fallback_text)
                     return
 
                 await message.answer(
                     "Amor, tive um probleminha para processar "
-                    "sua mensagem agora. ❤️"
+                    "sua mensagem agora. â¤ï¸"
                 )
 
             except Exception as exc:
@@ -77,16 +93,17 @@ class TelegramApp:
                 try:
                     await message.answer(
                         "Amor, deu um probleminha aqui agora. "
-                        "Tenta mandar de novo em alguns segundos? ❤️"
+                        "Tenta mandar de novo em alguns segundos? â¤ï¸"
                     )
                 except Exception as send_exc:
                     print(
-                        f"[TelegramApp] Erro ao avisar usuário: "
+                        f"[TelegramApp] Erro ao avisar usuÃ¡rio: "
                         f"{type(send_exc).__name__}: {send_exc}",
                         flush=True,
                     )
 
     async def _send_image_result(self, message: Message, result: dict) -> bool:
+        """Prefere bytes (face swap). Se sÃ³ URL, baixa e envia como arquivo."""
         image_url = result.get("url")
         image_bytes = result.get("bytes")
         caption = (result.get("caption") or "").strip() or None
@@ -128,7 +145,7 @@ class TelegramApp:
                 except Exception as e2:
                     print(f"[TelegramApp] answer_photo url failed: {e2}", flush=True)
 
-        print("[TelegramApp] sem dados de imagem utilizáveis", flush=True)
+        print("[TelegramApp] sem dados de imagem utilizÃ¡veis", flush=True)
         return False
 
     async def feed_webhook_update(self, update):
