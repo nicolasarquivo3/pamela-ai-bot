@@ -1,7 +1,7 @@
 """
 Ordem:
   1) AI (Flux) + seed + face swap
-  2) Fallback: DDG → Bing → Reddit → Pixabay → Gelbooru → Pexels + face swap
+  2) Fallback: DDG â†’ Bing â†’ Reddit â†’ Pixabay â†’ Gelbooru â†’ Pexels + face swap
 """
 from __future__ import annotations
 
@@ -142,7 +142,7 @@ class ImageService:
                     if self._face_swap_required():
                         await self.image_repository.fail(record, err)
                         return ImageResult(False, error=err, provider="ai+faceswap")
-                    print("[IMAGE] face_swap nao obrigatorio — usando AI sem swap", flush=True)
+                    print("[IMAGE] face_swap nao obrigatorio â€” usando AI sem swap", flush=True)
 
             await self.image_repository.complete(record, result)
             await self.quota.consume(request.user_id, result.provider or "ai")
@@ -182,6 +182,14 @@ class ImageService:
                     return None
 
             print(f"[IMAGE] {provider_name} ok: query={photo.get('query')}", flush=True)
+
+            # anti-repeat: marca original antes do face swap
+            if RECENT is not None:
+                RECENT.remember(
+                    url=photo.get("url"),
+                    photo_id=photo.get("photo_id"),
+                    content=photo.get("bytes"),
+                )
 
             record = await self.image_repository.create(
                 request,
