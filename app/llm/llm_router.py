@@ -1,18 +1,20 @@
 """
 Roteador de LLMs:
-  1) Gemini
-  2) Se bloquear/falhar -> OpenRouter (Venice)
+  1) Gemini (rapido / barato)
+  2) Se bloquear, vazio, safety, 503, timeout -> OpenRouter (Venice etc.)
 """
 from __future__ import annotations
 
 import re
 from typing import Any
 
+
+# sinais de recusa / bloqueio no texto do Gemini
 _REFUSAL_RE = re.compile(
     r"("
-    r"n[aã]o\s+posso\s+(ajudar|continuar|falar|gerar|responder)|"
-    r"n[aã]o\s+consigo\s+(ajudar|gerar|falar)|"
-    r"contra\s+(as\s+)?(minhas\s+)?pol[ií]ticas|"
+    r"n[aÃ£]o\s+posso\s+(ajudar|continuar|falar|gerar|responder)|"
+    r"n[aÃ£]o\s+consigo\s+(ajudar|gerar|falar)|"
+    r"contra\s+(as\s+)?(minhas\s+)?pol[iÃ­]ticas|"
     r"as\s+a\s+(an\s+)?ai|"
     r"i\s+can'?t\s+(help|assist|generate)|"
     r"i\s+cannot\s+(help|assist|generate)|"
@@ -20,8 +22,8 @@ _REFUSAL_RE = re.compile(
     r"content\s+policy|"
     r"safety\s+guidelines|"
     r"violat(e|es|ing)\s+(the\s+)?(policy|policies)|"
-    r"n[aã]o\s+vou\s+(gerar|escrever|continuar)|"
-    r"prefiro\s+n[aã]o\s+(falar|continuar)|"
+    r"n[aÃ£]o\s+vou\s+(gerar|escrever|continuar)|"
+    r"prefiro\s+n[aÃ£]o\s+(falar|continuar)|"
     r"isso\s+vai\s+contra"
     r")",
     re.I,
@@ -29,6 +31,10 @@ _REFUSAL_RE = re.compile(
 
 
 class LLMRouter:
+    """
+    Mesma interface: available() + generate(system, messages) -> str | None
+    """
+
     def __init__(
         self,
         primary: Any,
@@ -64,14 +70,20 @@ class LLMRouter:
         t = text.strip()
         if len(t) < 8:
             return False
+        # recusa tipica curta e formal
         if _REFUSAL_RE.search(t):
+            # se a maior parte da msg e recusa (curta)
             if len(t) < 400:
                 return True
+            # se comeca com recusa
             if _REFUSAL_RE.search(t[:180]):
                 return True
         return False
 
     async def generate(self, system_instruction, messages):
+        primary_text = None
+        primary_ok = False
+
         if self.primary and await self._avail(self.primary):
             try:
                 primary_text = await self.primary.generate(
@@ -82,6 +94,7 @@ class LLMRouter:
                 primary_text = None
 
             if primary_text and not self._looks_like_refusal(primary_text):
+                primary_ok = True
                 print("[LLMRouter] usando PRIMARY (Gemini)", flush=True)
                 return primary_text
 
@@ -97,6 +110,7 @@ class LLMRouter:
                     flush=True,
                 )
 
+        # Fallback OpenRouter / Venice
         if self.fallback and await self._avail(self.fallback):
             try:
                 fb = await self.fallback.generate(system_instruction, messages)
@@ -109,4 +123,5 @@ class LLMRouter:
                 return fb
             print("[LLMRouter] FALLBACK tambem falhou", flush=True)
 
+        # se primary tinha texto de recusa, nao devolve a recusa â€” deixa agent usar â¤ï¸
         return None
