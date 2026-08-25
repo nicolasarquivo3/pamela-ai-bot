@@ -1,306 +1,855 @@
+from __future__ import annotations
+
 import json
-from urllib.parse import quote
+import mimetypes
+import os
+import random
+import time
+import uuid
+from pathlib import Path
+from typing import Any
 
-import httpx
-
-from app.images.models import ImageResult
-from app.providers.image import ImageProvider
+import requests
 
 
-class HuggingFaceImageProvider(ImageProvider):
+class HuggingFaceImageProvider:
     """
-    Provider específico para o Space oficial da Black Forest Labs:
+    Provider de imagens para o Space oficial:
 
         black-forest-labs/FLUX.2-klein-4B
 
-    O Space expõe a função Gradio:
+    O provider NÃO assume que o endpoint seja /infer.
 
-        /infer
+    Ele consulta dinamicamente:
 
-    Assinatura atual:
+        /gradio_api/info?all_endpoints=true
 
-        infer(
-            prompt,
-            input_images,
-            mode_choice,
-            seed,
-            randomize_seed,
-            width,
-            height,
-            num_inference_steps,
-            guidance_scale,
-            prompt_upsampling,
-        )
+    e encontra o endpoint compatível pelos nomes dos parâmetros.
 
-    A chamada é feita pela API HTTP do Gradio e o resultado é
-    recebido pelo endpoint SSE:
+    Isso evita o erro:
 
-        /gradio_api/call/infer/{event_id}
+        FnIndexInferError:
+        Could not infer function index for API name: infer
+
+    O Space oficial atualmente utiliza a função infer() com os
+    parâmetros do FLUX.2 Klein 4B, mas o Gradio pode expô-la de
+    maneira diferente conforme a versão/configuração do Space.
     """
 
     name = "huggingface"
 
     DEFAULT_SPACE_URL = (
-        "https://black-forest-labs-flux2-klein-4b.hf.space"
+        "https://black-forest-labs-flux-2-klein-4b.hf.space"
     )
 
-    INFER_API_NAME = "/infer"
+    DEFAULT_TIMEOUT = 180
 
-    MODE_DISTILLED = "Distilled (4 steps)"
-    MODE_BASE = "Base (50 steps)"
+    MAX_SEED = 2_147_483_647
+
+    DEFAULT_MODE = "Distilled (4 steps)"
+    DEFAULT_STEPS = 4
+    DEFAULT_GUIDANCE = 1.0
 
     def __init__(
         self,
         space_url: str | None = None,
-        timeout: int = 180,
+        timeout: int | float = DEFAULT_TIMEOUT,
         hf_token: str | None = None,
     ):
         self.space_url = (
-            (space_url or self.DEFAULT_SPACE_URL).rstrip("/")
+            space_url
+            or os.getenv("HF_FLUX_SPACE_URL")
+            or self.DEFAULT_SPACE_URL
+        ).rstrip("/")
+
+        self.timeout = float(timeout)
+
+        self.hf_token = (
+            hf_token
+            or os.getenv("HF_TOKEN")
+            or os.getenv("HUGGINGFACE_TOKEN")
         )
 
-        self.timeout = int(
-            timeout or 180
+        self.session = requests.Session()
+
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "PamelaAI/1.0 "
+                    "HuggingFaceImageProvider"
+                )
+            }
         )
-
-        self.hf_token = hf_token
-
-    async def available(self) -> bool:
-        return bool(self.space_url)
-
-    # =========================================================
-    # HEADERS
-    # =========================================================
-
-    def _headers(self) -> dict[str, str]:
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "pamela-ai/1.0",
-        }
 
         if self.hf_token:
-            headers["Authorization"] = (
-                f"Bearer {self.hf_token}"
+            self.session.headers.update(
+                {
+                    "Authorization": (
+                        f"Bearer {self.hf_token}"
+                    )
+                }
             )
 
-        return headers
-
-    def _sse_headers(self) -> dict[str, str]:
-        headers = self._headers()
-
-        headers["Accept"] = (
-            "text/event-stream"
-        )
-
-        headers["Cache-Control"] = (
-            "no-cache"
-        )
-
-        return headers
+        self._api_info: dict[str, Any] | None = None
+        self._endpoint: str | None = None
+        self._endpoint_parameters: list[dict[str, Any]] = []
 
     # =========================================================
-    # UTILS
+    # URL / HTTP HELPERS
     # =========================================================
 
-    @staticmethod
-    def _safe_json(
-        value,
-        limit: int = 2500,
-    ) -> str:
-        try:
-            text = json.dumps(
-                value,
-                ensure_ascii=False,
-                default=str,
+    def _url(self, path: str) -> str:
+        if not path.startswith("/"):
+            path = "/" + path
+
+        return f"{self.space_url}{path}"
+
+    def _request_timeout(self) -> tuple[float, float]:
+        """
+        Timeout separado para conexão e leitura.
+
+        O Space pode precisar de algum tempo para acordar a
+        ZeroGPU / carregar o modelo.
+        """
+
+        connect_timeout = min(30.0, self.timeout)
+
+        read_timeout = max(
+            60.0,
+            self.timeout,
+        )
+
+        return connect_timeout, read_timeout
+
+    # =========================================================
+    # API DISCOVERY
+    # =========================================================
+
+    def _get_api_info(self) -> dict[str, Any]:
+        """
+        Consulta a API atual do Gradio.
+
+        Endpoint:
+
+            GET /gradio_api/info?all_endpoints=true
+
+        Não usamos /infer diretamente porque o nome público
+        do endpoint pode mudar.
+        """
+
+        response = self.session.get(
+            self._url(
+                "/gradio_api/info?all_endpoints=true"
+            ),
+            timeout=self._request_timeout(),
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                "Hugging Face API info failed: "
+                f"HTTP {response.status_code}: "
+                f"{response.text[:2000]}"
             )
 
-        except Exception:
-            text = repr(value)
-
-        return text[:limit]
-
-    @staticmethod
-    def _safe_int(
-        value,
-        default: int,
-    ) -> int:
         try:
-            return int(value)
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Hugging Face returned invalid JSON from "
+                "/gradio_api/info"
+            ) from exc
 
-        except (
-            TypeError,
-            ValueError,
-        ):
-            return default
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                "Hugging Face returned an invalid API info object."
+            )
 
-    @staticmethod
-    def _safe_float(
-        value,
-        default: float,
-    ) -> float:
-        try:
-            return float(value)
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            return default
+        return data
 
     @staticmethod
-    def _extract_error_message(
-        value,
-    ) -> str | None:
+    def _parameter_names(
+        endpoint: dict[str, Any],
+    ) -> set[str]:
+        """
+        Extrai os nomes dos parâmetros de um endpoint.
 
-        if value is None:
-            return None
+        Gradio pode representar os parâmetros de maneiras
+        ligeiramente diferentes entre versões.
+        """
 
-        if isinstance(
-            value,
-            str,
-        ):
-            text = value.strip()
+        names: set[str] = set()
 
-            if text:
-                return text
+        parameters = endpoint.get(
+            "parameters",
+            [],
+        )
 
-            return None
-
-        if isinstance(
-            value,
-            dict,
-        ):
-
-            for key in (
-                "error",
-                "message",
-                "detail",
-                "msg",
-                "exception",
-                "title",
-            ):
-
-                candidate = value.get(
-                    key
-                )
-
-                if candidate is None:
+        if isinstance(parameters, list):
+            for parameter in parameters:
+                if not isinstance(parameter, dict):
                     continue
 
-                if isinstance(
-                    candidate,
-                    str,
-                ):
+                name = parameter.get("parameter_name")
 
-                    text = (
-                        candidate.strip()
-                    )
+                if name:
+                    names.add(str(name))
 
-                    if text:
-                        return text
+                name = parameter.get("name")
 
-                else:
+                if name:
+                    names.add(str(name))
 
-                    try:
-                        return json.dumps(
-                            candidate,
-                            ensure_ascii=False,
-                            default=str,
-                        )
+        return names
 
-                    except Exception:
-                        return str(
-                            candidate
-                        )
+    @staticmethod
+    def _score_endpoint(
+        endpoint: dict[str, Any],
+    ) -> int:
+        """
+        Calcula o quanto um endpoint parece ser o infer()
+        do FLUX.2 Klein 4B.
 
-            return None
+        Quanto maior, melhor.
+        """
 
-        if isinstance(
-            value,
-            list,
-        ):
+        names = {
+            name.lower()
+            for name in HuggingFaceImageProvider._parameter_names(
+                endpoint
+            )
+        }
 
-            for item in value:
+        score = 0
 
-                message = (
-                    HuggingFaceImageProvider
-                    ._extract_error_message(
-                        item
+        required = {
+            "prompt",
+            "input_images",
+            "mode_choice",
+            "seed",
+            "randomize_seed",
+            "width",
+            "height",
+            "num_inference_steps",
+            "guidance_scale",
+            "prompt_upsampling",
+        }
+
+        for name in required:
+            if name in names:
+                score += 10
+
+        # Alguns endpoints podem não expor input_images
+        # de maneira tradicional quando não há imagem.
+        if "prompt" in names:
+            score += 30
+
+        if "mode_choice" in names:
+            score += 20
+
+        if "guidance_scale" in names:
+            score += 10
+
+        return score
+
+    def _discover_endpoint(self) -> str:
+        """
+        Descobre automaticamente o endpoint do FLUX.2 Klein.
+
+        Retorna uma string adequada para:
+
+            /gradio_api/call/v2/{endpoint}
+        """
+
+        info = self._get_api_info()
+
+        self._api_info = info
+
+        candidates: list[
+            tuple[int, str, dict[str, Any]]
+        ] = []
+
+        # -----------------------------------------------------
+        # ENDPOINTS NOMEADOS
+        # -----------------------------------------------------
+
+        named = info.get(
+            "named_endpoints",
+            {},
+        )
+
+        if isinstance(named, dict):
+            for endpoint_name, endpoint_data in named.items():
+                if not isinstance(endpoint_data, dict):
+                    continue
+
+                score = self._score_endpoint(
+                    endpoint_data
+                )
+
+                if score <= 0:
+                    continue
+
+                clean_name = str(
+                    endpoint_name
+                ).strip("/")
+
+                candidates.append(
+                    (
+                        score,
+                        clean_name,
+                        endpoint_data,
                     )
                 )
 
-                if message:
-                    return message
+        # -----------------------------------------------------
+        # ENDPOINTS NÃO NOMEADOS
+        # -----------------------------------------------------
 
-        return None
+        unnamed = info.get(
+            "unnamed_endpoints",
+            {},
+        )
+
+        if isinstance(unnamed, dict):
+            for endpoint_id, endpoint_data in unnamed.items():
+                if not isinstance(endpoint_data, dict):
+                    continue
+
+                score = self._score_endpoint(
+                    endpoint_data
+                )
+
+                if score <= 0:
+                    continue
+
+                candidates.append(
+                    (
+                        score,
+                        str(endpoint_id),
+                        endpoint_data,
+                    )
+                )
+
+        if not candidates:
+            # Última tentativa usando dependencies, porque
+            # algumas versões do Gradio expõem essa informação
+            # de forma diferente.
+            dependencies = info.get(
+                "dependencies",
+                [],
+            )
+
+            if isinstance(dependencies, list):
+                for index, dependency in enumerate(
+                    dependencies
+                ):
+                    if not isinstance(
+                        dependency,
+                        dict,
+                    ):
+                        continue
+
+                    score = self._score_endpoint(
+                        dependency
+                    )
+
+                    if score <= 0:
+                        continue
+
+                    endpoint_name = dependency.get(
+                        "api_name"
+                    )
+
+                    if endpoint_name:
+                        endpoint_name = str(
+                            endpoint_name
+                        ).strip("/")
+
+                    else:
+                        endpoint_name = str(index)
+
+                    candidates.append(
+                        (
+                            score,
+                            endpoint_name,
+                            dependency,
+                        )
+                    )
+
+        if not candidates:
+            available = self._summarize_api_info(info)
+
+            raise RuntimeError(
+                "Não foi possível localizar o endpoint "
+                "do FLUX.2 Klein 4B no Space oficial.\n"
+                f"Endpoints encontrados:\n{available}"
+            )
+
+        candidates.sort(
+            key=lambda item: item[0],
+            reverse=True,
+        )
+
+        score, endpoint_name, endpoint_data = (
+            candidates[0]
+        )
+
+        self._endpoint = endpoint_name
+
+        parameters = endpoint_data.get(
+            "parameters",
+            [],
+        )
+
+        if isinstance(parameters, list):
+            self._endpoint_parameters = parameters
+
+        else:
+            self._endpoint_parameters = []
+
+        print(
+            "[IMAGE] Hugging Face: endpoint descoberto: "
+            f"/{endpoint_name} "
+            f"(score={score})",
+            flush=True,
+        )
+
+        print(
+            "[IMAGE] Hugging Face: parâmetros: "
+            + ", ".join(
+                sorted(
+                    self._parameter_names(
+                        endpoint_data
+                    )
+                )
+            ),
+            flush=True,
+        )
+
+        return endpoint_name
+
+    @staticmethod
+    def _summarize_api_info(
+        info: dict[str, Any],
+    ) -> str:
+        lines: list[str] = []
+
+        named = info.get(
+            "named_endpoints",
+            {},
+        )
+
+        if isinstance(named, dict):
+            for name, endpoint in named.items():
+                parameters = (
+                    HuggingFaceImageProvider
+                    ._parameter_names(endpoint)
+                    if isinstance(
+                        endpoint,
+                        dict,
+                    )
+                    else set()
+                )
+
+                lines.append(
+                    f"/{name}: "
+                    f"{sorted(parameters)}"
+                )
+
+        unnamed = info.get(
+            "unnamed_endpoints",
+            {},
+        )
+
+        if isinstance(unnamed, dict):
+            for name, endpoint in unnamed.items():
+                parameters = (
+                    HuggingFaceImageProvider
+                    ._parameter_names(endpoint)
+                    if isinstance(
+                        endpoint,
+                        dict,
+                    )
+                    else set()
+                )
+
+                lines.append(
+                    f"/{name}: "
+                    f"{sorted(parameters)}"
+                )
+
+        if not lines:
+            return "(nenhum endpoint encontrado)"
+
+        return "\n".join(lines)
 
     # =========================================================
-    # GENERATION PARAMETERS
+    # FILE UPLOAD
     # =========================================================
 
-    @classmethod
-    def _generation_parameters(
-        cls,
-        request=None,
-    ) -> dict:
+    def _upload_file(
+        self,
+        path: str | Path,
+    ) -> str:
+        """
+        Faz upload de uma imagem para o armazenamento temporário
+        do Space.
 
-        width = 1024
-        height = 1024
+        Gradio 6 utiliza:
 
-        steps = 4
+            POST /gradio_api/upload
 
-        guidance_scale = 1.0
+        com multipart/form-data.
+        """
 
-        seed = 42
+        file_path = Path(path)
 
-        requested_style = None
-        requested_seed = None
-
-        if request is not None:
-
-            width = getattr(
-                request,
-                "width",
-                1024,
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"Imagem de referência não encontrada: "
+                f"{file_path}"
             )
 
-            height = getattr(
-                request,
-                "height",
-                1024,
+        if not file_path.is_file():
+            raise ValueError(
+                f"O caminho de referência não é um arquivo: "
+                f"{file_path}"
             )
 
-            requested_style = getattr(
-                request,
-                "style",
-                None,
+        mime_type, _ = mimetypes.guess_type(
+            file_path.name
+        )
+
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        print(
+            "[IMAGE] Hugging Face: enviando imagem "
+            f"de referência: {file_path}",
+            flush=True,
+        )
+
+        with file_path.open(
+            "rb"
+        ) as file_handle:
+
+            response = self.session.post(
+                self._url(
+                    "/gradio_api/upload"
+                ),
+                files={
+                    "files": (
+                        file_path.name,
+                        file_handle,
+                        mime_type,
+                    )
+                },
+                timeout=self._request_timeout(),
             )
 
-            requested_seed = getattr(
-                request,
-                "seed",
-                None,
+        if response.status_code != 200:
+            raise RuntimeError(
+                "Hugging Face file upload failed: "
+                f"HTTP {response.status_code}: "
+                f"{response.text[:2000]}"
             )
 
-        width = cls._safe_int(
-            width,
+        try:
+            uploaded = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Hugging Face upload returned invalid JSON."
+            ) from exc
+
+        if not isinstance(
+            uploaded,
+            list,
+        ) or not uploaded:
+            raise RuntimeError(
+                "Hugging Face upload returned no file path."
+            )
+
+        uploaded_path = uploaded[0]
+
+        if isinstance(
+            uploaded_path,
+            dict,
+        ):
+            uploaded_path = (
+                uploaded_path.get("path")
+                or uploaded_path.get("url")
+            )
+
+        if not uploaded_path:
+            raise RuntimeError(
+                "Hugging Face upload returned an empty "
+                "file path."
+            )
+
+        return str(uploaded_path)
+
+    # =========================================================
+    # INPUT IMAGE SERIALIZATION
+    # =========================================================
+
+    @staticmethod
+    def _file_data(
+        path: str,
+        original_name: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Converte um caminho retornado pelo Gradio upload
+        em FileData.
+        """
+
+        return {
+            "path": path,
+            "meta": {
+                "_type": "gradio.FileData"
+            },
+            "orig_name": (
+                original_name
+                or Path(path).name
+            ),
+        }
+
+    def _prepare_input_images(
+        self,
+        reference_images: Any,
+    ) -> list[dict[str, Any]]:
+        """
+        Converte reference_images para a estrutura esperada
+        pelo Gallery do Space oficial.
+
+        Aceita:
+            - string
+            - Path
+            - lista/tupla de strings
+            - lista/tupla de Paths
+        """
+
+        if not reference_images:
+            return []
+
+        if isinstance(
+            reference_images,
+            (str, Path),
+        ):
+            reference_images = [
+                reference_images
+            ]
+
+        if not isinstance(
+            reference_images,
+            (list, tuple),
+        ):
+            return []
+
+        result: list[
+            dict[str, Any]
+        ] = []
+
+        for item in reference_images:
+            if not item:
+                continue
+
+            # -------------------------------------------------
+            # Caminho local
+            # -------------------------------------------------
+
+            if isinstance(
+                item,
+                Path,
+            ):
+                uploaded = self._upload_file(
+                    item
+                )
+
+                result.append(
+                    self._file_data(
+                        uploaded,
+                        item.name,
+                    )
+                )
+
+                continue
+
+            if isinstance(
+                item,
+                str,
+            ):
+                # URL pública
+                if item.startswith(
+                    "http://"
+                ) or item.startswith(
+                    "https://"
+                ):
+                    result.append(
+                        {
+                            "path": item,
+                            "meta": {
+                                "_type": (
+                                    "gradio.FileData"
+                                )
+                            },
+                            "orig_name": Path(
+                                item.split("?")[0]
+                            ).name,
+                        }
+                    )
+
+                    continue
+
+                local_path = Path(item)
+
+                if local_path.exists():
+                    uploaded = self._upload_file(
+                        local_path
+                    )
+
+                    result.append(
+                        self._file_data(
+                            uploaded,
+                            local_path.name,
+                        )
+                    )
+
+                    continue
+
+            # -------------------------------------------------
+            # Estrutura já serializada
+            # -------------------------------------------------
+
+            if isinstance(
+                item,
+                dict,
+            ):
+                if item.get("path"):
+                    result.append(item)
+
+        return result
+
+    # =========================================================
+    # ENDPOINT PAYLOAD
+    # =========================================================
+
+    def _build_payload(
+        self,
+        prompt: str,
+        request: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Monta os parâmetros do endpoint oficial.
+
+        A estrutura principal é baseada diretamente no infer()
+        atual do Space oficial:
+        
+            prompt
+            input_images
+            mode_choice
+            seed
+            randomize_seed
+            width
+            height
+            num_inference_steps
+            guidance_scale
+            prompt_upsampling
+        """
+
+        width = self._get_request_value(
+            request,
+            "width",
             1024,
         )
 
-        height = cls._safe_int(
-            height,
+        height = self._get_request_value(
+            request,
+            "height",
             1024,
         )
 
+        seed = self._get_request_value(
+            request,
+            "seed",
+            42,
+        )
+
+        mode_choice = self._get_request_value(
+            request,
+            "mode_choice",
+            self.DEFAULT_MODE,
+        )
+
+        steps = self._get_request_value(
+            request,
+            "num_inference_steps",
+            self.DEFAULT_STEPS,
+        )
+
+        guidance = self._get_request_value(
+            request,
+            "guidance_scale",
+            self.DEFAULT_GUIDANCE,
+        )
+
+        randomize_seed = self._get_request_value(
+            request,
+            "randomize_seed",
+            False,
+        )
+
+        prompt_upsampling = self._get_request_value(
+            request,
+            "prompt_upsampling",
+            False,
+        )
+
+        reference_images = self._get_request_value(
+            request,
+            "reference_images",
+            None,
+        )
+
+        input_images = (
+            self._prepare_input_images(
+                reference_images
+            )
+        )
+
+        if randomize_seed:
+            seed = random.randint(
+                0,
+                self.MAX_SEED,
+            )
+
         # -----------------------------------------------------
-        # O Space oficial aceita:
-        #
-        # mínimo: 256
-        # máximo: 1024
-        #
-        # e trabalha com múltiplos de 8.
+        # Sanitização
         # -----------------------------------------------------
+
+        try:
+            width = int(width)
+        except Exception:
+            width = 1024
+
+        try:
+            height = int(height)
+        except Exception:
+            height = 1024
+
+        try:
+            steps = int(steps)
+        except Exception:
+            steps = self.DEFAULT_STEPS
+
+        try:
+            guidance = float(guidance)
+        except Exception:
+            guidance = self.DEFAULT_GUIDANCE
+
+        try:
+            seed = int(seed)
+        except Exception:
+            seed = 42
 
         width = max(
             256,
@@ -318,248 +867,510 @@ class HuggingFaceImageProvider(ImageProvider):
             ),
         )
 
-        width = max(
-            256,
+        # FLUX.2 Klein aceita dimensões múltiplas de 8.
+        width = (
+            round(width / 8) * 8
+        )
+
+        height = (
+            round(height / 8) * 8
+        )
+
+        steps = max(
+            1,
             min(
-                1024,
-                round(width / 8) * 8,
+                100,
+                steps,
             ),
         )
 
-        height = max(
-            256,
+        guidance = max(
+            0.0,
             min(
-                1024,
-                round(height / 8) * 8,
+                10.0,
+                guidance,
             ),
         )
 
-        if requested_seed is not None:
-
-            seed = cls._safe_int(
-                requested_seed,
-                42,
-            )
-
-        # -----------------------------------------------------
-        # Modo oficial padrão
-        # -----------------------------------------------------
-
-        mode_choice = (
-            cls.MODE_DISTILLED
+        seed = max(
+            0,
+            min(
+                self.MAX_SEED,
+                seed,
+            ),
         )
 
         # -----------------------------------------------------
-        # Caso o request peça explicitamente
-        # o modelo Base.
+        # Prompt
         # -----------------------------------------------------
 
-        if requested_style:
-
-            normalized = str(
-                requested_style
-            ).lower()
-
-            if (
-                "base"
-                in normalized
-                or "50"
-                in normalized
-            ):
-
-                mode_choice = (
-                    cls.MODE_BASE
-                )
-
-                steps = 50
-
-                guidance_scale = 4.0
+        final_prompt = str(
+            prompt or ""
+        ).strip()
 
         # -----------------------------------------------------
-        # Valores oficiais por modo
+        # Payload oficial
         # -----------------------------------------------------
 
-        if (
-            mode_choice
-            == cls.MODE_DISTILLED
-        ):
-
-            steps = 4
-
-            guidance_scale = 1.0
-
-        else:
-
-            steps = 50
-
-            guidance_scale = 4.0
-
-        return {
+        payload = {
+            "prompt": final_prompt,
+            "input_images": input_images,
+            "mode_choice": mode_choice,
+            "seed": seed,
+            "randomize_seed": bool(
+                randomize_seed
+            ),
             "width": width,
             "height": height,
-            "mode_choice": mode_choice,
-            "steps": steps,
-            "guidance_scale": guidance_scale,
-            "seed": seed,
-            "randomize_seed": False,
-            "prompt_upsampling": False,
+            "num_inference_steps": steps,
+            "guidance_scale": guidance,
+            "prompt_upsampling": bool(
+                prompt_upsampling
+            ),
         }
 
-    # =========================================================
-    # IMAGE RESULT EXTRACTION
-    # =========================================================
+        # -----------------------------------------------------
+        # Se descobrirmos que o endpoint atual não possui
+        # determinado campo, removemos esse campo.
+        # -----------------------------------------------------
 
-    @staticmethod
-    def _is_image_dict(
-        value,
-    ) -> bool:
-
-        if not isinstance(
-            value,
-            dict,
-        ):
-            return False
-
-        path = value.get(
-            "path"
-        )
-
-        url = value.get(
-            "url"
-        )
-
-        name = value.get(
-            "name"
-        )
-
-        mime = (
-            value.get(
-                "mime_type"
-            )
-            or value.get(
-                "mimeType"
-            )
-        )
-
-        if path or url or name:
-
-            if mime and str(
-                mime
-            ).startswith(
-                "image/"
-            ):
-                return True
-
-            return True
-
-        return False
-
-    @classmethod
-    def _extract_image_info(
-        cls,
-        value,
-    ):
-        """
-        Extrai FileData do Gradio.
-
-        Exemplos aceitos:
-
-            {
-                "path": "...",
-                "url": "..."
+        if self._endpoint_parameters:
+            available = {
+                name
+                for name in (
+                    self._parameter_names(
+                        {
+                            "parameters": (
+                                self._endpoint_parameters
+                            )
+                        }
+                    )
+                )
             }
 
-        ou:
+            if available:
+                payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key in available
+                }
 
-            [
-                {
-                    "path": "...",
-                    "url": "..."
-                },
-                42
-            ]
+        return payload
+
+    @staticmethod
+    def _get_request_value(
+        request: Any | None,
+        name: str,
+        default: Any,
+    ) -> Any:
+        """
+        Lê um atributo de ImageRequest sem assumir se é
+        dataclass, Pydantic ou objeto comum.
         """
 
+        if request is None:
+            return default
+
+        if isinstance(
+            request,
+            dict,
+        ):
+            value = request.get(name)
+
+            if value is None:
+                return default
+
+            return value
+
+        try:
+            value = getattr(
+                request,
+                name,
+            )
+        except Exception:
+            return default
+
         if value is None:
+            return default
+
+        return value
+
+    # =========================================================
+    # API CALL
+    # =========================================================
+
+    def _call_generation(
+        self,
+        payload: dict[str, Any],
+    ) -> str:
+        """
+        Executa a geração através do endpoint v2 do Gradio.
+
+        POST:
+
+            /gradio_api/call/v2/{endpoint}
+
+        Depois:
+
+            GET /gradio_api/call/{endpoint}/{event_id}
+
+        O uso de /call/v2 evita depender da antiga estrutura
+        de payload {"data": [...]}.
+        """
+
+        if not self._endpoint:
+            self._discover_endpoint()
+
+        assert self._endpoint is not None
+
+        endpoint = self._endpoint.strip("/")
+
+        print(
+            "[IMAGE] Hugging Face: POST "
+            f"/gradio_api/call/v2/{endpoint}",
+            flush=True,
+        )
+
+        print(
+            "[IMAGE] Hugging Face: payload="
+            + self._safe_json(
+                payload
+            ),
+            flush=True,
+        )
+
+        response = self.session.post(
+            self._url(
+                f"/gradio_api/call/v2/{endpoint}"
+            ),
+            json=payload,
+            timeout=self._request_timeout(),
+        )
+
+        if response.status_code != 200:
+            body = response.text[:5000]
+
+            raise RuntimeError(
+                "Hugging Face generation POST failed: "
+                f"HTTP {response.status_code}: "
+                f"{body}"
+            )
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                "Hugging Face generation returned "
+                "invalid JSON."
+            ) from exc
+
+        event_id = (
+            data.get("event_id")
+            if isinstance(
+                data,
+                dict,
+            )
+            else None
+        )
+
+        if not event_id:
+            # Algumas versões retornam o event_id em
+            # estruturas diferentes.
+            if isinstance(
+                data,
+                str,
+            ):
+                event_id = data.strip()
+
+        if not event_id:
+            raise RuntimeError(
+                "Hugging Face did not return an event_id.\n"
+                f"Response: {str(data)[:2000]}"
+            )
+
+        print(
+            "[IMAGE] Hugging Face: event_id="
+            f"{event_id}",
+            flush=True,
+        )
+
+        return self._poll_event(
+            endpoint,
+            str(event_id),
+        )
+
+    # =========================================================
+    # SSE
+    # =========================================================
+
+    def _poll_event(
+        self,
+        endpoint: str,
+        event_id: str,
+    ) -> str:
+        """
+        Lê o SSE retornado pelo Gradio até receber:
+
+            event: complete
+
+        ou um evento de erro.
+        """
+
+        url = self._url(
+            f"/gradio_api/call/"
+            f"{endpoint}/{event_id}"
+        )
+
+        print(
+            "[IMAGE] Hugging Face: polling SSE "
+            f"{url}",
+            flush=True,
+        )
+
+        started = time.monotonic()
+
+        try:
+            with self.session.get(
+                url,
+                stream=True,
+                timeout=self._request_timeout(),
+            ) as response:
+
+                if response.status_code != 200:
+                    body = response.text[:5000]
+
+                    raise RuntimeError(
+                        "Hugging Face SSE failed: "
+                        f"HTTP {response.status_code}: "
+                        f"{body}"
+                    )
+
+                event_name: str | None = None
+                event_data: str | None = None
+
+                for raw_line in response.iter_lines(
+                    decode_unicode=True
+                ):
+                    if (
+                        time.monotonic()
+                        - started
+                        > self.timeout
+                    ):
+                        raise TimeoutError(
+                            "Timeout aguardando geração "
+                            "do Hugging Face."
+                        )
+
+                    if raw_line is None:
+                        continue
+
+                    line = str(
+                        raw_line
+                    )
+
+                    # Evento completo.
+                    if line.startswith(
+                        "event:"
+                    ):
+                        event_name = (
+                            line[6:]
+                            .strip()
+                        )
+                        continue
+
+                    # Dados do evento.
+                    if line.startswith(
+                        "data:"
+                    ):
+                        event_data = (
+                            line[5:]
+                            .strip()
+                        )
+                        continue
+
+                    # Linha vazia encerra o evento.
+                    if not line.strip():
+                        if event_name:
+                            result = (
+                                self._handle_sse_event(
+                                    event_name,
+                                    event_data,
+                                )
+                            )
+
+                            if result is not None:
+                                return result
+
+                        event_name = None
+                        event_data = None
+
+                # Alguns servidores podem encerrar o stream
+                # imediatamente após enviar o evento.
+                if event_name:
+                    result = (
+                        self._handle_sse_event(
+                            event_name,
+                            event_data,
+                        )
+                    )
+
+                    if result is not None:
+                        return result
+
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                "Erro de rede durante SSE do Hugging Face: "
+                f"{exc}"
+            ) from exc
+
+        raise RuntimeError(
+            "Hugging Face encerrou o SSE sem retornar "
+            "uma imagem."
+        )
+
+    def _handle_sse_event(
+        self,
+        event_name: str,
+        event_data: str | None,
+    ) -> str | None:
+        """
+        Processa um evento SSE.
+
+        O evento final normalmente é:
+
+            event: complete
+            data: [...]
+
+        """
+
+        print(
+            "[IMAGE] Hugging Face: SSE event="
+            f"{event_name} "
+            f"data={str(event_data)[:1000]}",
+            flush=True,
+        )
+
+        if event_name.lower() in {
+            "error",
+            "cancel",
+        }:
+            raise RuntimeError(
+                "Hugging Face SSE returned "
+                f"{event_name}: "
+                f"{event_data}"
+            )
+
+        if event_name.lower() not in {
+            "complete",
+            "done",
+        }:
             return None
 
+        if not event_data:
+            raise RuntimeError(
+                "Hugging Face returned a complete "
+                "SSE event without data."
+            )
+
+        try:
+            data = json.loads(
+                event_data
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Hugging Face returned invalid "
+                "SSE completion data."
+            ) from exc
+
+        return self._extract_image_reference(
+            data
+        )
+
+    # =========================================================
+    # RESULT PARSING
+    # =========================================================
+
+    def _extract_image_reference(
+        self,
+        data: Any,
+    ) -> str:
+        """
+        Extrai o arquivo de imagem do resultado do Gradio.
+
+        O Space oficial retorna a imagem como primeiro output
+        da função infer().
+        """
+
         # -----------------------------------------------------
-        # Dictionary
+        # Primeiro output
+        # -----------------------------------------------------
+
+        value = data
+
+        if isinstance(
+            data,
+            (list, tuple),
+        ):
+            if not data:
+                raise RuntimeError(
+                    "Hugging Face returned an empty "
+                    "completion result."
+                )
+
+            value = data[0]
+
+        # -----------------------------------------------------
+        # Gallery / lista aninhada
+        # -----------------------------------------------------
+
+        if isinstance(
+            value,
+            (list, tuple),
+        ):
+            if not value:
+                raise RuntimeError(
+                    "Hugging Face returned an empty "
+                    "image gallery."
+                )
+
+            value = value[0]
+
+        # -----------------------------------------------------
+        # FileData
         # -----------------------------------------------------
 
         if isinstance(
             value,
             dict,
         ):
-
-            if cls._is_image_dict(
-                value
-            ):
-
-                return {
-                    "url": value.get(
-                        "url"
-                    ),
-                    "path": value.get(
-                        "path"
-                    ),
-                    "name": value.get(
-                        "name"
-                    ),
-                }
-
             for key in (
+                "path",
+                "url",
                 "image",
-                "images",
-                "output",
-                "outputs",
+                "file",
+                "video",
+            ):
+                candidate = value.get(key)
+
+                if candidate:
+                    return self._normalize_remote_file(
+                        str(candidate)
+                    )
+
+            # Estrutura aninhada.
+            for key in (
                 "data",
-                "result",
-                "results",
-                "gallery",
                 "value",
             ):
+                nested = value.get(key)
 
-                if key not in value:
-                    continue
-
-                nested = (
-                    cls._extract_image_info(
-                        value.get(
-                            key
+                if nested:
+                    try:
+                        return self._extract_image_reference(
+                            nested
                         )
-                    )
-                )
-
-                if nested:
-                    return nested
-
-            return None
-
-        # -----------------------------------------------------
-        # List / tuple
-        # -----------------------------------------------------
-
-        if isinstance(
-            value,
-            (
-                list,
-                tuple,
-            ),
-        ):
-
-            for item in value:
-
-                nested = (
-                    cls._extract_image_info(
-                        item
-                    )
-                )
-
-                if nested:
-                    return nested
-
-            return None
+                    except Exception:
+                        pass
 
         # -----------------------------------------------------
         # String
@@ -569,1004 +1380,385 @@ class HuggingFaceImageProvider(ImageProvider):
             value,
             str,
         ):
+            return self._normalize_remote_file(
+                value
+            )
 
-            text = value.strip()
+        raise RuntimeError(
+            "Não foi possível localizar a imagem "
+            "na resposta do Hugging Face.\n"
+            f"Resposta: {str(data)[:5000]}"
+        )
 
-            if not text:
-                return None
+    def _normalize_remote_file(
+        self,
+        value: str,
+    ) -> str:
+        """
+        Normaliza:
+            - URL HTTP
+            - caminho retornado pelo Gradio
+            - caminho relativo
+        """
 
-            lowered = text.lower()
+        value = value.strip()
 
-            if (
-                lowered.startswith(
-                    "http://"
-                )
-                or lowered.startswith(
-                    "https://"
-                )
-                or lowered.startswith(
-                    "/"
-                )
-                or lowered.endswith(
-                    (
-                        ".png",
-                        ".jpg",
-                        ".jpeg",
-                        ".webp",
-                    )
-                )
-            ):
+        if not value:
+            raise RuntimeError(
+                "Hugging Face returned an empty image path."
+            )
 
-                if lowered.startswith(
-                    (
-                        "http://",
-                        "https://",
-                    )
-                ):
+        if value.startswith(
+            "http://"
+        ) or value.startswith(
+            "https://"
+        ):
+            return value
 
-                    return {
-                        "url": text,
-                        "path": None,
-                        "name": None,
-                    }
+        # Caminhos do cache do Gradio precisam ser buscados
+        # pelo endpoint /gradio_api/file=...
+        encoded = requests.utils.quote(
+            value,
+            safe="",
+        )
 
-                return {
-                    "url": None,
-                    "path": text,
-                    "name": None,
-                }
-
-        return None
+        return self._url(
+            f"/gradio_api/file={encoded}"
+        )
 
     # =========================================================
     # IMAGE DOWNLOAD
     # =========================================================
 
-    async def _download_image(
+    def _download_image(
         self,
-        client: httpx.AsyncClient,
-        image_url: str | None,
-        image_path: str | None,
-        image_name: str | None = None,
-    ) -> bytes | None:
-
-        candidates: list[str] = []
-
-        def add_candidate(
-            value: str | None,
-        ):
-
-            if not value:
-                return
-
-            value = str(
-                value
-            ).strip()
-
-            if not value:
-                return
-
-            # -------------------------------------------------
-            # URL absoluta
-            # -------------------------------------------------
-
-            if value.startswith(
-                (
-                    "http://",
-                    "https://",
-                )
-            ):
-
-                candidates.append(
-                    value
-                )
-
-                return
-
-            # -------------------------------------------------
-            # Caminho Gradio
-            # -------------------------------------------------
-
-            normalized = (
-                value.lstrip("/")
-            )
-
-            encoded = quote(
-                normalized,
-                safe="",
-            )
-
-            candidates.append(
-                f"{self.space_url}"
-                f"/gradio_api/file="
-                f"{encoded}"
-            )
-
-            candidates.append(
-                f"{self.space_url}"
-                f"/file="
-                f"{encoded}"
-            )
-
-            # -------------------------------------------------
-            # Caminho direto
-            # -------------------------------------------------
-
-            if value.startswith(
-                "/"
-            ):
-
-                candidates.append(
-                    f"{self.space_url}"
-                    f"{value}"
-                )
-
-        add_candidate(
-            image_url
-        )
-
-        add_candidate(
-            image_path
-        )
-
-        add_candidate(
-            image_name
-        )
-
-        candidates = list(
-            dict.fromkeys(
-                candidates
-            )
-        )
-
-        # -----------------------------------------------------
-        # Tenta cada candidato
-        # -----------------------------------------------------
-
-        for candidate in candidates:
-
-            try:
-
-                response = await client.get(
-                    candidate,
-                    headers=self._headers(),
-                )
-
-                if response.status_code != 200:
-                    continue
-
-                content = response.content
-
-                content_type = (
-                    response.headers.get(
-                        "content-type",
-                        "",
-                    ).lower()
-                )
-
-                # -------------------------------------------------
-                # PNG
-                # -------------------------------------------------
-
-                if content.startswith(
-                    b"\x89PNG\r\n\x1a\n"
-                ):
-
-                    return content
-
-                # -------------------------------------------------
-                # JPEG
-                # -------------------------------------------------
-
-                if content.startswith(
-                    b"\xff\xd8"
-                ):
-
-                    return content
-
-                # -------------------------------------------------
-                # WEBP
-                # -------------------------------------------------
-
-                if (
-                    len(content) >= 12
-                    and content[:4]
-                    == b"RIFF"
-                    and content[8:12]
-                    == b"WEBP"
-                ):
-
-                    return content
-
-                # -------------------------------------------------
-                # MIME
-                # -------------------------------------------------
-
-                if content_type.startswith(
-                    "image/"
-                ):
-
-                    return content
-
-            except (
-                httpx.HTTPError,
-                OSError,
-            ):
-
-                continue
-
-        return None
-
-    # =========================================================
-    # PROCESS SSE EVENT
-    # =========================================================
-
-    async def _process_sse_event(
-        self,
-        client: httpx.AsyncClient,
-        event_name: str,
-        raw_data: str,
-    ) -> tuple[
-        str,
-        ImageResult | None,
-    ]:
-
-        event_name = (
-            event_name
-            or "message"
-        )
-
-        raw_data = (
-            raw_data.strip()
-        )
-
-        if not raw_data:
-
-            return (
-                "continue",
-                None,
-            )
-
-        # -----------------------------------------------------
-        # JSON
-        # -----------------------------------------------------
-
-        try:
-
-            event_data = json.loads(
-                raw_data
-            )
-
-        except json.JSONDecodeError:
-
-            event_data = raw_data
-
-        print(
-            "[IMAGE] Hugging Face: "
-            f"SSE event={event_name!r} "
-            f"data="
-            f"{self._safe_json(event_data, 1800)}",
-            flush=True,
-        )
-
-        # =====================================================
-        # ERROR
-        # =====================================================
-
-        if event_name == "error":
-
-            message = (
-                self._extract_error_message(
-                    event_data
-                )
-            )
-
-            if not message:
-
-                if (
-                    raw_data.lower()
-                    == "null"
-                ):
-
-                    message = (
-                        "Gradio returned "
-                        "an SSE error event "
-                        "with data=null"
-                    )
-
-                else:
-
-                    message = raw_data
-
-            return (
-                "error",
-                ImageResult(
-                    False,
-                    self.name,
-                    error=(
-                        "sse_generation_error: "
-                        f"{message}"
-                    ),
-                ),
-            )
-
-        # =====================================================
-        # ERROR EMBUTIDO
-        # =====================================================
-
-        if isinstance(
-            event_data,
-            dict,
-        ):
-
-            explicit_error = any(
-                event_data.get(
-                    key
-                )
-                is not None
-                for key in (
-                    "error",
-                    "exception",
-                    "detail",
-                )
-            )
-
-            if explicit_error:
-
-                message = (
-                    self._extract_error_message(
-                        event_data
-                    )
-                )
-
-                return (
-                    "error",
-                    ImageResult(
-                        False,
-                        self.name,
-                        error=(
-                            "sse_generation_error: "
-                            f"{message or self._safe_json(event_data)}"
-                        ),
-                    ),
-                )
-
-        # =====================================================
-        # IMAGE
-        # =====================================================
-
-        image_info = (
-            self._extract_image_info(
-                event_data
-            )
-        )
-
-        if not image_info:
-
-            return (
-                "continue",
-                None,
-            )
-
-        image_url = image_info.get(
-            "url"
-        )
-
-        image_path = image_info.get(
-            "path"
-        )
-
-        image_name = image_info.get(
-            "name"
-        )
-
-        image_bytes = (
-            await self._download_image(
-                client,
-                image_url,
-                image_path,
-                image_name,
-            )
-        )
-
-        if image_bytes:
-
-            return (
-                "success",
-                ImageResult(
-                    True,
-                    self.name,
-                    image_url=(
-                        image_url
-                        or image_path
-                        or image_name
-                    ),
-                    image_bytes=image_bytes,
-                ),
-            )
-
-        return (
-            "error",
-            ImageResult(
-                False,
-                self.name,
-                image_url=(
-                    image_url
-                    or image_path
-                    or image_name
-                ),
-                error=(
-                    "image_download_failed: "
-                    f"url={image_url!r} "
-                    f"path={image_path!r} "
-                    f"name={image_name!r}"
-                ),
-            ),
-        )
-
-    # =========================================================
-    # POST /infer
-    # =========================================================
-
-    async def _submit_infer(
-        self,
-        client: httpx.AsyncClient,
-        prompt: str,
-        params: dict,
-    ) -> ImageResult:
-
+        image_reference: str,
+    ) -> bytes:
         """
-        Envia exatamente a assinatura atual do
-        infer() do Space oficial.
+        Baixa a imagem gerada para bytes.
 
-        A ordem é:
-
-            1. prompt
-            2. input_images
-            3. mode_choice
-            4. seed
-            5. randomize_seed
-            6. width
-            7. height
-            8. num_inference_steps
-            9. guidance_scale
-            10. prompt_upsampling
+        O ImageService do projeto trabalha com image_bytes,
+        então não deixamos o caminho temporário do Space
+        atravessar o restante da arquitetura.
         """
 
-        # =====================================================
-        # IMPORTANTE
-        #
-        # Para T2I não enviamos None.
-        #
-        # O componente Gallery do Gradio recebe uma lista vazia.
-        # =====================================================
-
-        input_images = []
-
-        payload = {
-            "data": [
-                prompt,
-                input_images,
-                params["mode_choice"],
-                params["seed"],
-                params["randomize_seed"],
-                params["width"],
-                params["height"],
-                params["steps"],
-                params["guidance_scale"],
-                params["prompt_upsampling"],
-            ]
-        }
-
         print(
-            "[IMAGE] Hugging Face: "
-            "starting official "
-            "FLUX.2 Klein 4B generation",
+            "[IMAGE] Hugging Face: downloading result",
             flush=True,
         )
 
-        print(
-            "[IMAGE] Hugging Face: "
-            f"mode="
-            f"{params['mode_choice']!r} "
-            f"width="
-            f"{params['width']} "
-            f"height="
-            f"{params['height']} "
-            f"steps="
-            f"{params['steps']} "
-            f"guidance="
-            f"{params['guidance_scale']} "
-            f"seed="
-            f"{params['seed']} "
-            "randomize=False "
-            "reference=False",
-            flush=True,
-        )
-
-        print(
-            "[IMAGE] Hugging Face: "
-            "POST /gradio_api/call/infer",
-            flush=True,
-        )
-
-        try:
-
-            response = await client.post(
-                (
-                    f"{self.space_url}"
-                    "/gradio_api/call"
-                    f"{self.INFER_API_NAME}"
-                ),
-                json=payload,
-                headers=self._headers(),
-            )
-
-        except httpx.TimeoutException:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "gradio_post_timeout"
-                ),
-            )
-
-        except httpx.HTTPError as exc:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "gradio_post_http_error: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ),
-            )
-
-        body = response.text[:4000]
-
-        print(
-            "[IMAGE] Hugging Face: "
-            f"POST status="
-            f"{response.status_code} "
-            f"body="
-            f"{body[:1800]}",
-            flush=True,
+        response = self.session.get(
+            image_reference,
+            timeout=self._request_timeout(),
         )
 
         if response.status_code != 200:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    f"gradio_post_http_"
-                    f"{response.status_code}: "
-                    f"{body}"
-                ),
+            raise RuntimeError(
+                "Hugging Face image download failed: "
+                f"HTTP {response.status_code}: "
+                f"{response.text[:2000]}"
             )
 
-        # =====================================================
-        # EVENT ID
-        # =====================================================
+        content = response.content
 
-        try:
-
-            initial_data = response.json()
-
-        except json.JSONDecodeError:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "gradio_invalid_initial_json: "
-                    f"{body[:1500]}"
-                ),
+        if not content:
+            raise RuntimeError(
+                "Hugging Face returned an empty image."
             )
 
-        event_id = None
-
-        if isinstance(
-            initial_data,
-            dict,
-        ):
-
-            event_id = (
-                initial_data.get(
-                    "event_id"
-                )
-            )
-
-        if not event_id:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "gradio_no_event_id: "
-                    f"{self._safe_json(initial_data, 1800)}"
-                ),
-            )
-
-        print(
-            "[IMAGE] Hugging Face: "
-            f"SSE event_id={event_id}",
-            flush=True,
-        )
-
-        # =====================================================
-        # SSE
-        # =====================================================
-
-        return await self._read_sse(
-            client,
-            event_id,
-        )
+        return content
 
     # =========================================================
-    # SSE STREAM
+    # PUBLIC GENERATE
     # =========================================================
 
-    async def _read_sse(
+    def generate(
         self,
-        client: httpx.AsyncClient,
-        event_id: str,
-    ) -> ImageResult:
-
-        current_event: str | None = None
-
-        current_data_lines: list[
-            str
-        ] = []
-
-        url = (
-            f"{self.space_url}"
-            f"/gradio_api/call"
-            f"{self.INFER_API_NAME}"
-            f"/{event_id}"
-        )
-
-        try:
-
-            async with client.stream(
-                "GET",
-                url,
-                headers=self._sse_headers(),
-            ) as response:
-
-                print(
-                    "[IMAGE] Hugging Face: "
-                    f"SSE stream "
-                    f"status="
-                    f"{response.status_code}",
-                    flush=True,
-                )
-
-                if (
-                    response.status_code
-                    != 200
-                ):
-
-                    body = (
-                        await response.aread()
-                    )
-
-                    text = body.decode(
-                        "utf-8",
-                        errors="replace",
-                    )
-
-                    return ImageResult(
-                        False,
-                        self.name,
-                        error=(
-                            "sse_result_http_"
-                            f"{response.status_code}: "
-                            f"{text[:2500]}"
-                        ),
-                    )
-
-                # =================================================
-                # Ler stream
-                # =================================================
-
-                async for raw_line in (
-                    response.aiter_lines()
-                ):
-
-                    line = raw_line.rstrip(
-                        "\r"
-                    )
-
-                    # -------------------------------------------------
-                    # Evento terminou
-                    # -------------------------------------------------
-
-                    if line == "":
-
-                        if not current_data_lines:
-
-                            current_event = None
-
-                            continue
-
-                        raw_data = (
-                            "\n".join(
-                                current_data_lines
-                            ).strip()
-                        )
-
-                        event_name = (
-                            current_event
-                            or "message"
-                        )
-
-                        current_event = None
-
-                        current_data_lines = []
-
-                        status, result = (
-                            await self
-                            ._process_sse_event(
-                                client,
-                                event_name,
-                                raw_data,
-                            )
-                        )
-
-                        if (
-                            status == "success"
-                            and result
-                        ):
-
-                            return result
-
-                        if (
-                            status == "error"
-                            and result
-                        ):
-
-                            return result
-
-                        continue
-
-                    # -------------------------------------------------
-                    # Comentário
-                    # -------------------------------------------------
-
-                    if line.startswith(
-                        ":"
-                    ):
-
-                        continue
-
-                    # -------------------------------------------------
-                    # event:
-                    # -------------------------------------------------
-
-                    if line.startswith(
-                        "event:"
-                    ):
-
-                        current_event = (
-                            line[
-                                len("event:"):
-                            ].strip()
-                        )
-
-                        continue
-
-                    # -------------------------------------------------
-                    # data:
-                    # -------------------------------------------------
-
-                    if line.startswith(
-                        "data:"
-                    ):
-
-                        current_data_lines.append(
-                            line[
-                                len("data:"):
-                            ].lstrip()
-                        )
-
-                        continue
-
-                # =====================================================
-                # Último evento sem linha vazia
-                # =====================================================
-
-                if current_data_lines:
-
-                    raw_data = (
-                        "\n".join(
-                            current_data_lines
-                        ).strip()
-                    )
-
-                    event_name = (
-                        current_event
-                        or "message"
-                    )
-
-                    status, result = (
-                        await self
-                        ._process_sse_event(
-                            client,
-                            event_name,
-                            raw_data,
-                        )
-                    )
-
-                    if (
-                        status
-                        in (
-                            "success",
-                            "error",
-                        )
-                        and result
-                    ):
-
-                        return result
-
-        except httpx.TimeoutException:
-
-            return ImageResult(
-                False,
-                self.name,
-                error="sse_timeout",
-            )
-
-        except httpx.HTTPError as exc:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "sse_stream_http_error: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ),
-            )
-
-        return ImageResult(
-            False,
-            self.name,
-            error=(
-                "no_image_in_sse_response"
-            ),
-        )
-
-    # =========================================================
-    # GENERATE
-    # =========================================================
-
-    async def generate(
-        self,
-        request,
+        request: Any,
         prompt: str,
-    ) -> ImageResult:
+    ):
+        """
+        Interface esperada pelo ImageProviderRouter:
 
-        # =====================================================
-        # CONFIGURAÇÃO
-        # =====================================================
+            generate(request, prompt) -> ImageResult
 
-        if not await self.available():
+        O método retorna um objeto simples compatível com
+        os campos usados pelo restante do projeto.
+        """
 
-            return ImageResult(
-                False,
-                self.name,
-                error="not_configured",
-            )
-
-        # =====================================================
-        # PROMPT
-        # =====================================================
-
-        if (
-            not prompt
-            or not prompt.strip()
-        ):
-
-            return ImageResult(
-                False,
-                self.name,
-                error="empty_prompt",
-            )
-
-        # =====================================================
-        # PARÂMETROS
-        # =====================================================
-
-        params = (
-            self._generation_parameters(
-                request
-            )
+        job_id = str(
+            uuid.uuid4()
         )
-
-        # =====================================================
-        # TIMEOUT
-        # =====================================================
-
-        timeout_seconds = max(
-            180,
-            self.timeout,
-        )
-
-        timeout = httpx.Timeout(
-            connect=45.0,
-            read=timeout_seconds,
-            write=60.0,
-            pool=60.0,
-        )
-
-        # =====================================================
-        # CLIENT
-        # =====================================================
 
         try:
+            print(
+                "[IMAGE] Hugging Face: starting official "
+                "FLUX.2 Klein 4B generation",
+                flush=True,
+            )
 
-            async with httpx.AsyncClient(
-                timeout=timeout,
-                follow_redirects=True,
-            ) as client:
+            # -------------------------------------------------
+            # Descobrir endpoint
+            # -------------------------------------------------
 
-                result = (
-                    await self._submit_infer(
-                        client,
-                        prompt.strip(),
-                        params,
-                    )
+            if not self._endpoint:
+                self._discover_endpoint()
+
+            # -------------------------------------------------
+            # Montar payload
+            # -------------------------------------------------
+
+            payload = self._build_payload(
+                prompt,
+                request,
+            )
+
+            print(
+                "[IMAGE] Hugging Face: mode="
+                f"{payload.get('mode_choice', self.DEFAULT_MODE)} "
+                f"width={payload.get('width', 1024)} "
+                f"height={payload.get('height', 1024)} "
+                f"steps={payload.get('num_inference_steps', 4)} "
+                f"guidance={payload.get('guidance_scale', 1.0)} "
+                f"seed={payload.get('seed', 42)} "
+                f"reference="
+                f"{bool(payload.get('input_images'))}",
+                flush=True,
+            )
+
+            # -------------------------------------------------
+            # Geração
+            # -------------------------------------------------
+
+            image_reference = (
+                self._call_generation(
+                    payload
                 )
-
-                if result.success:
-
-                    return result
-
-                return result
-
-        # =====================================================
-        # TIMEOUT
-        # =====================================================
-
-        except httpx.TimeoutException:
-
-            return ImageResult(
-                False,
-                self.name,
-                error="timeout",
             )
 
-        # =====================================================
-        # HTTP ERROR
-        # =====================================================
+            # -------------------------------------------------
+            # Download
+            # -------------------------------------------------
 
-        except httpx.HTTPError as exc:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "http_client_error: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ),
+            image_bytes = (
+                self._download_image(
+                    image_reference
+                )
             )
 
-        # =====================================================
-        # OUTRO ERRO
-        # =====================================================
+            print(
+                "[IMAGE] Hugging Face: generation "
+                "completed successfully "
+                f"bytes={len(image_bytes)}",
+                flush=True,
+            )
+
+            return self._make_result(
+                success=True,
+                provider=self.name,
+                job_id=job_id,
+                image_url=image_reference,
+                image_bytes=image_bytes,
+                error=None,
+                face_swapped=False,
+            )
 
         except Exception as exc:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "unexpected_error: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ),
+            error = (
+                "huggingface:"
+                f"{type(exc).__name__}: "
+                f"{exc}"
             )
+
+            print(
+                "[IMAGE ERROR] Generation failed. "
+                f"error={error!r}",
+                flush=True,
+            )
+
+            return self._make_result(
+                success=False,
+                provider=self.name,
+                job_id=job_id,
+                image_url=None,
+                image_bytes=None,
+                error=error,
+                face_swapped=False,
+            )
+
+    # =========================================================
+    # RESULT OBJECT
+    # =========================================================
+
+    @staticmethod
+    def _make_result(
+        *,
+        success: bool,
+        provider: str,
+        job_id: str,
+        image_url: str | None,
+        image_bytes: bytes | None,
+        error: str | None,
+        face_swapped: bool,
+    ):
+        """
+        Cria o ImageResult do projeto sem obrigar este provider
+        a conhecer detalhes internos de implementação.
+
+        Primeiro tentamos localizar o ImageResult existente
+        no projeto.
+
+        Caso a localização tenha mudado, usamos um pequeno
+        objeto compatível por atributos.
+        """
+
+        # -----------------------------------------------------
+        # Tentativa 1: localizações comuns do projeto
+        # -----------------------------------------------------
+
+        candidates = (
+            "app.images.models",
+            "app.images.schemas",
+            "app.images.provider",
+            "app.images.base",
+        )
+
+        result_class = None
+
+        for module_name in candidates:
+            try:
+                module = __import__(
+                    module_name,
+                    fromlist=["ImageResult"],
+                )
+
+                candidate = getattr(
+                    module,
+                    "ImageResult",
+                    None,
+                )
+
+                if candidate is not None:
+                    result_class = candidate
+                    break
+
+            except Exception:
+                continue
+
+        if result_class is not None:
+            try:
+                return result_class(
+                    success=success,
+                    provider=provider,
+                    job_id=job_id,
+                    image_url=image_url,
+                    image_bytes=image_bytes,
+                    error=error,
+                    face_swapped=face_swapped,
+                )
+            except TypeError:
+                # Algumas versões podem não ter todos os
+                # campos no construtor.
+                try:
+                    return result_class(
+                        success=success,
+                        provider=provider,
+                        job_id=job_id,
+                        image_url=image_url,
+                        image_bytes=image_bytes,
+                        error=error,
+                    )
+                except Exception:
+                    pass
+
+        # -----------------------------------------------------
+        # Fallback compatível
+        # -----------------------------------------------------
+
+        class ProviderResult:
+            def __init__(self):
+                self.success = success
+                self.provider = provider
+                self.job_id = job_id
+                self.image_url = image_url
+                self.image_bytes = image_bytes
+                self.error = error
+                self.face_swapped = face_swapped
+
+            def __repr__(self) -> str:
+                return (
+                    "ProviderResult("
+                    f"success={self.success!r}, "
+                    f"provider={self.provider!r}, "
+                    f"job_id={self.job_id!r}, "
+                    f"image_url={self.image_url!r}, "
+                    f"image_bytes="
+                    f"{len(self.image_bytes or b'')} bytes, "
+                    f"error={self.error!r}, "
+                    f"face_swapped="
+                    f"{self.face_swapped!r}"
+                    ")"
+                )
+
+        return ProviderResult()
+
+    # =========================================================
+    # LOGGING
+    # =========================================================
+
+    @staticmethod
+    def _safe_json(
+        value: Any,
+    ) -> str:
+        """
+        JSON seguro para logs.
+
+        Evita imprimir blobs enormes de imagem/base64.
+        """
+
+        try:
+            text = json.dumps(
+                value,
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception:
+            text = str(value)
+
+        # Não deixar logs gigantes no Render.
+        if len(text) > 6000:
+            text = (
+                text[:6000]
+                + "...[truncated]"
+            )
+
+        return text
+
+    # =========================================================
+    # HEALTH CHECK
+    # =========================================================
+
+    def health_check(self) -> bool:
+        """
+        Verifica se o Space está acessível.
+
+        Não dispara geração.
+        """
+
+        try:
+            response = self.session.get(
+                self._url(
+                    "/gradio_api/info"
+                ),
+                timeout=30,
+            )
+
+            return response.status_code == 200
+
+        except Exception:
+            return False
+
+
+__all__ = [
+    "HuggingFaceImageProvider",
+]
