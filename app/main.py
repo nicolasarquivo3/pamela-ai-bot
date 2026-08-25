@@ -10,6 +10,7 @@ from app.images.repository import ImageQuota, ImageRepository
 from app.images.router import ImageProviderRouter
 from app.images.service import ImageService
 from app.images.face_swap import FaceSwapService
+from app.images.pexels import PexelsSearchService
 
 from app.providers.huggingface_image import HuggingFaceImageProvider
 
@@ -63,31 +64,12 @@ def make_brain_components(session):
 
 
 async def main():
-    # =========================================================
-    # BANCO DE DADOS
-    # =========================================================
-
     session = SessionLocal()
 
     chars = CharacterRepository(session)
     users = UserRepository(session)
 
-    # =========================================================
-    # PROVIDER DE IMAGEM
-    # =========================================================
-    #
-    # Usamos somente o Hugging Face neste momento.
-    #
-    # Pollinations não é inicializado para evitar o erro:
-    # 402 Payment Required.
-    #
-    # O HuggingFaceImageProvider atual aceita apenas:
-    #   - space_url
-    #   - timeout
-    #
-    # Portanto NÃO passamos hf_token aqui.
-    # =========================================================
-
+    # PROVIDER DE IMAGEM (fallback AI)
     providers = []
 
     huggingface_space_url = (
@@ -102,18 +84,12 @@ async def main():
     providers.append(huggingface_provider)
 
     print(
-        "[IMAGE] Providers configurados: "
-        + ", ".join(
-            provider.name
-            for provider in providers
-        ),
+        "[IMAGE] Providers AI (fallback): "
+        + ", ".join(provider.name for provider in providers),
         flush=True,
     )
 
-    # =========================================================
     # FACE SWAP
-    # =========================================================
-
     face_swap_service = None
 
     if settings.face_swap_enabled:
@@ -138,10 +114,20 @@ async def main():
             timeout=settings.face_swap_timeout_seconds,
         )
 
-    # =========================================================
-    # IMAGE SERVICE
-    # =========================================================
+    # PEXELS (foto real — preferido)
+    pexels_service = None
+    if settings.pexels_api_key:
+        pexels_service = PexelsSearchService(
+            api_key=settings.pexels_api_key,
+            timeout=30,
+            per_page=15,
+            orientation="portrait",
+        )
+        print("[IMAGE] Pexels ativo (foto real + face swap)", flush=True)
+    else:
+        print("[IMAGE] PEXELS_API_KEY ausente — só fallback AI", flush=True)
 
+    # IMAGE SERVICE
     image_service = ImageService(
         chars,
         ImageProviderRouter(providers),
@@ -152,12 +138,11 @@ async def main():
             settings.image_monthly_limit,
         ),
         face_swap_service=face_swap_service,
+        pexels_service=pexels_service,
+        prefer_real_photos=settings.prefer_real_photos,
     )
 
-    # =========================================================
     # BRAIN
-    # =========================================================
-
     (
         memory_manager,
         semantic_manager,
@@ -166,10 +151,7 @@ async def main():
         context_manager,
     ) = make_brain_components(session)
 
-    # =========================================================
     # GEMINI
-    # =========================================================
-
     llm = GeminiLLM(
         settings.gemini_api_key,
         settings.gemini_model,
@@ -177,10 +159,7 @@ async def main():
         settings.llm_max_output_tokens,
     )
 
-    # =========================================================
     # AGENT
-    # =========================================================
-
     agent = AgentBrain(
         image_service,
         users,
@@ -192,18 +171,12 @@ async def main():
         llm,
     )
 
-    # =========================================================
     # TELEGRAM
-    # =========================================================
-
     telegram = TelegramApp(agent)
 
     await telegram.set_webhook()
 
-    # =========================================================
     # AUTONOMIA
-    # =========================================================
-
     def memory_factory(tick_session):
         (
             mm,
@@ -226,19 +199,13 @@ async def main():
         photo_chance=0.45,
     )
 
-    # =========================================================
     # WEB APP
-    # =========================================================
-
     app = create_web_app(
         agent,
         telegram,
     )
 
-    # =========================================================
     # UVICORN / RENDER
-    # =========================================================
-
     port = int(
         os.getenv(
             "PORT",
