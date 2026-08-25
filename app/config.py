@@ -12,11 +12,9 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash-lite"
 
-    # OPENROUTER (fallback NSFW-friendly / Venice)
+    # OPENROUTER (fallback quando Gemini SAFETY; free rota openrouter/free)
     openrouter_api_key: str | None = None
-    openrouter_model: str = (
-        "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
-    )
+    openrouter_model: str = "openrouter/free"
     llm_timeout_seconds: int = 60
     llm_max_output_tokens: int = 1000
 
