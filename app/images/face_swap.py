@@ -1,9 +1,7 @@
 import asyncio
 import base64
-import os
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 
@@ -11,15 +9,13 @@ from app.images.models import ImageResult
 
 
 class FaceSwapService:
-    """Runs a post-generation face swap against the configured character reference.
+    """
+    Face swap free-first:
+      1. Hugging Face Gradio (tonyassi/face-swap por padrão — API simples)
+      2. Replicate (opcional)
 
-    Free-first order:
-      1. Hugging Face Gradio Space (public/private, CPU-first)
-      2. Optional Replicate fallback
-
-    When required=True, an image is never returned to the user unless the swap
-    succeeded. This is important when the caller expects the reference face to
-    be enforced rather than merely requested in the generation prompt.
+    Source = rosto da personagem (reference)
+    Target = foto do Pexels / gerada
     """
 
     def __init__(
@@ -27,15 +23,18 @@ class FaceSwapService:
         reference_path: str,
         required: bool = True,
         provider: str = "huggingface",
-        hf_space: str = "V0pr0S/FaceFusion-Face-Swap-Hyperswap",
-        hf_api_name: str = "/generate_image",
+        hf_space: str = "tonyassi/face-swap",
+        hf_api_name: str = "/swap_faces",
         hf_token: str | None = None,
         hf_swap_model: str = "hyperswap_1b_256.onnx",
         hf_target_index: int = 0,
         hf_restore_model: str = "none",
         hf_restore_strength: float = 0.7,
         replicate_token: str | None = None,
-        replicate_version: str = "codeplugtech/face-swap:278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34",
+        replicate_version: str = (
+            "codeplugtech/face-swap:"
+            "278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34"
+        ),
         timeout: int = 180,
     ):
         self.reference_path = Path(reference_path)
@@ -71,11 +70,17 @@ class FaceSwapService:
         if not generated.success:
             return generated
         if self.provider in {"none", "disabled"}:
-            return generated if not self.required else ImageResult(False, error="face_swap_disabled")
+            return generated if not self.required else ImageResult(
+                False, error="face_swap_disabled"
+            )
 
         target_bytes = await self._get_image_bytes(generated)
         if not target_bytes:
-            return ImageResult(False, error="face_swap_target_unavailable") if self.required else generated
+            return (
+                ImageResult(False, error="face_swap_target_unavailable")
+                if self.required
+                else generated
+            )
 
         providers = self._provider_order()
         errors: list[str] = []
@@ -96,9 +101,14 @@ class FaceSwapService:
                 errors.append(f"{name}:no_output")
             except Exception as exc:
                 errors.append(f"{name}:{exc}")
+                print(f"[FaceSwap] {name} error: {exc}", flush=True)
 
         if self.required:
-            return ImageResult(False, provider=generated.provider, error="; ".join(errors) or "face_swap_failed")
+            return ImageResult(
+                False,
+                provider=generated.provider,
+                error="; ".join(errors) or "face_swap_failed",
+            )
         return generated
 
     def _provider_order(self) -> list[str]:
@@ -124,7 +134,6 @@ class FaceSwapService:
             return response.content
 
     async def _huggingface_swap(self, target_bytes: bytes) -> bytes | None:
-        # gradio_client is synchronous; keep it off FastAPI's event loop.
         return await asyncio.to_thread(self._huggingface_swap_sync, target_bytes)
 
     def _huggingface_swap_sync(self, target_bytes: bytes) -> bytes | None:
@@ -139,62 +148,121 @@ class FaceSwapService:
             client_kwargs = {}
             if self.hf_token:
                 client_kwargs["token"] = self.hf_token
+
             client = Client(self.hf_space, **client_kwargs)
-            result = client.predict(
-                handle_file(str(source)),
-                handle_file(str(target)),
-                self.hf_target_index,
-                self.hf_swap_model,
-                self.hf_restore_model,
-                self.hf_restore_strength,
-                api_name=self.hf_api_name,
+            print(
+                f"[FaceSwap] HF space={self.hf_space} api={self.hf_api_name}",
+                flush=True,
             )
-            return self._read_result_sync(result)
+
+            attempts = [
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    api_name=self.hf_api_name,
+                ),
+                lambda: client.predict(
+                    src_img=handle_file(str(source)),
+                    dest_img=handle_file(str(target)),
+                    api_name=self.hf_api_name,
+                ),
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    self.hf_target_index,
+                    self.hf_swap_model,
+                    self.hf_restore_model,
+                    self.hf_restore_strength,
+                    api_name=self.hf_api_name,
+                ),
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    api_name="/predict",
+                ),
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    api_name="/swap_faces",
+                ),
+            ]
+
+            last_err = None
+            for i, attempt in enumerate(attempts):
+                try:
+                    result = attempt()
+                    data = self._read_result_sync(result)
+                    if data:
+                        print(f"[FaceSwap] sucesso na tentativa {i+1}", flush=True)
+                        return data
+                except Exception as e:
+                    last_err = e
+                    print(f"[FaceSwap] tentativa {i+1} falhou: {e}", flush=True)
+                    continue
+
+            if last_err:
+                raise last_err
+            return None
 
     async def _replicate_swap(self, target_bytes: bytes) -> bytes | None:
         if not self.replicate_token:
             return None
         source_bytes = self.reference_path.read_bytes()
-        if len(source_bytes) > 256 * 1024 or len(target_bytes) > 256 * 1024:
-            # Replicate recommends hosted files above 256 KB. The project does
-            # not expose an upload bucket, so data URLs are used for small files
-            # and a clear error is returned for larger ones.
-            raise RuntimeError("replicate_data_uri_limit")
 
-        def data_uri(data: bytes, mime: str = "image/jpeg") -> str:
-            return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+        def _b64(data: bytes) -> str:
+            return "data:image/jpeg;base64," + base64.b64encode(data).decode()
 
-        headers = {
-            "Authorization": f"Bearer {self.replicate_token}",
-            "Content-Type": "application/json",
-            "Prefer": "wait",
-        }
-        payload = {
-            "version": self.replicate_version,
-            "input": {
-                "swap_image": data_uri(source_bytes),
-                "input_image": data_uri(target_bytes),
-            },
-        }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
-            response.raise_for_status()
-            prediction = response.json()
+            create = await client.post(
+                "https://api.replicate.com/v1/predictions",
+                headers={
+                    "Authorization": f"Bearer {self.replicate_token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "version": self.replicate_version.split(":")[-1]
+                    if ":" in self.replicate_version
+                    else self.replicate_version,
+                    "input": {
+                        "swap_image": _b64(source_bytes),
+                        "input_image": _b64(target_bytes),
+                    },
+                },
+            )
+            if create.status_code >= 400:
+                create = await client.post(
+                    "https://api.replicate.com/v1/predictions",
+                    headers={
+                        "Authorization": f"Bearer {self.replicate_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "version": self.replicate_version.split(":")[-1]
+                        if ":" in self.replicate_version
+                        else self.replicate_version,
+                        "input": {
+                            "source_image": _b64(source_bytes),
+                            "target_image": _b64(target_bytes),
+                        },
+                    },
+                )
+            create.raise_for_status()
+            prediction = create.json()
+            prediction_id = prediction.get("id")
             output = prediction.get("output")
-            if not output and prediction.get("status") not in {"succeeded", "failed", "canceled"}:
-                prediction_id = prediction.get("id")
-                if prediction_id:
-                    for _ in range(30):
-                        await asyncio.sleep(2)
-                        poll = await client.get(
-                            f"https://api.replicate.com/v1/predictions/{prediction_id}",
-                            headers={"Authorization": f"Bearer {self.replicate_token}"},
-                        )
-                        poll.raise_for_status()
-                        prediction = poll.json()
-                        output = prediction.get("output")
-                        if prediction.get("status") in {"succeeded", "failed", "canceled"}:
-                            break
+
+            for _ in range(60):
+                if prediction.get("status") in {"succeeded", "failed", "canceled"}:
+                    break
+                await asyncio.sleep(2)
+                poll = await client.get(
+                    f"https://api.replicate.com/v1/predictions/{prediction_id}",
+                    headers={"Authorization": f"Bearer {self.replicate_token}"},
+                )
+                poll.raise_for_status()
+                prediction = poll.json()
+                output = prediction.get("output")
+
             if not output:
                 raise RuntimeError(prediction.get("error") or "replicate_no_output")
             return await self._download_output(output)
@@ -236,6 +304,7 @@ class FaceSwapService:
             return base64.b64decode(result.split(",", 1)[1])
         if result.startswith("http://") or result.startswith("https://"):
             import urllib.request
+
             with urllib.request.urlopen(result, timeout=self.timeout) as response:
                 return response.read()
         path = Path(result)
