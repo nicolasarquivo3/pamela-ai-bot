@@ -1,6 +1,4 @@
-"""
-Prompt AI priorizando OUTFIT / pedido do usuario.
-"""
+"""Prompt AI priorizando OUTFIT / pedido do usuario."""
 from __future__ import annotations
 
 import re
@@ -23,7 +21,6 @@ class PromptBuilder:
 
     def build(self, character: Any, request: Any) -> str:
         identity_lines: list[str] = []
-
         if character is not None:
             data = character if isinstance(character, dict) else None
             if data is None and hasattr(character, "__dict__"):
@@ -38,7 +35,6 @@ class PromptBuilder:
                 }
             elif data is None:
                 data = {}
-
             for key, value in (data or {}).items():
                 if value is None:
                     continue
@@ -81,23 +77,15 @@ class PromptBuilder:
             "same fictional adult female character, consistent face identity,",
             "full body or mirror selfie as appropriate, sharp focus, realistic lighting.",
         ]
-
         if identity_text:
             parts.append("CHARACTER IDENTITY:")
             parts.append(identity_text)
-
         if outfit_line:
             parts.append(f"CLOTHING (must match exactly): {outfit_line}")
-            parts.append(
-                "She is wearing exactly that outfit. Do not change the clothing."
-            )
-
+            parts.append("She is wearing exactly that outfit. Do not change the clothing.")
         if scene_clean:
             parts.append(f"SCENE / USER REQUEST: {scene_clean}")
-
-        parts.append(
-            f"STYLE: {style}, photorealistic, not CGI, not anime, not illustration."
-        )
+        parts.append(f"STYLE: {style}, photorealistic, not CGI, not anime, not illustration.")
         parts.append("Natural pose, adult proportions, realistic hands and face.")
 
         prompt = "\n".join(parts)
