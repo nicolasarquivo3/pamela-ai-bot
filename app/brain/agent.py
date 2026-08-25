@@ -117,20 +117,12 @@ class AgentBrain:
         character_id = user.character_id or 1
         text = (text or "").strip()
 
-        # ---------------------------------------------------------
-        # REGISTRA MENSAGEM RECEBIDA
-        # ---------------------------------------------------------
-
         incoming = await self.context_manager.record(
             user.id,
             character_id,
             "user",
             text,
         )
-
-        # ---------------------------------------------------------
-        # MEMÓRIA
-        # ---------------------------------------------------------
 
         await self.memory_manager.ingest_message(
             user.id,
@@ -148,10 +140,6 @@ class AgentBrain:
                 importance=0.55,
             )
 
-        # ---------------------------------------------------------
-        # EMOÇÃO
-        # ---------------------------------------------------------
-
         emotion = None
 
         if self.emotion_engine:
@@ -161,10 +149,6 @@ class AgentBrain:
                 text,
             )
 
-        # ---------------------------------------------------------
-        # RELACIONAMENTO
-        # ---------------------------------------------------------
-
         if self.relationship_engine:
             await self.relationship_engine.observe_message(
                 user.id,
@@ -172,10 +156,6 @@ class AgentBrain:
                 text,
                 emotion,
             )
-
-        # ---------------------------------------------------------
-        # COMANDO /FOTO
-        # ---------------------------------------------------------
 
         if text.lower().startswith("/foto"):
             scene = text[5:].strip()
@@ -195,10 +175,6 @@ class AgentBrain:
                 scene,
             )
 
-        # ---------------------------------------------------------
-        # PEDIDO NATURAL DE FOTO
-        # ---------------------------------------------------------
-
         if self._is_image_request(text):
             scene = self._build_natural_image_scene(text)
 
@@ -207,10 +183,6 @@ class AgentBrain:
                 character_id,
                 scene,
             )
-
-        # ---------------------------------------------------------
-        # CONVERSA NORMAL
-        # ---------------------------------------------------------
 
         context = await self.context_manager.build(
             user.id,
@@ -232,10 +204,6 @@ class AgentBrain:
             "text": reply,
         }
 
-    # =============================================================
-    # DETECÇÃO DE PEDIDO DE IMAGEM
-    # =============================================================
-
     def _is_image_request(self, text):
         normalized = text.lower().strip()
 
@@ -248,19 +216,7 @@ class AgentBrain:
 
         return False
 
-    # =============================================================
-    # CONSTRUÇÃO DA CENA
-    # =============================================================
-
     def _build_natural_image_scene(self, text):
-        """
-        Converte a mensagem natural do usuário em uma descrição
-        de cena para o gerador de imagens.
-
-        A identidade visual da personagem é adicionada posteriormente
-        pelo PromptBuilder através do registro da personagem.
-        """
-
         request = text.strip()
 
         base_scene = (
@@ -285,10 +241,6 @@ class AgentBrain:
             "local, enquadramento e ambiente mencionados pelo usuário."
         )
 
-    # =============================================================
-    # GERAÇÃO DA IMAGEM
-    # =============================================================
-
     async def _handle_image_request(
         self,
         user_id,
@@ -311,27 +263,37 @@ class AgentBrain:
 
             result = None
 
-        # ---------------------------------------------------------
-        # SUCESSO
-        # ---------------------------------------------------------
-
         if result and result.success:
+            caption = "Olha eu aqui ❤️"
+
             await self.context_manager.record(
                 user_id,
                 character_id,
                 "assistant",
-                "[imagem enviada]",
+                f"[foto] {caption}",
+                metadata={
+                    "type": "image",
+                    "provider": getattr(result, "provider", None),
+                    "face_swapped": getattr(result, "face_swapped", False),
+                    "has_bytes": bool(getattr(result, "image_bytes", None)),
+                    "has_url": bool(getattr(result, "image_url", None)),
+                },
+            )
+
+            print(
+                f"[IMAGE] success provider={getattr(result, 'provider', None)} "
+                f"face_swapped={getattr(result, 'face_swapped', False)} "
+                f"bytes={len(result.image_bytes) if result.image_bytes else 0} "
+                f"url={bool(result.image_url)}",
+                flush=True,
             )
 
             return {
                 "type": "image",
                 "url": result.image_url,
                 "bytes": result.image_bytes,
+                "caption": caption,
             }
-
-        # ---------------------------------------------------------
-        # FALHA
-        # ---------------------------------------------------------
 
         error_detail = None
 
@@ -366,10 +328,6 @@ class AgentBrain:
             "text": reply,
         }
 
-    # =============================================================
-    # RESPOSTA DO LLM
-    # =============================================================
-
     async def _generate_reply(self, context):
         if self.llm and await self.llm.available():
             generated = await self.llm.generate(
@@ -381,10 +339,6 @@ class AgentBrain:
                 return generated
 
         return self._fallback_reply(context)
-
-    # =============================================================
-    # SYSTEM PROMPT
-    # =============================================================
 
     def _system_prompt(self, context):
         character = context.get("character", {})
@@ -407,10 +361,6 @@ class AgentBrain:
             {},
         )
 
-        # ---------------------------------------------------------
-        # MEMÓRIAS ESTRUTURADAS
-        # ---------------------------------------------------------
-
         memory_lines = []
 
         for memory in context.get("memories", []):
@@ -429,10 +379,6 @@ class AgentBrain:
             memory_text = (
                 "- Nenhuma memória estruturada relevante."
             )
-
-        # ---------------------------------------------------------
-        # MEMÓRIAS SEMÂNTICAS
-        # ---------------------------------------------------------
 
         semantic_lines = []
 
@@ -458,10 +404,6 @@ class AgentBrain:
             semantic_text = (
                 "- Nenhuma memória semântica relevante."
             )
-
-        # ---------------------------------------------------------
-        # CONVERSA RECENTE
-        # ---------------------------------------------------------
 
         messages = context.get(
             "messages",
@@ -498,10 +440,6 @@ class AgentBrain:
             recent_conversation = (
                 "- Nenhuma conversa recente."
             )
-
-        # ---------------------------------------------------------
-        # SYSTEM PROMPT
-        # ---------------------------------------------------------
 
         return f"""
 Você é {name}, uma personagem virtual adulta.
@@ -700,10 +638,6 @@ o contexto importante."
 Essa resposta deve ser evitada.
 """.strip()
 
-    # =============================================================
-    # FALLBACK
-    # =============================================================
-
     def _fallback_reply(self, context):
         character = context.get(
             "character",
@@ -721,10 +655,6 @@ Essa resposta deve ser evitada.
             "Me conta o que você está fazendo agora?"
         )
 
-    # =============================================================
-    # AUTONOMIA
-    # =============================================================
-
     async def autonomous_tick(self):
         if not self.autonomy_service:
             return {
@@ -734,10 +664,6 @@ Essa resposta deve ser evitada.
             }
 
         return await self.autonomy_service.tick()
-
-    # =============================================================
-    # IMAGE SERVICE
-    # =============================================================
 
     async def generate_image(
         self,
