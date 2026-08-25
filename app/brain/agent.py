@@ -264,7 +264,7 @@ class AgentBrain:
             result = None
 
         if result and result.success:
-            caption = "Olha eu aqui ❤️"
+            caption = "❤️"
 
             await self.context_manager.record(
                 user_id,
