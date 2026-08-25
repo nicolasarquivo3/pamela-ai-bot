@@ -1,28 +1,36 @@
-from datetime import date, datetime, timedelta, timezone
+"""
+Autonomia proativa: texto e/ou foto.
+Precisa de tick periodico (loop no main OU cron externo).
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, timezone
 import random
+
 from sqlalchemy import select
+
 from app.database.models import AutonomyState, User
 from app.repositories import UserRepository, CharacterRepository
 from app.images.models import ImageRequest
 
+try:
+    from app.images.outfit import build_image_scene, get_current_outfit
+except Exception:
+    build_image_scene = None  # type: ignore
+    get_current_outfit = None  # type: ignore
+
 
 class AutonomyService:
-    """
-    Autonomia proativa.
-    Agora pode mandar texto OU foto contextual (com face swap).
-    Tudo 100% free usando o ImageService + FaceSwap que já existem.
-    """
-
     def __init__(
         self,
         session_factory,
         telegram_bot,
         llm,
         memory_manager_factory,
-        image_service=None,          # <-- novo
-        min_interval_minutes=90,
-        max_daily_messages=3,
-        photo_chance=0.45,           # 45% das mensagens proativas são fotos
+        image_service=None,
+        min_interval_minutes=30,
+        max_daily_messages=12,
+        photo_chance=0.55,
     ):
         self.session_factory = session_factory
         self.telegram_bot = telegram_bot
@@ -34,15 +42,38 @@ class AutonomyService:
         self.photo_chance = float(photo_chance)
 
     async def tick(self):
+        print(
+            f"[Autonomy] tick start interval={self.min_interval_minutes}m "
+            f"max_daily={self.max_daily_messages}",
+            flush=True,
+        )
         async with self.session_factory() as session:
-            users = await UserRepository(session).active_users()
+            try:
+                users = await UserRepository(session).active_users()
+            except AttributeError:
+                result = await session.execute(
+                    select(User).where(User.active.is_(True))
+                )
+                users = list(result.scalars().all())
+                print(
+                    f"[Autonomy] fallback active_users={len(users)}",
+                    flush=True,
+                )
+
             sent = 0
             waited = 0
             for user in users:
                 try:
                     result = await self._process_user(session, user)
                     await session.commit()
-                    if result.get("action") in ("message", "photo"):
+                    action = (result or {}).get("action")
+                    reason = (result or {}).get("reason")
+                    print(
+                        f"[Autonomy] user={user.id} tg={user.telegram_id} "
+                        f"action={action} reason={reason}",
+                        flush=True,
+                    )
+                    if action in ("message", "photo"):
                         sent += 1
                     else:
                         waited += 1
@@ -50,12 +81,14 @@ class AutonomyService:
                     print(f"[Autonomy] erro user {user.id}: {e}", flush=True)
                     await session.rollback()
                     waited += 1
-            return {"sent": sent, "waited": waited}
+
+            out = {"sent": sent, "waited": waited, "users": len(users)}
+            print(f"[Autonomy] tick done {out}", flush=True)
+            return out
 
     async def _process_user(self, session, user):
-        character_id = user.character_id or 1
+        character_id = getattr(user, "character_id", None) or 1
         state = await self._get_state(session, user.id, character_id)
-
         now = datetime.now(timezone.utc)
 
         locked = await session.execute(
@@ -74,6 +107,7 @@ class AutonomyService:
         )
 
         from app.brain.decision_engine import DecisionEngine
+
         decision = DecisionEngine(
             self.min_interval_minutes, self.max_daily_messages
         ).decide(context, state, now)
@@ -81,24 +115,25 @@ class AutonomyService:
         state.last_decision_at = now
         state.updated_at = now
 
-        if decision["action"] != "message":
+        if decision.get("action") != "message":
             return decision
 
-        # Decide se manda foto ou só texto
-        want_photo = (
-            self.image_service is not None
-            and random.random() < self.photo_chance
-        )
+        want_photo = self.image_service is not None and random.random() < self.photo_chance
 
         if want_photo:
             result = await self._send_photo_message(
-                session, user, character_id, context, decision, context_manager, state, now
+                session,
+                user,
+                character_id,
+                context,
+                decision,
+                context_manager,
+                state,
+                now,
             )
             if result.get("action") == "photo":
                 return result
-            # se falhou a foto, cai para texto
 
-        # ---- TEXTO (fallback ou escolha) ----
         text = await self._compose_message(context, decision)
         if not text:
             return {"action": "wait", "reason": "llm_unavailable"}
@@ -114,155 +149,180 @@ class AutonomyService:
             character_id,
             "assistant",
             text,
-            metadata={"autonomous": True, "reason": decision.get("reason"), "type": "text"},
+            metadata={
+                "autonomous": True,
+                "reason": decision.get("reason"),
+                "type": "text",
+            },
         )
         state.last_outbound_at = now
-        state.daily_messages += 1
+        state.daily_messages = int(state.daily_messages or 0) + 1
         state.updated_at = now
         await session.flush()
-
         return {"action": "message", "reason": decision.get("reason")}
 
     async def _send_photo_message(
-        self, session, user, character_id, context, decision, context_manager, state, now
+        self,
+        session,
+        user,
+        character_id,
+        context,
+        decision,
+        context_manager,
+        state,
+        now,
     ):
-        """Gera cena contextual + caption, chama ImageService (já faz face swap) e envia."""
+        if build_image_scene:
+            scene = build_image_scene(
+                "me manda uma foto pensando em voce",
+                user_id=user.id,
+                character_id=character_id,
+            )
+        else:
+            outfit = "micro mini dress high heels"
+            if get_current_outfit:
+                outfit = get_current_outfit(user.id, character_id) or outfit
+            scene = f"OUTFIT: {outfit} | PEDIDO: selfie espontanea pensando no usuario"
+
+        caption = None
         try:
-            composed = await self._compose_photo_content(context, decision)
-            if not composed:
-                return {"action": "wait", "reason": "llm_photo_failed"}
+            raw = await self._compose_photo_caption(context, decision)
+            if raw:
+                caption, scene2 = self._parse_caption_scene(raw)
+                if scene2 and "OUTFIT:" not in scene2:
+                    scene = f"{scene} | acao: {scene2[:120]}"
+        except Exception as e:
+            print(f"[Autonomy] caption llm fail: {e}", flush=True)
 
-            caption = composed["caption"]
-            scene = composed["scene"]
+        if not caption:
+            caption = "Pensei em você agora... ❤️"
 
-            # Gera a imagem (o ImageService já aplica face swap com a referência)
-            image_result = await self.image_service.generate(
+        try:
+            img = await self.image_service.generate(
                 ImageRequest(
                     user_id=user.id,
                     character_id=character_id,
                     scene=scene,
                 )
             )
+        except Exception as e:
+            print(f"[Autonomy] image generate fail: {e}", flush=True)
+            return {"action": "wait", "reason": "image_error"}
 
-            if not image_result.success:
-                print(f"[Autonomy] image fail: {image_result.error}", flush=True)
-                return {"action": "wait", "reason": "image_generation_failed"}
+        if not img or not img.success:
+            print(
+                f"[Autonomy] image fail: {getattr(img, 'error', None)}",
+                flush=True,
+            )
+            return {"action": "wait", "reason": "image_failed"}
 
-            # Envia a foto
-            if image_result.image_url:
+        try:
+            from aiogram.types import BufferedInputFile
+
+            if img.image_bytes and len(img.image_bytes) > 100:
+                photo = BufferedInputFile(img.image_bytes, filename="pamela.jpg")
                 await self.telegram_bot.send_photo(
-                    chat_id=user.telegram_id,
-                    photo=image_result.image_url,
-                    caption=caption,
+                    user.telegram_id, photo, caption=caption[:900]
                 )
-            elif image_result.image_bytes:
-                from aiogram.types import BufferedInputFile
-                photo = BufferedInputFile(
-                    image_result.image_bytes,
-                    filename="pamela_autonomous.jpg",
-                )
+            elif img.image_url:
                 await self.telegram_bot.send_photo(
-                    chat_id=user.telegram_id,
-                    photo=photo,
-                    caption=caption,
+                    user.telegram_id, img.image_url, caption=caption[:900]
                 )
             else:
                 return {"action": "wait", "reason": "no_image_data"}
-
-            # Persiste no histórico
-            await context_manager.record(
-                user.id,
-                character_id,
-                "assistant",
-                f"[foto enviada] {caption}",
-                metadata={
-                    "autonomous": True,
-                    "reason": decision.get("reason"),
-                    "type": "photo",
-                    "scene": scene,
-                    "face_swapped": getattr(image_result, "face_swapped", True),
-                },
-            )
-            state.last_outbound_at = now
-            state.daily_messages += 1
-            state.updated_at = now
-            await session.flush()
-
-            return {"action": "photo", "reason": decision.get("reason")}
-
         except Exception as e:
-            print(f"[Autonomy] photo error: {e}", flush=True)
-            return {"action": "wait", "reason": f"photo_exception:{e}"}
+            print(f"[Autonomy] send_photo fail: {e}", flush=True)
+            return {"action": "wait", "reason": "telegram_photo_error"}
 
-    async def _compose_photo_content(self, context, decision):
-        """LLM retorna caption + scene em formato simples."""
+        await context_manager.record(
+            user.id,
+            character_id,
+            "assistant",
+            f"[foto] {caption}",
+            metadata={
+                "autonomous": True,
+                "reason": decision.get("reason"),
+                "type": "image",
+                "provider": getattr(img, "provider", None),
+            },
+        )
+        state.last_outbound_at = now
+        state.daily_messages = int(state.daily_messages or 0) + 1
+        state.updated_at = now
+        await session.flush()
+        return {"action": "photo", "reason": decision.get("reason")}
+
+    async def _compose_photo_caption(self, context, decision):
         if not self.llm or not await self.llm.available():
             return None
-
         prompt = (
-            "Você vai criar UMA mensagem espontânea com FOTO.\n"
-            "Responda EXATAMENTE neste formato (sem mais nada):\n"
-            "CAPTION: <mensagem curta e natural em pt-BR, 1-2 frases, como se estivesse mandando a foto>\n"
-            "SCENE: <descrição visual curta da cena da foto, em inglês, photorealistic, ex: sitting on a couch smiling softly in soft evening light, wearing casual home clothes>\n\n"
-            "Regras:\n"
-            "- Use só informações do contexto (memórias, relacionamento, emoção).\n"
-            "- Nunca invente eventos externos.\n"
-            "- Não cobre resposta.\n"
-            "- A SCENE deve descrever a personagem em uma situação natural e contextual.\n"
-            f"Motivo interno: {decision.get('reason')}.\n"
-            "Responda só com as duas linhas CAPTION: e SCENE:."
+            "Escreva UMA legenda curta (1-2 frases) de uma selfie espontanea "
+            "que a personagem mandaria agora no Telegram, em pt-BR, carinhosa. "
+            f"Motivo: {decision.get('reason')}. "
+            "Formato opcional:\nCAPTION: ...\nSCENE: short english visual cue\n"
+            "Responda so o texto util."
         )
         system = self._system_prompt(context)
-        messages = context["messages"][-12:] + [{"role": "user", "content": prompt}]
-        raw = await self.llm.generate(system, messages)
-        if not raw:
-            return None
+        messages = context.get("messages", [])[-8:] + [
+            {"role": "user", "content": prompt}
+        ]
+        return await self.llm.generate(system, messages)
 
+    def _parse_caption_scene(self, raw: str):
         caption = ""
         scene = ""
-        for line in raw.strip().splitlines():
+        for line in (raw or "").splitlines():
             line = line.strip()
             if line.upper().startswith("CAPTION:"):
                 caption = line[8:].strip()
             elif line.upper().startswith("SCENE:"):
                 scene = line[6:].strip()
-
-        if not caption or not scene:
-            # fallback simples
-            caption = raw.strip()[:200] if raw else "Oi... pensei em você ❤️"
-            scene = "soft portrait of the woman looking gently at the camera, warm natural light, casual clothes"
-
-        return {"caption": caption, "scene": scene}
+        if not caption:
+            caption = (raw or "").strip()[:200] or "Oi... pensei em você ❤️"
+        return caption, scene
 
     async def _compose_message(self, context, decision):
         if not self.llm or not await self.llm.available():
             return None
         prompt = (
-            "Você vai escrever UMA mensagem curta e natural para iniciar uma "
-            "conversa espontânea com o usuário. Use somente informações presentes "
-            "no contexto. A mensagem deve ter um motivo contextual real, nunca "
-            "inventar eventos externos, e não deve cobrar resposta nem manipular "
-            "emocionalmente. Não diga que você fez coisas fora do chat. "
-            "Se houver uma memória relevante, use-a de modo natural. "
+            "Escreva UMA mensagem curta e natural (1-3 frases) em pt-BR para "
+            "iniciar conversa espontanea com o usuario no Telegram. "
+            "Seja carinhosa, humana, da personagem. "
+            "Use so o contexto. Nao invente eventos externos. "
+            "Nao diga que e uma IA. "
             f"Motivo interno: {decision.get('reason')}. "
-            "Responda apenas com a mensagem, em pt-BR."
+            "Responda apenas com a mensagem."
         )
         system = self._system_prompt(context)
-        messages = context["messages"][-12:] + [{"role": "user", "content": prompt}]
+        messages = context.get("messages", [])[-12:] + [
+            {"role": "user", "content": prompt}
+        ]
         return await self.llm.generate(system, messages)
 
     def _system_prompt(self, context):
-        character = context["character"]
+        character = context.get("character") or {}
+        name = character.get("name", "Pâmela")
         return (
-            f"Você é {character.get('name', 'Pamela')}, uma personagem virtual adulta. "
-            f"Personalidade: {character.get('personality', {})}. "
-            f"Memórias: {context.get('memories', [])}. "
-            f"Memórias semânticas: {context.get('semantic_memories', [])}. "
-            f"Estado emocional: {context.get('emotion')}. "
+            f"Voce e {name}, personagem virtual adulta em roleplay consensual. "
+            f"Personalidade: {character.get('personality', character.get('personality_profile', {}))}. "
+            f"Memorias: {context.get('memories', [])}. "
+            f"Memorias semanticas: {context.get('semantic_memories', [])}. "
+            f"Emocao: {context.get('emotion')}. "
             f"Relacionamento: {context.get('relationship')}. "
-            "Nunca alegue ser uma pessoa humana real, consciência real ou vida "
-            "fora do sistema. Não invente fatos."
+            "Fale em pt-BR, natural, carinhosa. Nunca diga que e IA."
         )
+
+    def _reset_daily_counter(self, state, now):
+        today = now.date()
+        last = getattr(state, "daily_date", None)
+        if last is None or (isinstance(last, datetime) and last.date() != today) or (
+            isinstance(last, date) and last != today
+        ):
+            state.daily_messages = 0
+            if hasattr(state, "daily_date"):
+                state.daily_date = today
+            elif hasattr(state, "last_daily_reset"):
+                state.last_daily_reset = now
 
     async def _get_state(self, session, user_id, character_id):
         result = await session.execute(
@@ -279,3 +339,8 @@ class AutonomyService:
                 enabled=True,
                 daily_messages=0,
             )
+            session.add(state)
+            await session.flush()
+        if hasattr(state, "enabled") and state.enabled is None:
+            state.enabled = True
+        return state
