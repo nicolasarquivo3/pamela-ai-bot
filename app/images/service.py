@@ -2,9 +2,6 @@
 Ordem:
   1) AI (Flux) + seed + face swap
   2) Fallback: DDG → Bing → Reddit → Pixabay → Gelbooru → Pexels + face swap
-
-Se AI gerar mas face swap falhar e face_swap NAO for obrigatorio,
-mantem a imagem AI. Se for obrigatorio, cai no fallback real.
 """
 from __future__ import annotations
 
@@ -75,12 +72,8 @@ class ImageService:
         request.seed = self._fresh_seed()
         request.randomize_seed = True
 
-        print(
-            f"[IMAGE] generate seed={request.seed} scene={scene[:120]!r}",
-            flush=True,
-        )
+        print(f"[IMAGE] generate seed={request.seed} scene={scene[:120]!r}", flush=True)
 
-        # 1) AI
         if self.prefer_ai_first:
             ai = await self._try_ai_generation(request, character, scene)
             if ai and ai.success:
@@ -92,12 +85,10 @@ class ImageService:
                 )
                 return ai
             print(
-                f"[IMAGE] AI falhou ({getattr(ai, 'error', None)}) "
-                f"-> fallback fotos reais",
+                f"[IMAGE] AI falhou ({getattr(ai, 'error', None)}) -> fallback fotos reais",
                 flush=True,
             )
 
-        # 2) Fallback real
         if self.prefer_real_photos:
             chain = [
                 ("duckduckgo", self.web_image_service),
@@ -112,11 +103,7 @@ class ImageService:
                     continue
                 result = await self._try_source(name, svc, request, scene)
                 if result and result.success:
-                    print(
-                        f"[IMAGE] fallback ok provider={name} "
-                        f"bytes={len(result.image_bytes or b'')}",
-                        flush=True,
-                    )
+                    print(f"[IMAGE] fallback ok provider={name}", flush=True)
                     return result
 
         if not self.prefer_ai_first:
@@ -136,13 +123,10 @@ class ImageService:
         )
         print(f"[IMAGE] AI prompt[:220]={prompt[:220]!r}", flush=True)
 
-        record = await self.image_repository.create(
-            request, prompt, negative_prompt
-        )
+        record = await self.image_repository.create(request, prompt, negative_prompt)
 
         try:
             result = await self.router.generate(request, prompt)
-
             if not result or not result.success:
                 err = getattr(result, "error", None) or "generation_failed"
                 await self.image_repository.fail(record, err)
@@ -163,7 +147,6 @@ class ImageService:
             await self.image_repository.complete(record, result)
             await self.quota.consume(request.user_id, result.provider or "ai")
             return result
-
         except Exception as exc:
             await self.image_repository.fail(record, str(exc))
             print(f"[IMAGE] AI exception: {exc}", flush=True)
@@ -190,21 +173,15 @@ class ImageService:
                 photo_id=photo.get("photo_id"),
                 content=photo.get("bytes"),
             ):
-                print(f"[IMAGE] {provider_name}: foto recente, 2a busca", flush=True)
                 photo = await service.search(scene + " alternative pose angle")
                 if not photo or RECENT.seen(
                     url=photo.get("url"),
                     photo_id=photo.get("photo_id"),
                     content=photo.get("bytes"),
                 ):
-                    print(f"[IMAGE] {provider_name}: ainda repetida, next", flush=True)
                     return None
 
-            print(
-                f"[IMAGE] {provider_name} ok: query={photo.get('query')} "
-                f"id={photo.get('photo_id')}",
-                flush=True,
-            )
+            print(f"[IMAGE] {provider_name} ok: query={photo.get('query')}", flush=True)
 
             record = await self.image_repository.create(
                 request,
@@ -225,19 +202,13 @@ class ImageService:
                     result = swapped
                 else:
                     err = getattr(swapped, "error", None) or "face_swap_failed"
-                    print(
-                        f"[IMAGE] Face swap falhou no {provider_name}: {err}",
-                        flush=True,
-                    )
+                    print(f"[IMAGE] Face swap falhou no {provider_name}: {err}", flush=True)
                     if self._face_swap_required():
                         await self.image_repository.fail(record, err)
                         return None
-                    print(f"[IMAGE] {provider_name}: seguindo sem face swap", flush=True)
 
             await self.image_repository.complete(record, result)
-            await self.quota.consume(
-                request.user_id, result.provider or provider_name
-            )
+            await self.quota.consume(request.user_id, result.provider or provider_name)
 
             if RECENT is not None:
                 RECENT.remember(
@@ -246,7 +217,6 @@ class ImageService:
                     content=result.image_bytes or photo.get("bytes"),
                 )
             return result
-
         except Exception as e:
             print(f"[IMAGE] {provider_name} error: {e}", flush=True)
             return None
