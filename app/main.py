@@ -71,7 +71,6 @@ async def main():
     chars = CharacterRepository(session)
     users = UserRepository(session)
 
-    # PROVIDER DE IMAGEM (fallback AI)
     providers = []
 
     huggingface_space_url = (
@@ -91,7 +90,6 @@ async def main():
         flush=True,
     )
 
-    # FACE SWAP
     face_swap_service = None
 
     if settings.face_swap_enabled:
@@ -116,7 +114,6 @@ async def main():
             timeout=settings.face_swap_timeout_seconds,
         )
 
-    # PEXELS (foto real stock — fallback)
     pexels_service = None
     if settings.pexels_api_key:
         pexels_service = PexelsSearchService(
@@ -129,19 +126,15 @@ async def main():
     else:
         print("[IMAGE] PEXELS_API_KEY ausente — sem fallback Pexels", flush=True)
 
-    # DUCKDUCKGO (web sexy — sem API key)
     web_image_service = WebImageSearchService(timeout=45, max_results=15)
     print("[IMAGE] DuckDuckGo ativo (web sexy + face swap)", flush=True)
 
-    # REDDIT (fashion/lingerie adult — sem API key)
     reddit_image_service = RedditImageSearchService(timeout=40, limit=30)
     print(
         "[IMAGE] Reddit ativo (fashion/lingerie adult + face swap)",
         flush=True,
     )
 
-    # IMAGE SERVICE
-    # Ordem: DDG → Reddit → Pexels → AI
     image_service = ImageService(
         chars,
         ImageProviderRouter(providers),
@@ -158,7 +151,6 @@ async def main():
         prefer_real_photos=settings.prefer_real_photos,
     )
 
-    # BRAIN
     (
         memory_manager,
         semantic_manager,
@@ -167,7 +159,6 @@ async def main():
         context_manager,
     ) = make_brain_components(session)
 
-    # GEMINI
     llm = GeminiLLM(
         settings.gemini_api_key,
         settings.gemini_model,
@@ -175,7 +166,6 @@ async def main():
         settings.llm_max_output_tokens,
     )
 
-    # AGENT
     agent = AgentBrain(
         image_service,
         users,
@@ -187,12 +177,10 @@ async def main():
         llm,
     )
 
-    # TELEGRAM
     telegram = TelegramApp(agent)
 
     await telegram.set_webhook()
 
-    # AUTONOMIA
     def memory_factory(tick_session):
         (
             mm,
@@ -215,13 +203,11 @@ async def main():
         photo_chance=0.45,
     )
 
-    # WEB APP
     app = create_web_app(
         agent,
         telegram,
     )
 
-    # UVICORN / RENDER
     port = int(
         os.getenv(
             "PORT",
