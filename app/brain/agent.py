@@ -290,9 +290,9 @@ class AgentBrain:
                 "type": "image",
                 "url": result.image_url,
                 "bytes": result.image_bytes,
-                "text": caption,
-                "caption": caption,
-                "photo_caption": "â¤ï¸",
+                "text": None,
+                "caption": None,
+                "photo_caption": None,
             }
 
         error_detail = None
@@ -753,7 +753,7 @@ Essa resposta deve ser evitada.
         r"\bagora\s+t[oÃ´]\b",
         r"\bna\s+cama\b",
         r"\bno\s+banho\b",
-        r"\bbanheiro\b",
+        r"\bsaindo\s+do\s+banheiro\b",
         r"\bacabei\s+de\s+(vestir|tirar|trocar)\b",
         r"\btroquei\s+de\s+roupa\b",
         r"\bme\s+vendo\b",
@@ -897,9 +897,9 @@ Essa resposta deve ser evitada.
             "type": "image",
             "url": result.image_url,
             "bytes": result.image_bytes,
-            "text": reply_text,
-            "caption": reply_text,
-            "photo_caption": "â¤ï¸",
+            "text": reply_text,  # mensagem de texto separada
+            "caption": None,  # SEM legenda na foto
+            "photo_caption": None,
         }
 
     async def generate_image(
