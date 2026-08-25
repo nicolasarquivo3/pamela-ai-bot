@@ -30,9 +30,12 @@ from app.brain.context_manager import ContextManager
 from app.brain.emotion_engine import EmotionEngine
 from app.brain.relationship_engine import RelationshipEngine
 from app.brain.autonomy import AutonomyService
+from app.brain.autonomy_loop import start_autonomy_loop
 
 from app.telegram.bot import TelegramApp
 from app.llm.gemini import GeminiLLM
+from app.llm.openrouter import OpenRouterLLM
+from app.llm.llm_router import LLMRouter
 from app.web import create_web_app
 
 
@@ -43,7 +46,11 @@ def make_brain_components(session):
     emotion_engine = EmotionEngine(session)
     relationship_engine = RelationshipEngine(session)
     context_manager = ContextManager(
-        session, memory_manager, emotion_engine, relationship_engine, semantic_manager
+        session,
+        memory_manager,
+        emotion_engine,
+        relationship_engine,
+        semantic_manager,
     )
     return (
         memory_manager,
@@ -66,8 +73,7 @@ async def main():
     )
     providers.append(huggingface_provider)
     print(
-        "[IMAGE] Providers AI (fallback): "
-        + ", ".join(p.name for p in providers),
+        "[IMAGE] Providers AI: " + ", ".join(p.name for p in providers),
         flush=True,
     )
 
@@ -93,13 +99,13 @@ async def main():
         )
 
     web_image_service = WebImageSearchService(timeout=45, max_results=15)
-    print("[IMAGE] DuckDuckGo ativo (micro saia/vestido)", flush=True)
+    print("[IMAGE] DuckDuckGo ativo (fallback)", flush=True)
 
     bing_image_service = BingImageSearchService(timeout=45, max_results=15)
-    print("[IMAGE] Bing ativo (micro saia/vestido)", flush=True)
+    print("[IMAGE] Bing ativo (fallback)", flush=True)
 
     reddit_image_service = RedditImageSearchService(timeout=40, limit=30)
-    print("[IMAGE] Reddit ativo", flush=True)
+    print("[IMAGE] Reddit ativo (fallback)", flush=True)
 
     pixabay_key = getattr(settings, "pixabay_api_key", None) or os.getenv(
         "PIXABAY_API_KEY"
@@ -107,30 +113,32 @@ async def main():
     pixabay_service = None
     if pixabay_key:
         pixabay_service = PixabaySearchService(api_key=pixabay_key)
-        print("[IMAGE] Pixabay ativo", flush=True)
+        print("[IMAGE] Pixabay ativo (fallback)", flush=True)
     else:
-        print("[IMAGE] PIXABAY_API_KEY ausente — Pixabay off", flush=True)
+        print("[IMAGE] PIXABAY_API_KEY ausente", flush=True)
 
     gelbooru_service = GelbooruSearchService(timeout=40, limit=30)
-    print("[IMAGE] Gelbooru ativo (anime/NSFW)", flush=True)
+    print("[IMAGE] Gelbooru ativo (fallback)", flush=True)
 
     pexels_service = None
     if settings.pexels_api_key:
         pexels_service = PexelsSearchService(
             api_key=settings.pexels_api_key,
             timeout=30,
-            per_page=15,
+            per_page=40,
             orientation="portrait",
         )
-        print("[IMAGE] Pexels ativo (ULTIMO fallback)", flush=True)
-    else:
-        print("[IMAGE] PEXELS_API_KEY ausente", flush=True)
+        print("[IMAGE] Pexels ativo (ultimo fallback)", flush=True)
 
     image_service = ImageService(
         chars,
         ImageProviderRouter(providers),
         ImageRepository(session),
-        ImageQuota(session, settings.image_daily_limit, settings.image_monthly_limit),
+        ImageQuota(
+            session,
+            settings.image_daily_limit,
+            settings.image_monthly_limit,
+        ),
         face_swap_service=face_swap_service,
         pexels_service=pexels_service,
         web_image_service=web_image_service,
@@ -139,6 +147,7 @@ async def main():
         pixabay_service=pixabay_service,
         gelbooru_service=gelbooru_service,
         prefer_real_photos=settings.prefer_real_photos,
+        prefer_ai_first=True,
     )
 
     (
@@ -149,11 +158,29 @@ async def main():
         context_manager,
     ) = make_brain_components(session)
 
-    llm = GeminiLLM(
+    gemini = GeminiLLM(
         settings.gemini_api_key,
         settings.gemini_model,
         settings.llm_timeout_seconds,
         settings.llm_max_output_tokens,
+    )
+    openrouter = OpenRouterLLM(
+        api_key=getattr(settings, "openrouter_api_key", None),
+        model=getattr(
+            settings,
+            "openrouter_model",
+            "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+        ),
+        timeout=int(getattr(settings, "llm_timeout_seconds", 90) or 90),
+        max_output_tokens=int(
+            getattr(settings, "llm_max_output_tokens", 1000) or 1000
+        ),
+    )
+    llm = LLMRouter(primary=gemini, fallback=openrouter)
+    print(
+        f"[LLM] Router: primary=Gemini fallback=OpenRouter "
+        f"(key={'sim' if openrouter.api_key else 'NAO'})",
+        flush=True,
     )
 
     agent = AgentBrain(
@@ -180,17 +207,24 @@ async def main():
         llm,
         memory_factory,
         image_service=image_service,
-        min_interval_minutes=settings.autonomy_min_interval_minutes,
-        max_daily_messages=settings.autonomy_max_daily_messages,
-        photo_chance=0.45,
+        min_interval_minutes=getattr(settings, "autonomy_min_interval_minutes", 30),
+        max_daily_messages=getattr(settings, "autonomy_max_daily_messages", 12),
+        photo_chance=0.55,
     )
 
     app = create_web_app(agent, telegram)
+
+    autonomy_interval = int(
+        getattr(settings, "autonomy_tick_seconds", None)
+        or os.getenv("AUTONOMY_TICK_SECONDS", "600")
+    )
+    start_autonomy_loop(agent, interval_seconds=autonomy_interval)
+    print(f"[Autonomy] loop a cada {autonomy_interval}s", flush=True)
+
     port = int(os.getenv("PORT", "8000"))
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     )
-
     try:
         print(f"[WEB] Starting server on port {port}", flush=True)
         await server.serve()
