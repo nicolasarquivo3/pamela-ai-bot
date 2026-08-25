@@ -97,16 +97,18 @@ class WebImageSearchService:
 
     def _search_sync(self, q: str) -> list[dict[str, Any]]:
         if DDGS is None:
-            print("[DDG] pacote duckduckgo-search não instalado", flush=True)
+            print("[DDG] pacote duckduckgo-search nao instalado", flush=True)
             return []
+
         rows: list[dict[str, Any]] = []
         try:
             with DDGS() as ddgs:
-                for item in ddgs.images(
+                results = ddgs.images(
                     q,
                     max_results=self.max_results,
                     safesearch="off",
-                ):
+                )
+                for item in results:
                     url = item.get("image") or item.get("url")
                     if not url or not str(url).startswith("http"):
                         continue
@@ -119,6 +121,7 @@ class WebImageSearchService:
                     )
         except Exception as e:
             print(f"[DDG] search error: {e}", flush=True)
+
         return rows
 
     async def search(self, query: str) -> dict[str, Any] | None:
@@ -133,14 +136,53 @@ class WebImageSearchService:
 
         random.shuffle(rows)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-            follow_redirects=True,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            },
-        ) as client:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+                headers=headers,
+            ) as client:
+                for item in rows[:10]:
+                    url = item["url"]
+                    try:
+                        r = await client.get(url)
+                        if r.status_code != 200:
+                            continue
+                        ctype = (r.headers.get("content-type") or "").lower()
+                        is_img = "image" in ctype or url.lower().endswith(
+                            (".jpg", ".jpeg", ".png", ".webp")
+                        )
+                        if not is_img:
+                            continue
+                        data = r.content
+                        if len(data) < 8000:
+                            continue
+                        print(
+                            f"[DDG] ok bytes={len(data)} src={item.get('source')} "
+                            f"title={(item.get('title') or '')[:50]!r}",
+                            flush=True,
+                        )
+                        return {
+                            "url": url,
+                            "bytes": data,
+                            "photographer": item.get("source") or "web",
+                            "photo_id": None,
+                            "alt": item.get("title") or q,
+                            "query": q,
+                        }
+                    except Exception as e:
+                        print(f"[DDG] download fail: {e}", flush=True)
+                        continue
+        except Exception as e:
+            print(f"[DDG] client error: {e}", flush=True)
+
+        print("[DDG] nenhuma imagem baixavel", flush=True)
+        return None
