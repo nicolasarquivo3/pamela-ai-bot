@@ -63,7 +63,6 @@ def make_brain_components(session):
 
 
 async def main():
-
     # =========================================================
     # BANCO DE DADOS
     # =========================================================
@@ -77,11 +76,16 @@ async def main():
     # PROVIDER DE IMAGEM
     # =========================================================
     #
-    # Neste momento usamos somente o Hugging Face.
+    # Usamos somente o Hugging Face neste momento.
     #
-    # Pollinations permanece desativado para evitar o erro
+    # Pollinations não é inicializado para evitar o erro:
     # 402 Payment Required.
     #
+    # O HuggingFaceImageProvider atual aceita apenas:
+    #   - space_url
+    #   - timeout
+    #
+    # Portanto NÃO passamos hf_token aqui.
     # =========================================================
 
     providers = []
@@ -113,7 +117,6 @@ async def main():
     face_swap_service = None
 
     if settings.face_swap_enabled:
-
         reference_path = settings.face_reference_image_path
 
         if reference_path and not reference_path.startswith("/"):
@@ -148,4 +151,127 @@ async def main():
             settings.image_daily_limit,
             settings.image_monthly_limit,
         ),
-        face_swap_service=face
+        face_swap_service=face_swap_service,
+    )
+
+    # =========================================================
+    # BRAIN
+    # =========================================================
+
+    (
+        memory_manager,
+        semantic_manager,
+        emotion_engine,
+        relationship_engine,
+        context_manager,
+    ) = make_brain_components(session)
+
+    # =========================================================
+    # GEMINI
+    # =========================================================
+
+    llm = GeminiLLM(
+        settings.gemini_api_key,
+        settings.gemini_model,
+        settings.llm_timeout_seconds,
+        settings.llm_max_output_tokens,
+    )
+
+    # =========================================================
+    # AGENT
+    # =========================================================
+
+    agent = AgentBrain(
+        image_service,
+        users,
+        context_manager,
+        memory_manager,
+        emotion_engine,
+        relationship_engine,
+        semantic_manager,
+        llm,
+    )
+
+    # =========================================================
+    # TELEGRAM
+    # =========================================================
+
+    telegram = TelegramApp(agent)
+
+    await telegram.set_webhook()
+
+    # =========================================================
+    # AUTONOMIA
+    # =========================================================
+
+    def memory_factory(tick_session):
+        (
+            mm,
+            sm,
+            ee,
+            re,
+            cm,
+        ) = make_brain_components(tick_session)
+
+        return mm, sm, cm
+
+    agent.autonomy_service = AutonomyService(
+        SessionLocal,
+        telegram.bot,
+        llm,
+        memory_factory,
+        settings.autonomy_min_interval_minutes,
+        settings.autonomy_max_daily_messages,
+    )
+
+    # =========================================================
+    # WEB APP
+    # =========================================================
+
+    app = create_web_app(
+        agent,
+        telegram,
+    )
+
+    # =========================================================
+    # UVICORN / RENDER
+    # =========================================================
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "8000",
+        )
+    )
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=port,
+            log_level="info",
+        )
+    )
+
+    try:
+        print(
+            f"[WEB] Starting server on port {port}",
+            flush=True,
+        )
+
+        await server.serve()
+
+    finally:
+        try:
+            await telegram.bot.session.close()
+        except Exception:
+            pass
+
+        try:
+            await session.close()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
