@@ -1,6 +1,6 @@
 """
 Busca imagens grátis via DuckDuckGo (sem API key).
-Mais sensual que Pexels. Baixa bytes para face swap.
+Pacote novo: ddgs (antigo duckduckgo_search renomeado).
 """
 from __future__ import annotations
 
@@ -12,9 +12,12 @@ from typing import Any
 import httpx
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 except ImportError:
-    DDGS = None  # type: ignore
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        DDGS = None  # type: ignore
 
 
 class WebImageSearchService:
@@ -97,28 +100,28 @@ class WebImageSearchService:
 
     def _search_sync(self, q: str) -> list[dict[str, Any]]:
         if DDGS is None:
-            print("[DDG] pacote duckduckgo-search nao instalado", flush=True)
+            print("[DDG] pacote ddgs nao instalado (pip install ddgs)", flush=True)
             return []
 
         rows: list[dict[str, Any]] = []
         try:
-            with DDGS() as ddgs:
-                results = ddgs.images(
-                    q,
-                    max_results=self.max_results,
-                    safesearch="off",
+            ddgs = DDGS()
+            results = ddgs.images(
+                q,
+                max_results=self.max_results,
+                safesearch="off",
+            )
+            for item in results or []:
+                url = item.get("image") or item.get("url")
+                if not url or not str(url).startswith("http"):
+                    continue
+                rows.append(
+                    {
+                        "url": url,
+                        "title": item.get("title") or "",
+                        "source": item.get("source") or "duckduckgo",
+                    }
                 )
-                for item in results:
-                    url = item.get("image") or item.get("url")
-                    if not url or not str(url).startswith("http"):
-                        continue
-                    rows.append(
-                        {
-                            "url": url,
-                            "title": item.get("title") or "",
-                            "source": item.get("source") or "duckduckgo",
-                        }
-                    )
         except Exception as e:
             print(f"[DDG] search error: {e}", flush=True)
 
