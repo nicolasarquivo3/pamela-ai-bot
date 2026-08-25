@@ -1,7 +1,6 @@
 """
-Busca imagens no Reddit (JSON publico, sem API key).
-Fashion / lingerie adult 18+.
-No Render pode retornar 403 — o service cai no Pexels.
+Reddit JSON publico — fashion / micro saia / mini dress.
+Lingerie subs so se o usuario pedir.
 """
 from __future__ import annotations
 
@@ -16,22 +15,21 @@ class RedditImageSearchService:
     name = "reddit"
 
     SUBREDDITS = (
-        "lingerie",
         "Fashion_Sexiness",
-        "Sexy",
         "NSFW_Fashion",
-        "selfies",
-        "GoneMild",
+        "Sexy",
         "clubwear",
         "highheels",
         "corsets",
         "bodysuits",
+        "selfies",
+        "GoneMild",
     )
 
     KEYWORD_SUBS = (
         (r"\blingerie\b|\blina\b", ("lingerie", "GoneMild")),
         (r"\bvestido\b|\bdress\b", ("Fashion_Sexiness", "NSFW_Fashion", "Sexy")),
-        (r"\bsaia\b|\bminissaia\b", ("Fashion_Sexiness", "Sexy")),
+        (r"\bsaia\b|\bminissaia\b", ("Fashion_Sexiness", "Sexy", "clubwear")),
         (r"\bcropped\b|\bcrop\b", ("Fashion_Sexiness", "clubwear")),
         (r"\bbalada\b|\bclub\b|\bfesta\b", ("clubwear", "Sexy")),
         (r"\bsalto\b|\bheels\b|\bbota\b", ("highheels", "Fashion_Sexiness")),
@@ -53,6 +51,10 @@ class RedditImageSearchService:
         if m:
             text = m.group(1)
 
+        wants_lingerie = bool(
+            re.search(r"\blingerie\b|\blina\b|\bcalcinha\b", text, re.I)
+        )
+
         chosen: list[str] = []
         for pat, subs in self.KEYWORD_SUBS:
             if re.search(pat, text, re.I):
@@ -62,6 +64,11 @@ class RedditImageSearchService:
 
         if not chosen:
             chosen = list(self.SUBREDDITS)
+
+        if not wants_lingerie:
+            chosen = [s for s in chosen if s not in ("lingerie",)]
+            if not chosen:
+                chosen = list(self.SUBREDDITS)
 
         random.shuffle(chosen)
         return chosen[:3]
