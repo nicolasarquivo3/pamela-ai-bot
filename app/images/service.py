@@ -4,10 +4,9 @@ from app.images.prompt_builder import PromptBuilder
 
 class ImageService:
     """
-    Fluxo preferido (opção B):
-      1. Busca foto REAL no Pexels (contexto)
-      2. Face swap com o rosto da personagem
-      3. Se falhar → fallback para geração AI + face swap
+    Fluxo preferido:
+      1. Foto REAL no Pexels + face swap
+      2. Se falhar → geração AI + face swap
     """
 
     def __init__(
@@ -42,13 +41,11 @@ class ImageService:
 
         scene = (request.scene or "").strip() or "beautiful woman portrait natural light"
 
-        # 1) TENTA FOTO REAL + FACE SWAP (preferido)
         if self.prefer_real_photos and self.pexels_service:
             real = await self._try_real_photo(request, character, scene)
             if real and real.success:
                 return real
 
-        # 2) FALLBACK: GERAÇÃO AI + FACE SWAP
         return await self._try_ai_generation(request, character, scene)
 
     async def _try_real_photo(self, request, character, scene) -> ImageResult | None:
@@ -64,10 +61,11 @@ class ImageService:
                 flush=True,
             )
 
+            # posicional: create(request, prompt, negative)
             record = await self.image_repository.create(
                 request,
-                prompt=f"PEXELS:{photo.get('query')}",
-                negative_prompt="real_photo",
+                f"PEXELS:{photo.get('query')}",
+                "real_photo",
             )
 
             result = ImageResult(
