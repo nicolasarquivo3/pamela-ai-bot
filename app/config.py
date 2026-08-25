@@ -31,6 +31,9 @@ class Settings(BaseSettings):
 
     pollinations_api_key: str | None = None
     pollinations_image_model: str = "flux"
+    # Stable Horde (grÃ¡tis): crie key em https://stablehorde.net/register
+    # ou deixe None para usar anonimo 0000000000 (mais lento)
+    stable_horde_api_key: str | None = None
 
     image_daily_limit: int = 9999
     image_monthly_limit: int = 99999
@@ -39,8 +42,11 @@ class Settings(BaseSettings):
     pexels_api_key: str | None = None
     pixabay_api_key: str | None = None
     prefer_real_photos: bool = True
+    # False = NÃƒO manda foto em toda mensagem
     photo_every_message: bool = False
+    # True = foto sÃ³ quando a cena pede (provocar / look / flerte)
     photo_contextual: bool = True
+    # Chance de surpresa espontÃ¢nea (0.0 a 1.0). 0.08 â‰ˆ 8%
     photo_surprise_chance: float = 0.08
 
     # FACE SWAP
