@@ -49,21 +49,17 @@ class TelegramApp:
                     return
 
                 if result.get("type") == "image":
-                    # SEMPRE manda o texto da personagem primeiro
-                    # (a legenda da foto some fácil no celular)
-                    reply_text = (
-                        (result.get("text") or "").strip()
-                        or (result.get("caption") or "").strip()
-                    )
+                    # 1) Fala da personagem em mensagem de TEXTO (se houver)
+                    # 2) Foto SEM legenda
+                    reply_text = (result.get("text") or "").strip()
                     if reply_text:
+                        if "â" in reply_text or "ï¸" in reply_text:
+                            reply_text = "Olha eu aqui ❤️"
                         await message.answer(reply_text)
 
                     photo_result = dict(result)
-                    short = (result.get("photo_caption") or "❤️").strip()
-                    if len(short) > 200:
-                        short = short[:197] + "..."
-                    photo_result["caption"] = short
-                    photo_result["text"] = short
+                    photo_result["caption"] = None
+                    photo_result["text"] = None
 
                     ok = await self._send_image_result(message, photo_result)
                     if not ok and not reply_text:
@@ -100,10 +96,10 @@ class TelegramApp:
                     )
 
     async def _send_image_result(self, message: Message, result: dict) -> bool:
-        """Prefere bytes (face swap). Se só URL, baixa e envia como arquivo."""
+        """Prefere bytes (face swap). Foto SEMPRE sem caption."""
         image_url = result.get("url")
         image_bytes = result.get("bytes")
-        caption = (result.get("caption") or "").strip() or None
+        caption = None  # fotos sem legenda (evita mojibake no Telegram)
 
         print(
             f"[TelegramApp] image payload: "
