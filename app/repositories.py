@@ -14,16 +14,12 @@ class CharacterRepository:
                 Character.id == character_id
             )
         )
-
         return result.scalar_one_or_none()
 
     async def get_default(self):
         result = await self.session.execute(
-            select(Character)
-            .order_by(Character.id.asc())
-            .limit(1)
+            select(Character).order_by(Character.id.asc()).limit(1)
         )
-
         return result.scalar_one_or_none()
 
 
@@ -34,19 +30,12 @@ class UserRepository:
 
     async def get_by_telegram_id(self, telegram_id: int):
         result = await self.session.execute(
-            select(User).where(
-                User.telegram_id == telegram_id
-            )
+            select(User).where(User.telegram_id == telegram_id)
         )
-
         return result.scalar_one_or_none()
 
     async def get_or_create(self, telegram_id: int):
-
-        user = await self.get_by_telegram_id(
-            telegram_id
-        )
-
+        user = await self.get_by_telegram_id(telegram_id)
         if user:
             return user
 
@@ -55,9 +44,15 @@ class UserRepository:
             active=True,
             character_id=1,
         )
-
         self.session.add(user)
-
         await self.session.flush()
-
         return user
+
+    async def active_users(self):
+        """Usuarios ativos para autonomia proativa."""
+        result = await self.session.execute(
+            select(User).where(User.active.is_(True)).order_by(User.id.asc())
+        )
+        users = list(result.scalars().all())
+        print(f"[Autonomy] active_users={len(users)}", flush=True)
+        return users
