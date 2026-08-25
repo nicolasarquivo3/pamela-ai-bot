@@ -220,8 +220,10 @@ async def main():
         telegram.bot,
         llm,
         memory_factory,
-        settings.autonomy_min_interval_minutes,
-        settings.autonomy_max_daily_messages,
+        image_service=image_service,
+        min_interval_minutes=settings.autonomy_min_interval_minutes,
+        max_daily_messages=settings.autonomy_max_daily_messages,
+        photo_chance=0.45,
     )
 
     # =========================================================
