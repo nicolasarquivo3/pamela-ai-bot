@@ -1,41 +1,20 @@
-"""
-Reddit JSON publico — fashion / micro saia / mini dress.
-Lingerie subs so se o usuario pedir.
-"""
+"""Reddit JSON — fashion. Pode 403 no Render."""
 from __future__ import annotations
 
 import random
-import re
 from typing import Any
 
 import httpx
+
+from app.images.outfit import extract_outfit_bits
 
 
 class RedditImageSearchService:
     name = "reddit"
 
     SUBREDDITS = (
-        "Fashion_Sexiness",
-        "NSFW_Fashion",
-        "Sexy",
-        "clubwear",
-        "highheels",
-        "corsets",
-        "bodysuits",
-        "selfies",
-        "GoneMild",
-    )
-
-    KEYWORD_SUBS = (
-        (r"\blingerie\b|\blina\b", ("lingerie", "GoneMild")),
-        (r"\bvestido\b|\bdress\b", ("Fashion_Sexiness", "NSFW_Fashion", "Sexy")),
-        (r"\bsaia\b|\bminissaia\b", ("Fashion_Sexiness", "Sexy", "clubwear")),
-        (r"\bcropped\b|\bcrop\b", ("Fashion_Sexiness", "clubwear")),
-        (r"\bbalada\b|\bclub\b|\bfesta\b", ("clubwear", "Sexy")),
-        (r"\bsalto\b|\bheels\b|\bbota\b", ("highheels", "Fashion_Sexiness")),
-        (r"\bcorset\b|\bcors[eé]\b", ("corsets", "Fashion_Sexiness")),
-        (r"\bacademia\b|\bgym\b", ("Sexy", "GoneMild")),
-        (r"\bpraia\b|\bbikini\b", ("Sexy", "GoneMild")),
+        "Fashion_Sexiness", "NSFW_Fashion", "Sexy", "clubwear",
+        "highheels", "selfies", "GoneMild",
     )
 
     def __init__(self, timeout: int = 40, limit: int = 30):
@@ -45,46 +24,26 @@ class RedditImageSearchService:
     async def available(self) -> bool:
         return True
 
-    def _pick_subs(self, raw: str) -> list[str]:
-        text = (raw or "").lower()
-        m = re.search(r"contexto da fotografia:\s*(.+)", text, re.I | re.S)
-        if m:
-            text = m.group(1)
-
-        wants_lingerie = bool(
-            re.search(r"\blingerie\b|\blina\b|\bcalcinha\b", text, re.I)
-        )
-
-        chosen: list[str] = []
-        for pat, subs in self.KEYWORD_SUBS:
-            if re.search(pat, text, re.I):
-                for s in subs:
-                    if s not in chosen:
-                        chosen.append(s)
-
-        if not chosen:
-            chosen = list(self.SUBREDDITS)
-
-        if not wants_lingerie:
-            chosen = [s for s in chosen if s not in ("lingerie",)]
-            if not chosen:
-                chosen = list(self.SUBREDDITS)
-
-        random.shuffle(chosen)
-        return chosen[:3]
+    def _pick_subs(self, query: str) -> list[str]:
+        bits = " ".join(extract_outfit_bits(query)).lower()
+        if "lingerie" in bits:
+            return ["lingerie", "GoneMild", "Sexy"]
+        if "skirt" in bits or "dress" in bits:
+            return ["Fashion_Sexiness", "NSFW_Fashion", "Sexy"]
+        subs = list(self.SUBREDDITS)
+        random.shuffle(subs)
+        return subs[:3]
 
     def _extract_image_url(self, post: dict) -> str | None:
         data = post.get("data") or {}
         url = (data.get("url_overridden_by_dest") or data.get("url") or "").strip()
         if not url:
             return None
-
         lower = url.lower()
-        if any(lower.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
+        if any(lower.endswith(e) for e in (".jpg", ".jpeg", ".png", ".webp")):
             return url
         if "i.redd.it" in lower or "i.imgur.com" in lower:
             return url
-
         preview = data.get("preview") or {}
         images = preview.get("images") or []
         if images:
@@ -96,103 +55,54 @@ class RedditImageSearchService:
     async def search(self, query: str) -> dict[str, Any] | None:
         subs = self._pick_subs(query)
         print(f"[REDDIT] subs={subs}", flush=True)
-
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             ),
             "Accept": "application/json",
-            "Accept-Language": "en-US,en;q=0.9",
         }
-
-        candidates: list[dict[str, Any]] = []
-        bases = (
-            "https://www.reddit.com",
-            "https://old.reddit.com",
-        )
-
+        candidates = []
         try:
             async with httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=True,
-                headers=headers,
+                timeout=self.timeout, follow_redirects=True, headers=headers
             ) as client:
                 for sub in subs:
-                    for base in bases:
-                        api = f"{base}/r/{sub}/hot.json"
+                    for base in ("https://www.reddit.com", "https://old.reddit.com"):
                         try:
                             r = await client.get(
-                                api,
+                                f"{base}/r/{sub}/hot.json",
                                 params={"limit": self.limit, "raw_json": 1},
                             )
-                            if r.status_code == 403:
-                                print(f"[REDDIT] {sub} 403 via {base}", flush=True)
-                                continue
                             if r.status_code != 200:
-                                print(
-                                    f"[REDDIT] {sub} status={r.status_code}",
-                                    flush=True,
-                                )
                                 continue
-
-                            children = (
-                                (r.json().get("data") or {}).get("children") or []
-                            )
-                            for post in children:
+                            for post in ((r.json().get("data") or {}).get("children") or []):
                                 img = self._extract_image_url(post)
-                                if not img:
-                                    continue
-                                title = (post.get("data") or {}).get("title") or ""
-                                candidates.append(
-                                    {"url": img, "title": title, "sub": sub}
-                                )
+                                if img:
+                                    title = (post.get("data") or {}).get("title") or ""
+                                    candidates.append({"url": img, "title": title, "sub": sub})
                             break
-                        except Exception as e:
-                            print(f"[REDDIT] fetch {sub} error: {e}", flush=True)
-
+                        except Exception:
+                            continue
                 if not candidates:
-                    print(
-                        "[REDDIT] zero candidates (comum no Render/cloud)",
-                        flush=True,
-                    )
+                    print("[REDDIT] zero candidates", flush=True)
                     return None
-
                 random.shuffle(candidates)
-
                 for item in candidates[:12]:
-                    url = item["url"]
                     try:
-                        r = await client.get(url)
-                        if r.status_code != 200:
+                        r = await client.get(item["url"])
+                        if r.status_code != 200 or len(r.content) < 8000:
                             continue
-                        ctype = (r.headers.get("content-type") or "").lower()
-                        if "image" not in ctype and not url.lower().endswith(
-                            (".jpg", ".jpeg", ".png", ".webp")
-                        ):
-                            continue
-                        data = r.content
-                        if len(data) < 8000:
-                            continue
-                        print(
-                            f"[REDDIT] ok r/{item['sub']} bytes={len(data)} "
-                            f"title={item['title'][:50]!r}",
-                            flush=True,
-                        )
                         return {
-                            "url": url,
-                            "bytes": data,
+                            "url": item["url"],
+                            "bytes": r.content,
                             "photographer": f"reddit/r/{item['sub']}",
                             "photo_id": None,
                             "alt": item["title"],
                             "query": f"reddit:{item['sub']}",
                         }
-                    except Exception as e:
-                        print(f"[REDDIT] download fail: {e}", flush=True)
+                    except Exception:
                         continue
         except Exception as e:
-            print(f"[REDDIT] client error: {e}", flush=True)
-
-        print("[REDDIT] nenhuma imagem baixavel", flush=True)
+            print(f"[REDDIT] error: {e}", flush=True)
         return None
