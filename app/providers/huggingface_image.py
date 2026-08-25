@@ -1,5 +1,4 @@
-import base64
-import urllib.parse
+import json
 
 import httpx
 
@@ -8,18 +7,31 @@ from app.providers.image import ImageProvider
 
 
 class HuggingFaceImageProvider(ImageProvider):
+
     name = "huggingface"
 
-    def __init__(self, space_url, timeout=180):
+    def __init__(
+        self,
+        space_url,
+        timeout=180,
+        hf_token=None,
+    ):
         self.space_url = space_url.rstrip("/")
         self.timeout = timeout
+        self.hf_token = hf_token
 
     async def available(self):
+
         return bool(self.space_url)
 
-    async def generate(self, request, prompt):
+    async def generate(
+        self,
+        request,
+        prompt,
+    ):
 
         if not await self.available():
+
             return ImageResult(
                 False,
                 self.name,
@@ -27,81 +39,34 @@ class HuggingFaceImageProvider(ImageProvider):
             )
 
         # =====================================================
-        # PARÂMETROS DO SPACE
+        # HEADERS
         # =====================================================
 
-        width = getattr(request, "width", 512)
-        height = getattr(request, "height", 512)
+        headers = {}
 
-        # O Space trabalha com aspect ratios próprios.
-        if height > width:
-            if height / max(width, 1) >= 1.6:
-                aspect_ratio = "Tall 9:16 / Vertical 9:16"
-            else:
-                aspect_ratio = "Portrait 4:5 / Retrato 4:5"
+        if self.hf_token:
 
-        elif width / max(height, 1) >= 1.6:
-            aspect_ratio = "Wide 16:9 / Panoramico 16:9"
-
-        else:
-            aspect_ratio = "Square 1:1 / Cuadrado 1:1"
+            headers["Authorization"] = (
+                f"Bearer {self.hf_token}"
+            )
 
         # =====================================================
-        # IMAGEM DE REFERÊNCIA
-        # =====================================================
-
-        i2i_image = None
-        i2i_prompt = ""
-
-        reference_images = (
-            getattr(request, "reference_images", None)
-            or []
-        )
-
-        if reference_images:
-
-            reference = reference_images[0]
-
-            if isinstance(reference, bytes):
-
-                encoded = base64.b64encode(
-                    reference
-                ).decode("utf-8")
-
-                i2i_image = {
-                    "url": (
-                        "data:image/png;base64,"
-                        + encoded
-                    ),
-                    "meta": {
-                        "_type": "gradio.FileData"
-                    },
-                }
-
-                i2i_prompt = prompt
-
-        # =====================================================
-        # PAYLOAD COMPATÍVEL COM O OPENAPI DO SPACE
+        # PAYLOAD DO SPACE
         # =====================================================
 
         payload = {
-            "t2i_prompt": prompt,
-            "i2i_prompt": i2i_prompt,
-            "i2i_image": i2i_image,
-            "strength": 0.0,
-            "style_preset": (
-                "Photoreal / Fotorrealista"
-            ),
-            "aspect_ratio": aspect_ratio,
-            "steps": 28,
-            "guidance_scale": 4.0,
-            "seed": -1,
+            "data": [
+                prompt,
+                "",
+                None,
+                0.0,
+                "Photoreal / Fotorrealista",
+                "Portrait 4:5 / Retrato 4:5",
+                28,
+                4.0,
+                -1,
+            ]
         }
-
-        endpoint = (
-            f"{self.space_url}"
-            "/gradio_api/run/generate_images"
-        )
 
         try:
 
@@ -111,11 +76,15 @@ class HuggingFaceImageProvider(ImageProvider):
             ) as client:
 
                 # =================================================
-                # CHAMADA AO SPACE
+                # CRIA JOB
                 # =================================================
 
                 response = await client.post(
-                    endpoint,
+                    (
+                        f"{self.space_url}"
+                        "/gradio_api/call/generate_images"
+                    ),
+                    headers=headers,
                     json=payload,
                 )
 
@@ -131,6 +100,7 @@ class HuggingFaceImageProvider(ImageProvider):
                     )
 
                 try:
+
                     data = response.json()
 
                 except Exception:
@@ -138,149 +108,240 @@ class HuggingFaceImageProvider(ImageProvider):
                     return ImageResult(
                         False,
                         self.name,
-                        error="invalid_json_response",
+                        error=(
+                            "invalid_json_from_huggingface: "
+                            f"{response.text[:500]}"
+                        ),
+                    )
+
+                event_id = data.get(
+                    "event_id"
+                )
+
+                if not event_id:
+
+                    return ImageResult(
+                        False,
+                        self.name,
+                        error="no_event_id",
                     )
 
                 # =================================================
-                # RESULTADO DO GRADIO
+                # AGUARDA RESULTADO SSE
                 # =================================================
 
-                output = data.get("output")
+                result_response = await client.get(
+                    (
+                        f"{self.space_url}"
+                        "/gradio_api/call/generate_images/"
+                        f"{event_id}"
+                    ),
+                    headers=headers,
+                )
 
-                if not output:
+                if result_response.status_code != 200:
+
                     return ImageResult(
                         False,
                         self.name,
                         error=(
-                            data.get("output_1")
-                            or "no_output"
+                            f"result_http_"
+                            f"{result_response.status_code}: "
+                            f"{result_response.text[:500]}"
                         ),
                     )
 
-                if not isinstance(output, list):
-                    return ImageResult(
-                        False,
-                        self.name,
-                        error="invalid_output_format",
-                    )
-
-                if not output:
-                    return ImageResult(
-                        False,
-                        self.name,
-                        error="empty_gallery",
-                    )
-
-                first = output[0]
-
                 # =================================================
-                # GALERIA -> IMAGE DATA
+                # ANALISA SSE
                 # =================================================
 
-                image_data = None
+                image_url = None
+                image_path = None
 
-                if isinstance(first, dict):
+                for line in result_response.text.splitlines():
 
-                    image_data = first.get(
-                        "image"
-                    )
+                    line = line.strip()
 
-                if not isinstance(
-                    image_data,
-                    dict,
-                ):
+                    if not line.startswith(
+                        "data:"
+                    ):
+                        continue
 
-                    return ImageResult(
-                        False,
-                        self.name,
-                        error="no_image_data",
-                    )
+                    raw = line[5:].strip()
 
-                image_url = image_data.get("url")
+                    if not raw:
+                        continue
 
-                image_path = image_data.get(
-                    "path"
-                )
+                    # ---------------------------------------------
+                    # ERRO DO GRADIO
+                    # ---------------------------------------------
 
-                # =================================================
-                # URL DISPONÍVEL
-                # =================================================
+                    if raw == "null":
+                        continue
 
-                if image_url:
+                    try:
 
-                    image_response = (
-                        await client.get(
-                            image_url
+                        result_data = json.loads(
+                            raw
                         )
-                    )
 
-                    image_response.raise_for_status()
+                    except json.JSONDecodeError:
 
-                    return ImageResult(
-                        True,
-                        self.name,
-                        image_bytes=(
-                            image_response.content
-                        ),
-                    )
+                        continue
 
-                # =================================================
-                # FALLBACK: PATH DO GRADIO
-                # =================================================
+                    # ---------------------------------------------
+                    # RESULTADO FINAL
+                    # ---------------------------------------------
 
-                if image_path:
+                    if not isinstance(
+                        result_data,
+                        list,
+                    ):
+                        continue
 
-                    encoded_path = (
-                        urllib.parse.quote(
-                            image_path,
-                            safe="",
+                    if not result_data:
+                        continue
+
+                    # O primeiro output é a Gallery.
+                    gallery = result_data[0]
+
+                    if not isinstance(
+                        gallery,
+                        list,
+                    ):
+                        continue
+
+                    if not gallery:
+                        continue
+
+                    first = gallery[0]
+
+                    # -------------------------------------------------
+                    # GalleryImage
+                    # -------------------------------------------------
+
+                    if isinstance(
+                        first,
+                        dict,
+                    ):
+
+                        image = first.get(
+                            "image"
                         )
-                    )
 
-                    possible_urls = [
-                        (
-                            f"{self.space_url}"
-                            f"/gradio_api/file="
-                            f"{encoded_path}"
-                        ),
-                        (
-                            f"{self.space_url}"
-                            f"/file="
-                            f"{encoded_path}"
-                        ),
-                    ]
+                        if isinstance(
+                            image,
+                            dict,
+                        ):
 
-                    for file_url in possible_urls:
-
-                        try:
-
-                            image_response = (
-                                await client.get(
-                                    file_url
-                                )
+                            image_url = image.get(
+                                "url"
                             )
 
-                            if (
-                                image_response.status_code
-                                == 200
-                            ):
+                            image_path = image.get(
+                                "path"
+                            )
 
-                                return ImageResult(
-                                    True,
-                                    self.name,
-                                    image_bytes=(
-                                        image_response.content
-                                    ),
-                                )
+                        # Alguns retornos podem vir diretamente
+                        # como FileData.
+                        if not image_url:
 
-                        except Exception:
-                            continue
+                            image_url = first.get(
+                                "url"
+                            )
+
+                        if not image_path:
+
+                            image_path = first.get(
+                                "path"
+                            )
+
+                    if image_url:
+
+                        break
+
+                # =================================================
+                # SEM URL — TENTA USAR PATH
+                # =================================================
+
+                if not image_url and image_path:
+
+                    # Se o Gradio devolveu uma URL completa,
+                    # usamos diretamente.
+
+                    if image_path.startswith(
+                        "http://"
+                    ) or image_path.startswith(
+                        "https://"
+                    ):
+
+                        image_url = image_path
+
+                    else:
+
+                        image_url = (
+                            f"{self.space_url}"
+                            "/gradio_api/file="
+                            f"{image_path}"
+                        )
+
+                # =================================================
+                # NENHUMA IMAGEM
+                # =================================================
+
+                if not image_url:
+
+                    return ImageResult(
+                        False,
+                        self.name,
+                        error=(
+                            "no_image_url_in_sse_response: "
+                            f"{result_response.text[:1000]}"
+                        ),
+                    )
+
+                # =================================================
+                # DOWNLOAD DA IMAGEM
+                # =================================================
+
+                image_response = await client.get(
+                    image_url,
+                    headers=headers,
+                )
+
+                if image_response.status_code != 200:
+
+                    return ImageResult(
+                        False,
+                        self.name,
+                        error=(
+                            f"image_download_http_"
+                            f"{image_response.status_code}"
+                        ),
+                    )
+
+                if not image_response.content:
+
+                    return ImageResult(
+                        False,
+                        self.name,
+                        error="empty_image_response",
+                    )
+
+                # =================================================
+                # SUCESSO
+                # =================================================
 
                 return ImageResult(
-                    False,
+                    True,
                     self.name,
-                    error="image_url_not_available",
+                    image_url=image_url,
+                    image_bytes=image_response.content,
                 )
+
+        # =========================================================
+        # TIMEOUT
+        # =========================================================
 
         except httpx.TimeoutException:
 
@@ -290,20 +351,17 @@ class HuggingFaceImageProvider(ImageProvider):
                 error="timeout",
             )
 
-        except httpx.HTTPError as exc:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    f"http_error:{str(exc)}"
-                ),
-            )
+        # =========================================================
+        # ERRO GERAL
+        # =========================================================
 
         except Exception as exc:
 
             return ImageResult(
                 False,
                 self.name,
-                error=str(exc),
+                error=(
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                ),
             )
