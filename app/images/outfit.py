@@ -67,9 +67,11 @@ CLOTHING_PATTERNS: list[tuple[str, str]] = [
     (r"\bacademia\b|\bgym\b", "gym fitness"),
     (r"\bquarto\b|\bcama\b", "bedroom"),
     (r"\bespelho\b|\bselfie\b", "mirror selfie"),
+    (r"\bverde\b", "green"),
+    (r"\bcostas?\s+nuas?\b", "backless"),
 ]
 
-DEFAULT_OUTFIT = "micro mini dress high heels fashion"
+DEFAULT_OUTFIT = "micro mini dress high heels"
 _CURRENT: dict[str, str] = {}
 
 
@@ -114,7 +116,7 @@ def extract_outfit_bits(text: str) -> list[str]:
             found.append(eng)
             matched_spans.append(span)
 
-    colors = {"black", "white", "red", "blue", "pink", "gold sequin", "silver sequin"}
+    colors = {"black", "white", "red", "blue", "pink", "gold sequin", "silver sequin", "green"}
     if any(any(c in f for c in colors) and f not in colors for f in found):
         found = [f for f in found if f not in colors]
     if any("dress" in f and f != "micro mini dress" for f in found):
@@ -126,7 +128,7 @@ def extract_outfit_bits(text: str) -> list[str]:
 
 def bits_to_query(bits: list[str], *, force_default_if_empty: bool = True) -> str:
     if not bits:
-        return f"sexy young woman {DEFAULT_OUTFIT} portrait" if force_default_if_empty else ""
+        return f"sexy young woman {DEFAULT_OUTFIT} portrait photo" if force_default_if_empty else ""
     return f"sexy young woman {' '.join(bits[:6])} fashion portrait photo"
 
 
@@ -164,7 +166,7 @@ def resolve_outfit(user_text: str, user_id: Any = None, character_id: Any = None
     if cur:
         return f"sexy young woman {cur} fashion portrait photo", "memory"
 
-    return f"sexy young woman {DEFAULT_OUTFIT} portrait", "default"
+    return f"sexy young woman {DEFAULT_OUTFIT} portrait photo", "default"
 
 
 def build_image_scene(user_text: str, user_id: Any = None, character_id: Any = None) -> str:
@@ -172,6 +174,7 @@ def build_image_scene(user_text: str, user_id: Any = None, character_id: Any = N
     outfit_core = (
         outfit_q.replace("sexy young woman ", "")
         .replace(" fashion portrait photo", "")
+        .replace(" portrait photo", "")
         .replace(" portrait", "")
         .strip()
     )
@@ -186,6 +189,8 @@ def outfit_from_scene(scene: str) -> str:
     m = re.search(r"OUTFIT:\s*([^|]+)", scene, re.I)
     if m:
         core = m.group(1).strip()
+        core = re.sub(r"\b(fashion|portrait|photo)\b", " ", core, flags=re.I)
+        core = re.sub(r"\s+", " ", core).strip()
         if core:
             return f"sexy young woman {core} fashion portrait photo"
     return bits_to_query(extract_outfit_bits(scene), force_default_if_empty=True)
