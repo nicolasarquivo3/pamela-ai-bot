@@ -1,9 +1,10 @@
 """
 Busca imagens grátis via DuckDuckGo (sem API key).
-Mais 'sexy fashion' que Pexels. Baixa os bytes para face swap.
+Mais sensual que Pexels. Baixa bytes para face swap.
 """
 from __future__ import annotations
 
+import asyncio
 import random
 import re
 from typing import Any
@@ -12,8 +13,8 @@ import httpx
 
 try:
     from duckduckgo_search import DDGS
-except ImportError:  # pacote antigo
-    from duckduckgo_search import DDGS  # type: ignore
+except ImportError:
+    DDGS = None  # type: ignore
 
 
 class WebImageSearchService:
@@ -63,14 +64,17 @@ class WebImageSearchService:
         (r"\bsensual\b", "sensual sexy"),
         (r"\bgostosa\b", "sexy curvy"),
         (r"\bdecote\b", "deep cleavage"),
+        (r"\bpreto\b", "black"),
+        (r"\bbranco\b", "white"),
+        (r"\bvermelh[oa]\b", "red"),
     )
 
-    def __init__(self, timeout: int = 45, max_results: int = 12):
+    def __init__(self, timeout: int = 45, max_results: int = 15):
         self.timeout = int(timeout)
         self.max_results = int(max_results)
 
     async def available(self) -> bool:
-        return True
+        return DDGS is not None
 
     def _build_query(self, raw: str) -> str:
         text = (raw or "").strip()
@@ -92,13 +96,16 @@ class WebImageSearchService:
         return q
 
     def _search_sync(self, q: str) -> list[dict[str, Any]]:
+        if DDGS is None:
+            print("[DDG] pacote duckduckgo-search não instalado", flush=True)
+            return []
         rows: list[dict[str, Any]] = []
         try:
             with DDGS() as ddgs:
                 for item in ddgs.images(
                     q,
                     max_results=self.max_results,
-                    safesearch="off",  # permite resultados mais sensuais (fashion/lingerie)
+                    safesearch="off",
                 ):
                     url = item.get("image") or item.get("url")
                     if not url or not str(url).startswith("http"):
@@ -115,7 +122,8 @@ class WebImageSearchService:
         return rows
 
     async def search(self, query: str) -> dict[str, Any] | None:
-        import asyncio
+        if not await self.available():
+            return None
 
         q = self._build_query(query)
         rows = await asyncio.to_thread(self._search_sync, q)
@@ -124,7 +132,7 @@ class WebImageSearchService:
             return None
 
         random.shuffle(rows)
-        # tenta baixar até achar uma imagem válida
+
         async with httpx.AsyncClient(
             timeout=self.timeout,
             follow_redirects=True,
@@ -136,36 +144,3 @@ class WebImageSearchService:
                 )
             },
         ) as client:
-            for item in rows[:8]:
-                url = item["url"]
-                try:
-                    r = await client.get(url)
-                    if r.status_code != 200:
-                        continue
-                    ctype = (r.headers.get("content-type") or "").lower()
-                    if "image" not in ctype and not url.lower().endswith(
-                        (".jpg", ".jpeg", ".png", ".webp")
-                    ):
-                        continue
-                    data = r.content
-                    if len(data) < 8_000:  # muito pequena / placeholder
-                        continue
-                    print(
-                        f"[DDG] ok bytes={len(data)} src={item.get('source')} "
-                        f"title={(item.get('title') or '')[:50]!r}",
-                        flush=True,
-                    )
-                    return {
-                        "url": url,
-                        "bytes": data,
-                        "photographer": item.get("source") or "web",
-                        "photo_id": None,
-                        "alt": item.get("title") or q,
-                        "query": q,
-                    }
-                except Exception as e:
-                    print(f"[DDG] download fail: {e}", flush=True)
-                    continue
-
-        print("[DDG] nenhuma imagem baixável", flush=True)
-        return None
