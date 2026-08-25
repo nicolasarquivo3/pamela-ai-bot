@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+pixabay_api_key: str | None = None
 
 class Settings(BaseSettings):
     telegram_bot_token: str
