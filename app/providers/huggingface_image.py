@@ -13,10 +13,11 @@ import requests
 
 
 class HuggingFaceImageProvider:
-    """Provider para o Space oficial FLUX.2 Klein 4B.
+    """Provider para o Space FLUX.2 Klein 4B.
 
-    O endpoint Gradio é descoberto dinamicamente para evitar
-    depender de /infer, que causou FnIndexInferError.
+    Descobre endpoint dinamicamente.
+    Compatível com t2i_prompt / generate_images (spaces novos)
+    e com prompt clássico.
     """
 
     name = "huggingface"
@@ -59,9 +60,7 @@ class HuggingFaceImageProvider:
         self._endpoint_parameters: list[dict[str, Any]] = []
         self._available: bool | None = None
 
-    @property
-    def available(self) -> bool:
-        """Compatibilidade com ImageProviderRouter."""
+    def _check_available_sync(self) -> bool:
         if self._available is not None:
             return self._available
         try:
@@ -73,6 +72,10 @@ class HuggingFaceImageProvider:
         except Exception:
             self._available = False
         return bool(self._available)
+
+    async def available(self) -> bool:
+        import asyncio
+        return await asyncio.to_thread(self._check_available_sync)
 
     def _url(self, path: str) -> str:
         return f"{self.space_url}/{path.lstrip('/')}"
@@ -143,26 +146,52 @@ class HuggingFaceImageProvider:
     @classmethod
     def _score_endpoint(cls, endpoint: dict[str, Any]) -> int:
         names = {n.lower() for n in cls._parameter_names(endpoint)}
-        if "prompt" not in names:
+        has_prompt = bool(
+            names
+            & {
+                "prompt",
+                "t2i_prompt",
+                "text",
+                "positive_prompt",
+                "prompt_text",
+            }
+        )
+        if not has_prompt:
             return 0
 
         weights = {
             "prompt": 50,
+            "t2i_prompt": 55,
+            "text": 40,
+            "positive_prompt": 45,
+            "prompt_text": 45,
             "input_images": 30,
+            "i2i_image": 20,
+            "i2i_prompt": 10,
             "mode_choice": 30,
             "seed": 15,
             "randomize_seed": 15,
             "width": 15,
             "height": 15,
+            "aspect_ratio": 15,
             "num_inference_steps": 20,
+            "steps": 20,
             "guidance_scale": 20,
+            "strength": 5,
+            "style_preset": 5,
             "prompt_upsampling": 20,
         }
         score = sum(v for k, v in weights.items() if k in names)
         if {"width", "height"} <= names:
             score += 20
-        if {"num_inference_steps", "guidance_scale"} <= names:
+        if "aspect_ratio" in names:
+            score += 15
+        if {"num_inference_steps", "guidance_scale"} <= names or (
+            {"steps", "guidance_scale"} <= names
+        ):
             score += 20
+        if "t2i_prompt" in names and "i2i_image" in names:
+            score += 10
         return score
 
     def _discover_endpoint(self) -> str:
@@ -374,8 +403,7 @@ class HuggingFaceImageProvider:
                 result.append([item, None])
 
         return result
-
-    @staticmethod
+        @staticmethod
     def _get_request_value(
         request: Any | None,
         name: str,
@@ -451,16 +479,30 @@ class HuggingFaceImageProvider:
         if randomize_seed:
             seed = random.randint(0, self.MAX_SEED)
 
+        prompt_text = str(prompt or "").strip()
+        input_images = self._prepare_input_images(reference_images)
+
+        # payload canônico + aliases (generate_images / t2i_prompt)
         payload: dict[str, Any] = {
-            "prompt": str(prompt or "").strip(),
-            "input_images": self._prepare_input_images(reference_images),
+            "prompt": prompt_text,
+            "t2i_prompt": prompt_text,
+            "text": prompt_text,
+            "positive_prompt": prompt_text,
+            "prompt_text": prompt_text,
+            "input_images": input_images,
+            "i2i_image": None,
+            "i2i_prompt": "",
             "mode_choice": mode_choice,
             "seed": seed,
             "randomize_seed": randomize_seed,
             "width": width,
             "height": height,
+            "aspect_ratio": "9:16",
             "num_inference_steps": steps,
+            "steps": steps,
             "guidance_scale": guidance,
+            "strength": 0.75,
+            "style_preset": "None",
             "prompt_upsampling": prompt_upsampling,
         }
 
@@ -479,11 +521,23 @@ class HuggingFaceImageProvider:
                     for key, value in payload.items()
                     if key in available
                 }
+                if "t2i_prompt" in available and not payload.get("t2i_prompt"):
+                    payload["t2i_prompt"] = prompt_text
+                if "prompt" in available and not payload.get("prompt"):
+                    payload["prompt"] = prompt_text
+                if "steps" in available and "num_inference_steps" not in available:
+                    payload["steps"] = steps
+                if "aspect_ratio" in available and "width" not in available:
+                    ar = "9:16"
+                    if width >= height * 1.2:
+                        ar = "16:9"
+                    elif abs(width - height) < 64:
+                        ar = "1:1"
+                    payload["aspect_ratio"] = ar
 
         return payload
 
     def _payload_as_gradio_data(self, payload: dict[str, Any]) -> list[Any]:
-        """Converte o dict para a ordem exata publicada pelo Gradio."""
         data: list[Any] = []
         for parameter in self._endpoint_parameters:
             name = self._parameter_name(parameter)
@@ -740,7 +794,11 @@ class HuggingFaceImageProvider:
 
         return content
 
-    def generate(self, request: Any, prompt: str):
+    async def generate(self, request, prompt: str):
+        import asyncio
+        return await asyncio.to_thread(self._generate_sync, request, prompt)
+
+    def _generate_sync(self, request: Any, prompt: str):
         job_id = str(uuid.uuid4())
 
         try:
@@ -760,9 +818,10 @@ class HuggingFaceImageProvider:
                 f"{payload.get('mode_choice', self.DEFAULT_MODE)} "
                 f"width={payload.get('width', 1024)} "
                 f"height={payload.get('height', 1024)} "
-                f"steps={payload.get('num_inference_steps', 4)} "
+                f"steps={payload.get('num_inference_steps', payload.get('steps', 4))} "
                 f"guidance={payload.get('guidance_scale', 1.0)} "
                 f"seed={payload.get('seed', 42)} "
+                f"t2i={bool(payload.get('t2i_prompt') or payload.get('prompt'))} "
                 f"reference={bool(payload.get('input_images'))}",
                 flush=True,
             )
