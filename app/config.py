@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # ou deixe None para usar anonimo 0000000000 (mais lento)
     stable_horde_api_key: str | None = None
 
+
+
     image_daily_limit: int = 9999
     image_monthly_limit: int = 99999
     image_timeout_seconds: int = 120
@@ -47,7 +49,7 @@ class Settings(BaseSettings):
     # True = foto sÃ³ quando a cena pede (provocar / look / flerte)
     photo_contextual: bool = True
     # Chance de surpresa espontÃ¢nea (0.0 a 1.0). 0.08 â‰ˆ 8%
-    photo_surprise_chance: float = 0.08
+    photo_surprise_chance: float = 0.03
 
     # FACE SWAP
     face_swap_enabled: bool = True
