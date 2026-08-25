@@ -18,6 +18,8 @@ from app.images.pixabay_images import PixabaySearchService
 from app.images.gelbooru_images import GelbooruSearchService
 
 from app.providers.huggingface_image import HuggingFaceImageProvider
+from app.providers.pollinations_image import PollinationsImageProvider
+from app.providers.stable_horde_image import StableHordeImageProvider
 
 from app.repositories import CharacterRepository, UserRepository
 
@@ -67,11 +69,34 @@ async def main():
     users = UserRepository(session)
 
     providers = []
+
+    # 1) Pollinations FREE (prioridade)
+    pollinations = PollinationsImageProvider(
+        api_key=getattr(settings, "pollinations_api_key", None),
+        model=getattr(settings, "pollinations_image_model", None) or "flux",
+        timeout=int(getattr(settings, "image_timeout_seconds", 120) or 120),
+        width=768,
+        height=1024,
+    )
+    providers.append(pollinations)
+
+    # 2) Stable Horde FREE (distribuido, NSFW ok)
+    horde = StableHordeImageProvider(
+        api_key=getattr(settings, "stable_horde_api_key", None),
+        timeout=int(getattr(settings, "image_timeout_seconds", 180) or 180),
+        width=512,
+        height=768,
+        nsfw=True,
+    )
+    providers.append(horde)
+
+    # 3) HuggingFace Space Flux (muitas vezes falha SSE)
     huggingface_provider = HuggingFaceImageProvider(
         space_url="https://xurxowsky-flux2-klein-4b-playground.hf.space",
         timeout=settings.image_timeout_seconds,
     )
     providers.append(huggingface_provider)
+
     print(
         "[IMAGE] Providers AI: " + ", ".join(p.name for p in providers),
         flush=True,
