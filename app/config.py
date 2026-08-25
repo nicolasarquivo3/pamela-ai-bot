@@ -41,7 +41,12 @@ class Settings(BaseSettings):
     pexels_api_key: str | None = None
     pixabay_api_key: str | None = None
     prefer_real_photos: bool = True
-    photo_every_message: bool = True
+    # False = NÃO manda foto em toda mensagem
+    photo_every_message: bool = False
+    # True = foto só quando a cena pede (provocar / look / flerte)
+    photo_contextual: bool = True
+    # Chance de surpresa espontânea (0.0 a 1.0). 0.08 ≈ 8%
+    photo_surprise_chance: float = 0.08
 
     # FACE SWAP
     face_swap_enabled: bool = True
