@@ -717,74 +717,33 @@ Essa resposta deve ser evitada.
 
     # Momentos em que faz sentido ela MANDAR foto sozinha (provocar / mostrar)
     PHOTO_TEASE_PATTERNS = (
-        r"\bolha\b",
-        r"\bolha\s+(s[oÃ³]|pra|para|eu|isso|aqui)\b",
-        r"\bvou\s+te\s+mostrar\b",
-        r"\bte\s+mostrar\b",
-        r"\bmanda(r|ndo)?\s+(uma\s+)?foto\b",
-        r"\btirei\s+(uma\s+)?foto\b",
-        r"\btira(ndo)?\s+(uma\s+)?(foto|selfie)\b",
-        r"\bselfie\b",
-        r"\bespelho\b",
-        r"\bmirror\b",
-        r"\bt[oÃ´]\s+de\b",
-        r"\bestou\s+de\b",
-        r"\bvestid[ao]\b",
-        r"\bsai[ae]\b",
-        r"\bcropped?\b",
-        r"\bbing[au]?\b",
-        r"\blinge?rie\b",
-        r"\bcalcinha\b",
-        r"\bsuti[aÃ£]\b",
-        r"\btanga\b",
-        r"\bbody\b",
-        r"\bmeia\b",
-        r"\bsalto\b",
-        r"\blook\b",
-        r"\broupa\b",
-        r"\bprovoc",
-        r"\bseduz",
-        r"\bgostosa\b",
-        r"\bsafad",
-        r"\btes[aÃ£]o\b",
-        r"\bquero\s+que\s+voc[eÃª]\s+veja\b",
-        r"\bimagina\s+(eu|s[oÃ³])\b",
-        r"\bagora\s+(eu\s+)?estou\b",
-        r"\bagora\s+t[oÃ´]\b",
-        r"\bna\s+cama\b",
-        r"\bno\s+banho\b",
-        r"\bsaindo\s+do\s+banheiro\b",
+        # so frases fortes de "vou te mandar/mostrar foto agora"
+        r"\bolha\s+(eu\s+)?aqui\b",
+        r"\bolha\s+(s[oÃ³]|pra\s+voc[eÃª]|pra\s+ti)\b",
+        r"\bvou\s+te\s+(mostrar|mandar)\b",
+        r"\bte\s+(mando|envio|mostro)\s+(uma\s+)?(foto|selfie)\b",
+        r"\btirei\s+(uma\s+)?(foto|selfie)\b",
+        r"\btira(ndo)?\s+(uma\s+)?selfie\b",
+        r"\bno\s+espelho\b",
+        r"\bmirror\s+selfie\b",
         r"\bacabei\s+de\s+(vestir|tirar|trocar)\b",
         r"\btroquei\s+de\s+roupa\b",
-        r"\bme\s+vendo\b",
-        r"\bcomo\s+estou\b",
-        r"\bcomo\s+eu\s+estou\b",
+        r"\bt[oÃ´]\s+de\s+(micro|mini|vestido|saia|cropped|lingerie)\b",
+        r"\bestou\s+de\s+(micro|mini|vestido|saia|cropped|lingerie)\b",
+        r"\bquero\s+que\s+voc[eÃª]\s+veja\b",
+        r"\bsepara(ndo)?\s+(aqui\s+)?pra\s+te\s+mandar\b",
+        r"\bmanda(ndo)?\s+(essa|uma)\s+foto\b",
     )
 
-    # O usuÃ¡rio puxou assunto visual / flerte â†’ chance de ela mandar foto
     USER_PHOTO_CUE_PATTERNS = (
-        r"\bfoto\b",
+        r"\bme\s+manda\s+(uma\s+)?(foto|selfie|essas\s+fotos?)\b",
+        r"\bmanda\s+(uma\s+)?(foto|selfie)\b",
+        r"\bme\s+envia\s+(uma\s+)?(foto|selfie)\b",
+        r"\bquero\s+ver\s+(voc[eÃª]|uma\s+foto|seu\s+look)\b",
+        r"\bme\s+mostra\s+(voc[eÃª]|uma\s+foto|o\s+look)\b",
+        r"\bfoto\s+(sua|agora|ai|a[iÃ­])\b",
+        r"\bshelfie\b",
         r"\bselfie\b",
-        r"\bte\s+ver\b",
-        r"\bver\s+voc[eÃª]\b",
-        r"\bcomo\s+voc[eÃª]\s+est[aÃ¡]\b",
-        r"\bo\s+que\s+voc[eÃª]\s+est[aÃ¡]\s+(usando|vestindo)\b",
-        r"\bgostosa\b",
-        r"\blinda\b",
-        r"\bsexy\b",
-        r"\bsafad",
-        r"\btes[aÃ£]o\b",
-        r"\bme\s+provoca\b",
-        r"\bme\s+manda\b",
-        r"\bolha\s+voc[eÃª]\b",
-        r"\bmostra\b",
-        r"\bcorpo\b",
-        r"\bbunda\b",
-        r"\bpeito\b",
-        r"\bperna\b",
-        r"\bdeita",
-        r"\bcama\b",
-        r"\bbanho\b",
     )
 
     def _should_send_contextual_photo(self, user_text: str, reply_text: str) -> bool:
@@ -803,7 +762,7 @@ Essa resposta deve ser evitada.
                 return True
             if not bool(getattr(settings, "photo_contextual", True)):
                 return False
-            surprise = float(getattr(settings, "photo_surprise_chance", 0.08))
+            surprise = float(getattr(settings, "photo_surprise_chance", 0.03))
         except Exception:
             surprise = 0.08
 
@@ -822,7 +781,7 @@ Essa resposta deve ser evitada.
         for pat in self.USER_PHOTO_CUE_PATTERNS:
             if re.search(pat, u, re.IGNORECASE):
                 # usuÃ¡rio puxou visual â†’ ~55% de chance de ela mandar
-                if random.random() < 0.55:
+                if random.random() < 0.35:
                     print(f"[PHOTO-DECIDE] sim (user cue {pat!r})", flush=True)
                     return True
                 print(f"[PHOTO-DECIDE] nao (user cue mas sorteou nao)", flush=True)
