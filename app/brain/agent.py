@@ -650,9 +650,8 @@ Essa resposta deve ser evitada.
         )
 
         return (
-            f"Oi, amor ❤️ "
-            f"Sou {name}. "
-            "Me conta o que você está fazendo agora?"
+            f"❤️"
+            
         )
 
     async def autonomous_tick(self):
