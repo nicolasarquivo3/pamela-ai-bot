@@ -6,28 +6,16 @@ import uvicorn
 from app.config import settings
 from app.database.session import SessionLocal
 
-from app.images.repository import (
-    ImageQuota,
-    ImageRepository,
-)
+from app.images.repository import ImageQuota, ImageRepository
 from app.images.router import ImageProviderRouter
 from app.images.service import ImageService
 from app.images.face_swap import FaceSwapService
 
-from app.providers.cloudflare_image import (
-    CloudflareImageProvider,
-)
-from app.providers.pollinations_image import (
-    PollinationsImageProvider,
-)
-from app.providers.huggingface_image import (
-    HuggingFaceImageProvider,
-)
+from app.providers.huggingface_image import HuggingFaceImageProvider
+from app.providers.pollinations_image import PollinationsImageProvider
+from app.providers.cloudflare_image import CloudflareImageProvider
 
-from app.repositories import (
-    CharacterRepository,
-    UserRepository,
-)
+from app.repositories import CharacterRepository, UserRepository
 
 from app.brain.agent import AgentBrain
 from app.brain.memory_extractor import MemoryExtractor
@@ -82,8 +70,6 @@ async def main():
     # BANCO DE DADOS
     # =========================================================
 
-    # Esta sessão é utilizada pelo caminho do webhook.
-    # Os ticks de autonomia criam suas próprias sessões.
     session = SessionLocal()
 
     chars = CharacterRepository(session)
@@ -96,30 +82,20 @@ async def main():
     providers = []
 
     # ---------------------------------------------------------
-    # HUGGING FACE
-    # ---------------------------------------------------------
-    #
-    # Space público FLUX.2 Klein 4B.
-    #
-    # Pode ser sobrescrito no Render através de:
-    #
-    # HUGGINGFACE_SPACE_URL
-    #
+    # HUGGING FACE SPACE
     # ---------------------------------------------------------
 
-    huggingface_space_url = os.getenv(
-        "HUGGINGFACE_SPACE_URL",
-        "https://xurxowsky-flux2-klein-4b-playground.hf.space",
-    ).rstrip("/")
+    huggingface_space_url = (
+        "https://xurxowsky-flux2-klein-4b-playground.hf.space"
+    )
 
-    if huggingface_space_url:
-
-        providers.append(
-            HuggingFaceImageProvider(
-                huggingface_space_url,
-                settings.image_timeout_seconds,
-            )
+    providers.append(
+        HuggingFaceImageProvider(
+            space_url=huggingface_space_url,
+            timeout=settings.image_timeout_seconds,
+            hf_token=settings.hf_token,
         )
+    )
 
     # ---------------------------------------------------------
     # CLOUDFLARE
@@ -129,7 +105,6 @@ async def main():
         settings.cloudflare_account_id
         and settings.cloudflare_api_token
     ):
-
         providers.append(
             CloudflareImageProvider(
                 settings.cloudflare_account_id,
@@ -142,17 +117,8 @@ async def main():
     # ---------------------------------------------------------
     # POLLINATIONS
     # ---------------------------------------------------------
-    #
-    # Mantido apenas como fallback opcional.
-    #
-    # Como sua conta atualmente está retornando 402 Payment
-    # Required, ele NÃO será usado enquanto o Hugging Face
-    # funcionar.
-    #
-    # ---------------------------------------------------------
 
     if settings.pollinations_api_key:
-
         providers.append(
             PollinationsImageProvider(
                 settings.pollinations_api_key,
@@ -160,6 +126,12 @@ async def main():
                 settings.image_timeout_seconds,
             )
         )
+
+    print(
+        "[IMAGE] Providers configurados: "
+        + ", ".join(provider.name for provider in providers),
+        flush=True,
+    )
 
     # =========================================================
     # FACE SWAP
@@ -169,9 +141,7 @@ async def main():
 
     if settings.face_swap_enabled:
 
-        reference_path = (
-            settings.face_reference_image_path
-        )
+        reference_path = settings.face_reference_image_path
 
         if not reference_path.startswith("/"):
             reference_path = f"/app/{reference_path}"
@@ -209,7 +179,7 @@ async def main():
     )
 
     # =========================================================
-    # MEMÓRIA / EMOÇÃO / RELACIONAMENTO
+    # BRAIN
     # =========================================================
 
     (
@@ -221,7 +191,7 @@ async def main():
     ) = make_brain_components(session)
 
     # =========================================================
-    # LLM
+    # GEMINI
     # =========================================================
 
     llm = GeminiLLM(
@@ -232,7 +202,7 @@ async def main():
     )
 
     # =========================================================
-    # AGENT BRAIN
+    # AGENT
     # =========================================================
 
     agent = AgentBrain(
@@ -289,7 +259,7 @@ async def main():
     )
 
     # =========================================================
-    # UVICORN / RENDER
+    # UVICORN
     # =========================================================
 
     port = int(
@@ -309,6 +279,11 @@ async def main():
     )
 
     try:
+
+        print(
+            f"[WEB] Starting server on port {port}",
+            flush=True,
+        )
 
         await server.serve()
 
