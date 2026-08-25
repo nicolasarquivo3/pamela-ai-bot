@@ -1,117 +1,105 @@
+"""
+Prompt AI priorizando OUTFIT / pedido do usuario.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any
+
+try:
+    from app.images.outfit import outfit_from_scene, extract_outfit_bits
+except Exception:
+    outfit_from_scene = None  # type: ignore
+    extract_outfit_bits = None  # type: ignore
+
+
 class PromptBuilder:
     NEGATIVE_PROMPT = (
-        "deformed anatomy, bad anatomy, malformed hands, malformed feet, "
-        "extra fingers, missing fingers, extra limbs, missing limbs, "
-        "duplicate person, duplicated body parts, distorted face, "
-        "asymmetrical eyes, unnatural eyes, deformed teeth, "
-        "plastic skin, waxy skin, artificial skin, oversmoothed skin, "
-        "cartoon, anime, illustration, 3d render, CGI, doll-like appearance, "
-        "low resolution, blurry, pixelated, noisy image, "
-        "watermark, text, logo, signature, frame, cropped head, cropped feet"
+        "deformed, ugly, bad anatomy, bad hands, extra fingers, missing fingers, "
+        "mutated hands, poorly drawn face, mutation, blurry, low quality, "
+        "cartoon, anime, drawing, painting, illustration, 3d render, cgi, "
+        "child, minor, underage, baby"
     )
 
-    def build(self, character, request):
-        identity = character.image_identity if character else {}
+    def build(self, character: Any, request: Any) -> str:
+        identity_lines: list[str] = []
 
-        identity_lines = []
+        if character is not None:
+            data = character if isinstance(character, dict) else None
+            if data is None and hasattr(character, "__dict__"):
+                data = {
+                    k: getattr(character, k, None)
+                    for k in (
+                        "name", "age", "appearance", "hair", "eyes", "body",
+                        "style", "personality", "description",
+                        "visual_description", "face_description",
+                    )
+                    if getattr(character, k, None)
+                }
+            elif data is None:
+                data = {}
 
-        for key, value in identity.items():
-            if value is None:
-                continue
-
-            if isinstance(value, (list, tuple)):
-                value = ", ".join(str(item) for item in value)
-
-            elif isinstance(value, dict):
-                value = ", ".join(
-                    f"{sub_key}: {sub_value}"
-                    for sub_key, sub_value in value.items()
-                    if sub_value is not None
-                )
-
-            value = str(value).strip()
-
-            if value:
-                identity_lines.append(f"{key}: {value}")
+            for key, value in (data or {}).items():
+                if value is None:
+                    continue
+                if isinstance(value, (list, tuple)):
+                    value = ", ".join(str(item) for item in value)
+                elif isinstance(value, dict):
+                    value = ", ".join(
+                        f"{sk}: {sv}" for sk, sv in value.items() if sv is not None
+                    )
+                value = str(value).strip()
+                if value:
+                    identity_lines.append(f"{key}: {value}")
 
         identity_text = "\n".join(identity_lines)
+        scene = (getattr(request, "scene", None) or "").strip()
+        style = (getattr(request, "style", None) or "").strip() or "photorealistic selfie photo"
 
-        scene = (request.scene or "").strip()
-        style = (request.style or "").strip()
+        outfit_line = ""
+        if outfit_from_scene and scene:
+            try:
+                oq = outfit_from_scene(scene)
+                outfit_line = oq.replace("sexy young woman ", "").strip()
+            except Exception:
+                outfit_line = ""
+        if not outfit_line and extract_outfit_bits:
+            bits = extract_outfit_bits(scene)
+            if bits:
+                outfit_line = " ".join(bits)
+
+        scene_clean = scene
+        m = re.search(r"PEDIDO:\s*([^|]+)", scene, re.I)
+        if m:
+            scene_clean = m.group(1).strip()
+        scene_clean = re.sub(r"OUTFIT:\s*[^|]+\|?", " ", scene_clean)
+        scene_clean = re.sub(r"source=\w+", " ", scene_clean)
+        scene_clean = re.sub(r"\s+", " ", scene_clean).strip()
 
         parts = [
-            "PHOTOREALISTIC ADULT CHARACTER",
-            (
-                "Create a photorealistic image of the same fictional adult "
-                "female character described below."
-            ),
-            (
-                "She is an adult woman. Preserve her established facial "
-                "identity and visual characteristics consistently."
-            ),
-            (
-                "Natural adult human proportions, realistic body structure, "
-                "natural skin pores and texture, subtle skin imperfections, "
-                "realistic hair strands, realistic eyes, realistic hands, "
-                "realistic lighting and physically plausible shadows."
-            ),
-            (
-                "The image should look like a real photograph taken with a "
-                "modern professional camera, not like digital art or CGI."
-            ),
-            (
-                "Maintain visual continuity with previous images of the "
-                "character whenever identity information is available."
-            ),
+            "PHOTOREALISTIC adult woman, realistic photo, DSLR, natural skin texture,",
+            "same fictional adult female character, consistent face identity,",
+            "full body or mirror selfie as appropriate, sharp focus, realistic lighting.",
         ]
 
         if identity_text:
-            parts.extend(
-                [
-                    "",
-                    "CHARACTER IDENTITY:",
-                    identity_text,
-                ]
+            parts.append("CHARACTER IDENTITY:")
+            parts.append(identity_text)
+
+        if outfit_line:
+            parts.append(f"CLOTHING (must match exactly): {outfit_line}")
+            parts.append(
+                "She is wearing exactly that outfit. Do not change the clothing."
             )
 
-        if scene:
-            parts.extend(
-                [
-                    "",
-                    "REQUESTED SCENE:",
-                    scene,
-                ]
-            )
+        if scene_clean:
+            parts.append(f"SCENE / USER REQUEST: {scene_clean}")
 
-        if style:
-            parts.extend(
-                [
-                    "",
-                    "PHOTOGRAPHY / VISUAL STYLE:",
-                    style,
-                ]
-            )
-
-        parts.extend(
-            [
-                "",
-                "COMPOSITION:",
-                (
-                    "Prioritize a natural photographic composition. "
-                    "Keep the character clearly visible and anatomically "
-                    "complete whenever the requested framing allows it."
-                ),
-                (
-                    "Respect the requested pose, clothing, location, "
-                    "camera angle and framing."
-                ),
-                "",
-                "SAFETY:",
-                (
-                    "The character is an adult. Do not depict minors. "
-                    "Do not depict nudity or explicit sexual activity."
-                ),
-            ]
+        parts.append(
+            f"STYLE: {style}, photorealistic, not CGI, not anime, not illustration."
         )
+        parts.append("Natural pose, adult proportions, realistic hands and face.")
 
-        return "\n".join(parts)
+        prompt = "\n".join(parts)
+        print(f"[PROMPT] outfit={outfit_line!r} scene={scene_clean[:80]!r}", flush=True)
+        return prompt
