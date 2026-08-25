@@ -12,3 +12,4 @@ greenlet>=3.1,<4
 gradio_client>=1.0,<2
 psycopg2-binary
 requests>=2.31.0
+duckduckgo-search>=6.0.0
