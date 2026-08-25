@@ -13,6 +13,9 @@ from app.images.face_swap import FaceSwapService
 from app.images.pexels import PexelsSearchService
 from app.images.web_search_images import WebImageSearchService
 from app.images.reddit_images import RedditImageSearchService
+from app.images.bing_images import BingImageSearchService
+from app.images.pixabay_images import PixabaySearchService
+from app.images.gelbooru_images import GelbooruSearchService
 
 from app.providers.huggingface_image import HuggingFaceImageProvider
 
@@ -35,27 +38,13 @@ from app.web import create_web_app
 
 def make_brain_components(session):
     extractor = MemoryExtractor()
-
-    memory_manager = MemoryManager(
-        session,
-        extractor,
-        Deduplicator(),
-    )
-
+    memory_manager = MemoryManager(session, extractor, Deduplicator())
     semantic_manager = SemanticMemoryManager(session)
-
     emotion_engine = EmotionEngine(session)
-
     relationship_engine = RelationshipEngine(session)
-
     context_manager = ContextManager(
-        session,
-        memory_manager,
-        emotion_engine,
-        relationship_engine,
-        semantic_manager,
+        session, memory_manager, emotion_engine, relationship_engine, semantic_manager
     )
-
     return (
         memory_manager,
         semantic_manager,
@@ -67,37 +56,26 @@ def make_brain_components(session):
 
 async def main():
     session = SessionLocal()
-
     chars = CharacterRepository(session)
     users = UserRepository(session)
 
     providers = []
-
-    huggingface_space_url = (
-        "https://xurxowsky-flux2-klein-4b-playground.hf.space"
-    )
-
     huggingface_provider = HuggingFaceImageProvider(
-        space_url=huggingface_space_url,
+        space_url="https://xurxowsky-flux2-klein-4b-playground.hf.space",
         timeout=settings.image_timeout_seconds,
     )
-
     providers.append(huggingface_provider)
-
     print(
         "[IMAGE] Providers AI (fallback): "
-        + ", ".join(provider.name for provider in providers),
+        + ", ".join(p.name for p in providers),
         flush=True,
     )
 
     face_swap_service = None
-
     if settings.face_swap_enabled:
         reference_path = settings.face_reference_image_path
-
         if reference_path and not reference_path.startswith("/"):
             reference_path = f"/app/{reference_path}"
-
         face_swap_service = FaceSwapService(
             reference_path=reference_path,
             required=settings.face_swap_required,
@@ -114,6 +92,28 @@ async def main():
             timeout=settings.face_swap_timeout_seconds,
         )
 
+    web_image_service = WebImageSearchService(timeout=45, max_results=15)
+    print("[IMAGE] DuckDuckGo ativo (micro saia/vestido)", flush=True)
+
+    bing_image_service = BingImageSearchService(timeout=45, max_results=15)
+    print("[IMAGE] Bing ativo (micro saia/vestido)", flush=True)
+
+    reddit_image_service = RedditImageSearchService(timeout=40, limit=30)
+    print("[IMAGE] Reddit ativo", flush=True)
+
+    pixabay_key = getattr(settings, "pixabay_api_key", None) or os.getenv(
+        "PIXABAY_API_KEY"
+    )
+    pixabay_service = None
+    if pixabay_key:
+        pixabay_service = PixabaySearchService(api_key=pixabay_key)
+        print("[IMAGE] Pixabay ativo", flush=True)
+    else:
+        print("[IMAGE] PIXABAY_API_KEY ausente — Pixabay off", flush=True)
+
+    gelbooru_service = GelbooruSearchService(timeout=40, limit=30)
+    print("[IMAGE] Gelbooru ativo (anime/NSFW)", flush=True)
+
     pexels_service = None
     if settings.pexels_api_key:
         pexels_service = PexelsSearchService(
@@ -122,32 +122,22 @@ async def main():
             per_page=15,
             orientation="portrait",
         )
-        print("[IMAGE] Pexels ativo (foto real + face swap)", flush=True)
+        print("[IMAGE] Pexels ativo (ULTIMO fallback)", flush=True)
     else:
-        print("[IMAGE] PEXELS_API_KEY ausente — sem fallback Pexels", flush=True)
-
-    web_image_service = WebImageSearchService(timeout=45, max_results=15)
-    print("[IMAGE] DuckDuckGo ativo (web sexy + face swap)", flush=True)
-
-    reddit_image_service = RedditImageSearchService(timeout=40, limit=30)
-    print(
-        "[IMAGE] Reddit ativo (fashion/lingerie adult + face swap)",
-        flush=True,
-    )
+        print("[IMAGE] PEXELS_API_KEY ausente", flush=True)
 
     image_service = ImageService(
         chars,
         ImageProviderRouter(providers),
         ImageRepository(session),
-        ImageQuota(
-            session,
-            settings.image_daily_limit,
-            settings.image_monthly_limit,
-        ),
+        ImageQuota(session, settings.image_daily_limit, settings.image_monthly_limit),
         face_swap_service=face_swap_service,
         pexels_service=pexels_service,
         web_image_service=web_image_service,
+        bing_image_service=bing_image_service,
         reddit_image_service=reddit_image_service,
+        pixabay_service=pixabay_service,
+        gelbooru_service=gelbooru_service,
         prefer_real_photos=settings.prefer_real_photos,
     )
 
@@ -178,18 +168,10 @@ async def main():
     )
 
     telegram = TelegramApp(agent)
-
     await telegram.set_webhook()
 
     def memory_factory(tick_session):
-        (
-            mm,
-            sm,
-            ee,
-            re,
-            cm,
-        ) = make_brain_components(tick_session)
-
+        mm, sm, ee, re, cm = make_brain_components(tick_session)
         return mm, sm, cm
 
     agent.autonomy_service = AutonomyService(
@@ -203,41 +185,20 @@ async def main():
         photo_chance=0.45,
     )
 
-    app = create_web_app(
-        agent,
-        telegram,
-    )
-
-    port = int(
-        os.getenv(
-            "PORT",
-            "8000",
-        )
-    )
-
+    app = create_web_app(agent, telegram)
+    port = int(os.getenv("PORT", "8000"))
     server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host="0.0.0.0",
-            port=port,
-            log_level="info",
-        )
+        uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     )
 
     try:
-        print(
-            f"[WEB] Starting server on port {port}",
-            flush=True,
-        )
-
+        print(f"[WEB] Starting server on port {port}", flush=True)
         await server.serve()
-
     finally:
         try:
             await telegram.bot.session.close()
         except Exception:
             pass
-
         try:
             await session.close()
         except Exception:
