@@ -79,8 +79,8 @@ async def main():
     #
     # Neste momento usamos somente o Hugging Face.
     #
-    # Isso evita o Pollinations 402 Payment Required e deixa
-    # o sistema focado no Space gratuito que você configurou.
+    # Pollinations permanece desativado para evitar o erro
+    # 402 Payment Required.
     #
     # =========================================================
 
@@ -93,7 +93,6 @@ async def main():
     huggingface_provider = HuggingFaceImageProvider(
         space_url=huggingface_space_url,
         timeout=settings.image_timeout_seconds,
-        hf_token=settings.hf_token,
     )
 
     providers.append(huggingface_provider)
@@ -149,130 +148,4 @@ async def main():
             settings.image_daily_limit,
             settings.image_monthly_limit,
         ),
-        face_swap_service=face_swap_service,
-    )
-
-    # =========================================================
-    # BRAIN
-    # =========================================================
-
-    (
-        memory_manager,
-        semantic_manager,
-        emotion_engine,
-        relationship_engine,
-        context_manager,
-    ) = make_brain_components(session)
-
-    # =========================================================
-    # GEMINI
-    # =========================================================
-
-    llm = GeminiLLM(
-        settings.gemini_api_key,
-        settings.gemini_model,
-        settings.llm_timeout_seconds,
-        settings.llm_max_output_tokens,
-    )
-
-    # =========================================================
-    # AGENT
-    # =========================================================
-
-    agent = AgentBrain(
-        image_service,
-        users,
-        context_manager,
-        memory_manager,
-        emotion_engine,
-        relationship_engine,
-        semantic_manager,
-        llm,
-    )
-
-    # =========================================================
-    # TELEGRAM
-    # =========================================================
-
-    telegram = TelegramApp(agent)
-
-    await telegram.set_webhook()
-
-    # =========================================================
-    # AUTONOMIA
-    # =========================================================
-
-    def memory_factory(tick_session):
-
-        (
-            mm,
-            sm,
-            ee,
-            re,
-            cm,
-        ) = make_brain_components(tick_session)
-
-        return mm, sm, cm
-
-    agent.autonomy_service = AutonomyService(
-        SessionLocal,
-        telegram.bot,
-        llm,
-        memory_factory,
-        settings.autonomy_min_interval_minutes,
-        settings.autonomy_max_daily_messages,
-    )
-
-    # =========================================================
-    # WEB APP
-    # =========================================================
-
-    app = create_web_app(
-        agent,
-        telegram,
-    )
-
-    # =========================================================
-    # UVICORN / RENDER
-    # =========================================================
-
-    port = int(
-        os.getenv(
-            "PORT",
-            "8000",
-        )
-    )
-
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host="0.0.0.0",
-            port=port,
-            log_level="info",
-        )
-    )
-
-    try:
-
-        print(
-            f"[WEB] Starting server on port {port}",
-            flush=True,
-        )
-
-        await server.serve()
-
-    finally:
-
-        try:
-            await telegram.bot.session.close()
-        except Exception:
-            pass
-
-        try:
-            await session.close()
-        except Exception:
-            pass
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        face_swap_service=face
