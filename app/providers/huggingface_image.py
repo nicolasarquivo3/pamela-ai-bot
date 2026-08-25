@@ -1,4 +1,3 @@
-import asyncio
 import json
 import httpx
 
@@ -9,14 +8,25 @@ from app.providers.image import ImageProvider
 class HuggingFaceImageProvider(ImageProvider):
     name = "huggingface"
 
-    def __init__(self, space_url: str, timeout: int = 180):
+    def __init__(self, space_url, timeout=180, hf_token=None):
         self.space_url = space_url.rstrip("/")
         self.timeout = timeout
+        self.hf_token = hf_token
 
-    async def available(self) -> bool:
+    async def available(self):
         return bool(self.space_url)
 
-    async def generate(self, request, prompt: str) -> ImageResult:
+    def _headers(self):
+        headers = {
+            "Accept": "application/json",
+        }
+
+        if self.hf_token:
+            headers["Authorization"] = f"Bearer {self.hf_token}"
+
+        return headers
+
+    async def generate(self, request, prompt):
         if not await self.available():
             return ImageResult(
                 False,
@@ -24,19 +34,18 @@ class HuggingFaceImageProvider(ImageProvider):
                 error="not_configured",
             )
 
-        # O Space FLUX.2 Klein 4B espera exatamente:
+        # API real do Space:
         #
-        # mode
-        # t2i_prompt
-        # i2i_prompt
-        # i2i_image
-        # strength
-        # steps
-        # guidance_scale
-        # seed
-        #
-        # Como nosso fluxo principal gera uma imagem a partir
-        # de texto, usamos o modo "t2i".
+        # generate_images(
+        #     mode,
+        #     t2i_prompt,
+        #     i2i_prompt,
+        #     i2i_image,
+        #     strength,
+        #     steps,
+        #     guidance_scale,
+        #     seed
+        # )
 
         payload = {
             "data": [
@@ -44,7 +53,7 @@ class HuggingFaceImageProvider(ImageProvider):
                 prompt,
                 "",
                 None,
-                0.8,
+                0.0,
                 4,
                 4.0,
                 -1,
@@ -53,15 +62,10 @@ class HuggingFaceImageProvider(ImageProvider):
 
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(
-                    self.timeout,
-                    connect=30,
-                )
+                timeout=self.timeout,
+                headers=self._headers(),
+                follow_redirects=True,
             ) as client:
-
-                # -------------------------------------------------
-                # 1. Inicia a geração
-                # -------------------------------------------------
 
                 response = await client.post(
                     f"{self.space_url}/gradio_api/call/generate_images",
@@ -78,41 +82,19 @@ class HuggingFaceImageProvider(ImageProvider):
                         ),
                     )
 
-                try:
-                    data = response.json()
-                except json.JSONDecodeError:
-                    return ImageResult(
-                        False,
-                        self.name,
-                        error=(
-                            "invalid_json_from_huggingface: "
-                            f"{response.text[:1000]}"
-                        ),
-                    )
-
+                data = response.json()
                 event_id = data.get("event_id")
 
                 if not event_id:
                     return ImageResult(
                         False,
                         self.name,
-                        error=(
-                            "no_event_id: "
-                            f"{response.text[:1000]}"
-                        ),
+                        error=f"no_event_id: {response.text[:1000]}",
                     )
 
-                # -------------------------------------------------
-                # 2. Aguarda o resultado SSE
-                # -------------------------------------------------
-
-                result_url = (
+                result_response = await client.get(
                     f"{self.space_url}/gradio_api/call/"
                     f"generate_images/{event_id}"
-                )
-
-                result_response = await client.get(
-                    result_url
                 )
 
                 if result_response.status_code != 200:
@@ -120,26 +102,15 @@ class HuggingFaceImageProvider(ImageProvider):
                         False,
                         self.name,
                         error=(
-                            f"result_http_"
-                            f"{result_response.status_code}: "
+                            f"result_http_{result_response.status_code}: "
                             f"{result_response.text[:1000]}"
                         ),
                     )
 
                 image_url = None
-                last_event = None
+                final_error = None
 
                 for line in result_response.text.splitlines():
-
-                    line = line.strip()
-
-                    if not line:
-                        continue
-
-                    # Guarda o tipo de evento para diagnóstico
-                    if line.startswith("event:"):
-                        last_event = line[6:].strip()
-                        continue
 
                     if not line.startswith("data:"):
                         continue
@@ -149,98 +120,73 @@ class HuggingFaceImageProvider(ImageProvider):
                     if not raw:
                         continue
 
-                    # Se o Space retornar erro
-                    if raw == "null" and last_event == "error":
-                        return ImageResult(
-                            False,
-                            self.name,
-                            error=(
-                                "huggingface_generation_error: "
-                                "event:error data:null"
-                            ),
-                        )
-
                     try:
                         result_data = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
 
-                    # O resultado do Gallery normalmente chega
-                    # como uma lista contendo os resultados.
-                    if isinstance(result_data, list):
+                    if isinstance(result_data, dict):
+                        final_error = result_data.get("error")
+                        continue
 
-                        # Procura recursivamente por uma URL/path
-                        # de imagem.
-                        image_url = self._find_image_url(
-                            result_data
+                    if not isinstance(result_data, list):
+                        continue
+
+                    if len(result_data) < 1:
+                        continue
+
+                    gallery = result_data[0]
+
+                    if not isinstance(gallery, list):
+                        continue
+
+                    for item in gallery:
+
+                        if not isinstance(item, dict):
+                            continue
+
+                        image = item.get("image", item)
+
+                        if not isinstance(image, dict):
+                            continue
+
+                        image_url = (
+                            image.get("url")
+                            or image.get("path")
                         )
 
                         if image_url:
                             break
 
+                    if image_url:
+                        break
+
                 if not image_url:
+
                     return ImageResult(
                         False,
                         self.name,
                         error=(
-                            "no_image_url_in_sse_response: "
-                            f"{result_response.text[:2000]}"
+                            "no_image_url_in_sse_response"
+                            + (
+                                f": {final_error}"
+                                if final_error
+                                else ""
+                            )
                         ),
                     )
-
-                # -------------------------------------------------
-                # 3. Normaliza URL
-                # -------------------------------------------------
 
                 if image_url.startswith("/"):
                     image_url = (
                         f"{self.space_url}{image_url}"
                     )
 
-                elif image_url.startswith("./"):
-                    image_url = (
-                        f"{self.space_url}/"
-                        f"{image_url[2:]}"
-                    )
-
-                # -------------------------------------------------
-                # 4. Baixa a imagem
-                # -------------------------------------------------
-
                 image_response = await client.get(
-                    image_url
+                    image_url,
+                    headers=self._headers(),
                 )
 
-                if image_response.status_code != 200:
-                    return ImageResult(
-                        False,
-                        self.name,
-                        error=(
-                            f"image_download_http_"
-                            f"{image_response.status_code}"
-                        ),
-                    )
-
-                content_type = (
-                    image_response.headers
-                    .get("content-type", "")
-                    .lower()
-                )
-
-                if not (
-                    content_type.startswith("image/")
-                    or image_response.content.startswith(b"\x89PNG")
-                    or image_response.content.startswith(b"\xff\xd8")
-                    or image_response.content.startswith(b"RIFF")
-                ):
-                    return ImageResult(
-                        False,
-                        self.name,
-                        error=(
-                            "downloaded_content_is_not_image: "
-                            f"{content_type}"
-                        ),
-                    )
+                image_response.raise_for_status()
 
                 return ImageResult(
                     True,
@@ -259,77 +205,12 @@ class HuggingFaceImageProvider(ImageProvider):
             return ImageResult(
                 False,
                 self.name,
-                error=f"http_client_error: {exc}",
+                error=f"http_error: {exc}",
             )
 
         except Exception as exc:
             return ImageResult(
                 False,
                 self.name,
-                error=f"unexpected_error: {exc}",
+                error=f"{type(exc).__name__}: {exc}",
             )
-
-    @staticmethod
-    def _find_image_url(value):
-        """
-        Procura uma URL/path de imagem dentro da estrutura
-        retornada pelo Gradio.
-
-        Isso deixa o provider mais resistente a pequenas
-        diferenças no formato da resposta do Gallery.
-        """
-
-        if isinstance(value, dict):
-
-            # Formatos comuns do Gradio Gallery/FileData
-            for key in (
-                "url",
-                "path",
-            ):
-                candidate = value.get(key)
-
-                if isinstance(candidate, str):
-                    if (
-                        candidate.startswith("http://")
-                        or candidate.startswith("https://")
-                        or candidate.startswith("/")
-                        or candidate.startswith("./")
-                    ):
-                        return candidate
-
-            # Algumas respostas podem colocar a imagem
-            # dentro de "image".
-            if "image" in value:
-                result = (
-                    HuggingFaceImageProvider
-                    ._find_image_url(
-                        value["image"]
-                    )
-                )
-
-                if result:
-                    return result
-
-            # Procura em outros campos
-            for nested in value.values():
-                result = (
-                    HuggingFaceImageProvider
-                    ._find_image_url(nested)
-                )
-
-                if result:
-                    return result
-
-            return None
-
-        if isinstance(value, list):
-            for item in value:
-                result = (
-                    HuggingFaceImageProvider
-                    ._find_image_url(item)
-                )
-
-                if result:
-                    return result
-
-        return None
