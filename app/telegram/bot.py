@@ -35,7 +35,7 @@ class TelegramApp:
                         flush=True,
                     )
                     await message.answer(
-                        "Amor, tive um probleminha agora. Tenta de novo? ❤️"
+                        "Amor, tive um probleminha agora. Tenta de novo? â¤ï¸"
                     )
                     return
 
@@ -43,18 +43,19 @@ class TelegramApp:
                     await message.answer(
                         result.get(
                             "text",
-                            "Desculpa, tive um probleminha agora. ❤️",
+                            "Desculpa, tive um probleminha agora. â¤ï¸",
                         )
                     )
                     return
 
                 if result.get("type") == "image":
                     # 1) Fala da personagem em mensagem de TEXTO (se houver)
-                    # 2) Foto SEM legenda
+                    # 2) Foto SEM legenda (evita "Olha eu aqui" mojibake)
                     reply_text = (result.get("text") or "").strip()
                     if reply_text:
-                        if "â" in reply_text or "ï¸" in reply_text:
-                            reply_text = "Olha eu aqui ❤️"
+                        # limpa mojibake residual se vier do agent antigo
+                        if "Ã¢" in reply_text or "Ã¯Â¸" in reply_text:
+                            reply_text = "Olha eu aqui â¤ï¸"
                         await message.answer(reply_text)
 
                     photo_result = dict(result)
@@ -64,13 +65,13 @@ class TelegramApp:
                     ok = await self._send_image_result(message, photo_result)
                     if not ok and not reply_text:
                         await message.answer(
-                            "Amor, a foto nao saiu agora. Tenta de novo? ❤️"
+                            "Amor, a foto nao saiu agora. Tenta de novo? â¤ï¸"
                         )
                     return
 
                 await message.answer(
                     "Amor, tive um probleminha para processar "
-                    "sua mensagem agora. ❤️"
+                    "sua mensagem agora. â¤ï¸"
                 )
 
             except Exception as exc:
@@ -86,17 +87,17 @@ class TelegramApp:
                 try:
                     await message.answer(
                         "Amor, deu um probleminha aqui agora. "
-                        "Tenta mandar de novo em alguns segundos? ❤️"
+                        "Tenta mandar de novo em alguns segundos? â¤ï¸"
                     )
                 except Exception as send_exc:
                     print(
-                        f"[TelegramApp] Erro ao avisar usuário: "
+                        f"[TelegramApp] Erro ao avisar usuÃ¡rio: "
                         f"{type(send_exc).__name__}: {send_exc}",
                         flush=True,
                     )
 
     async def _send_image_result(self, message: Message, result: dict) -> bool:
-        """Prefere bytes (face swap). Foto SEMPRE sem caption."""
+        """Prefere bytes (face swap). Se sÃ³ URL, baixa e envia como arquivo."""
         image_url = result.get("url")
         image_bytes = result.get("bytes")
         caption = None  # fotos sem legenda (evita mojibake no Telegram)
@@ -138,7 +139,7 @@ class TelegramApp:
                 except Exception as e2:
                     print(f"[TelegramApp] answer_photo url failed: {e2}", flush=True)
 
-        print("[TelegramApp] sem dados de imagem utilizáveis", flush=True)
+        print("[TelegramApp] sem dados de imagem utilizÃ¡veis", flush=True)
         return False
 
     async def feed_webhook_update(self, update):
