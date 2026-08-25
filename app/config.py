@@ -1,6 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-pixabay_api_key: str | None = None
 
 class Settings(BaseSettings):
     telegram_bot_token: str
@@ -12,15 +11,22 @@ class Settings(BaseSettings):
     # GEMINI
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash-lite"
+
+    # OPENROUTER (fallback NSFW-friendly / Venice)
+    openrouter_api_key: str | None = None
+    openrouter_model: str = (
+        "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
+    )
     llm_timeout_seconds: int = 60
     llm_max_output_tokens: int = 1000
 
     # AUTONOMIA
     autonomy_token: str
-    autonomy_min_interval_minutes: int = 90
-    autonomy_max_daily_messages: int = 3
+    autonomy_min_interval_minutes: int = 30
+    autonomy_max_daily_messages: int = 12
+    autonomy_tick_seconds: int = 600
 
-    # IMAGENS (AI fallback)
+    # IMAGENS
     cloudflare_account_id: str | None = None
     cloudflare_api_token: str | None = None
     cloudflare_image_model: str = "@cf/black-forest-labs/flux-2-klein-4b"
@@ -28,13 +34,14 @@ class Settings(BaseSettings):
     pollinations_api_key: str | None = None
     pollinations_image_model: str = "flux"
 
-    image_daily_limit: int = 5
-    image_monthly_limit: int = 100
+    image_daily_limit: int = 9999
+    image_monthly_limit: int = 99999
     image_timeout_seconds: int = 120
 
-    # PEXELS (foto real — preferido)
     pexels_api_key: str | None = None
+    pixabay_api_key: str | None = None
     prefer_real_photos: bool = True
+    photo_every_message: bool = True
 
     # FACE SWAP
     face_swap_enabled: bool = True
@@ -52,7 +59,6 @@ class Settings(BaseSettings):
     hf_face_restore_model: str = "none"
     hf_face_restore_strength: float = 0.7
 
-    # REPLICATE (opcional)
     replicate_api_token: str | None = None
     replicate_face_swap_version: str = (
         "codeplugtech/face-swap:"
