@@ -1,6 +1,12 @@
 import re
 
 from app.images.models import ImageRequest
+from app.images.outfit import (
+    build_image_scene,
+    set_current_outfit,
+    extract_outfit_bits,
+    get_current_outfit,
+)
 
 
 class AgentBrain:
@@ -16,9 +22,6 @@ class AgentBrain:
     """
 
     IMAGE_REQUEST_PATTERNS = (
-        # ---------------------------------------------------------
-        # ENVIO DE FOTO / IMAGEM
-        # ---------------------------------------------------------
         r"\bme\s+manda\s+(uma\s+)?foto\b",
         r"\bmanda\s+(uma\s+)?foto\b",
         r"\bme\s+envia\s+(uma\s+)?foto\b",
@@ -27,10 +30,6 @@ class AgentBrain:
         r"\bme\s+manda\s+uma\s+imagem\b",
         r"\bmanda\s+uma\s+imagem\b",
         r"\bme\s+envia\s+uma\s+imagem\b",
-
-        # ---------------------------------------------------------
-        # TIRAR FOTO / SELFIE
-        # ---------------------------------------------------------
         r"\btira\s+(uma\s+)?foto\b",
         r"\btire\s+(uma\s+)?foto\b",
         r"\btirar\s+(uma\s+)?foto\b",
@@ -43,10 +42,6 @@ class AgentBrain:
         r"\bmanda\s+(uma\s+)?selfie\b",
         r"\bme\s+envia\s+(uma\s+)?selfie\b",
         r"\benvia\s+(uma\s+)?selfie\b",
-
-        # ---------------------------------------------------------
-        # QUERO VER A PERSONAGEM
-        # ---------------------------------------------------------
         r"\bquero\s+(uma\s+)?foto\s+sua\b",
         r"\bquero\s+ver\s+(uma\s+)?foto\s+sua\b",
         r"\bquero\s+(ver|uma)\s+foto\b",
@@ -58,20 +53,12 @@ class AgentBrain:
         r"\bquero\s+te\s+ver\b",
         r"\bquero\s+ver\s+você\b",
         r"\bquero\s+ver\s+voce\b",
-
-        # ---------------------------------------------------------
-        # MOSTRAR A PERSONAGEM
-        # ---------------------------------------------------------
         r"\bmostra\s+(como\s+você\s+está|como\s+voce\s+esta)\b",
         r"\bmostra\s+(você|voce)\b",
         r"\bme\s+mostra\s+(você|voce)\b",
         r"\bme\s+mostra\s+(como\s+você|como\s+voce)\b",
         r"\bme\s+mostra\s+como\s+você\s+está\b",
         r"\bme\s+mostra\s+como\s+voce\s+esta\b",
-
-        # ---------------------------------------------------------
-        # ROUPA / VISUAL
-        # ---------------------------------------------------------
         r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+vestindo\b",
         r"\bquero\s+ver\s+o\s+que\s+voce\s+esta\s+vestindo\b",
         r"\bquero\s+ver\s+o\s+que\s+você\s+está\s+usando\b",
@@ -158,17 +145,11 @@ class AgentBrain:
             )
 
         if text.lower().startswith("/foto"):
-            scene = text[5:].strip()
-
-            if not scene:
-                scene = (
-                    "uma selfie espontânea da Pâmela, "
-                    "tirada naquele momento para enviar ao usuário, "
-                    "com aparência natural, expressão carinhosa, "
-                    "olhando para a câmera e mostrando claramente "
-                    "seu rosto e parte da roupa"
-                )
-
+            scene = build_image_scene(
+                text[5:].strip() or text,
+                user_id=user.id,
+                character_id=character_id,
+            )
             return await self._handle_image_request(
                 user.id,
                 character_id,
@@ -176,8 +157,11 @@ class AgentBrain:
             )
 
         if self._is_image_request(text):
-            scene = self._build_natural_image_scene(text)
-
+            scene = build_image_scene(
+                text,
+                user_id=user.id,
+                character_id=character_id,
+            )
             return await self._handle_image_request(
                 user.id,
                 character_id,
@@ -199,6 +183,17 @@ class AgentBrain:
             reply,
         )
 
+        # Foto automatica a cada resposta (roupa + o que esta acontecendo)
+        photo_payload = await self._auto_photo_for_reply(
+            user_id=user.id,
+            character_id=character_id,
+            user_text=text,
+            reply_text=reply,
+            context=context,
+        )
+        if photo_payload:
+            return photo_payload
+
         return {
             "type": "text",
             "text": reply,
@@ -216,30 +211,8 @@ class AgentBrain:
 
         return False
 
-    def _build_natural_image_scene(self, text):
-        request = text.strip()
-
-        base_scene = (
-            "Criar uma fotografia espontânea da personagem Pâmela, "
-            "uma mulher adulta, como se ela estivesse tirando uma foto "
-            "naquele momento especificamente para enviar ao usuário. "
-            "A fotografia deve parecer natural e coerente com a conversa, "
-            "mantendo a identidade visual estabelecida da personagem."
-        )
-
-        if not request:
-            return (
-                base_scene
-                + " Mostrar claramente o rosto e parte da roupa."
-            )
-
-        return (
-            f"{base_scene} "
-            f"Interpretar o pedido do usuário como contexto da fotografia: "
-            f"{request}. "
-            "Preservar os detalhes relevantes de roupa, pose, expressão, "
-            "local, enquadramento e ambiente mencionados pelo usuário."
-        )
+    def _build_natural_image_scene(self, text, user_id=None, character_id=None):
+        return build_image_scene(text, user_id=user_id, character_id=character_id)
 
     async def _handle_image_request(
         self,
@@ -264,7 +237,10 @@ class AgentBrain:
             result = None
 
         if result and result.success:
-            caption = "❤️"
+            caption = "Olha eu aqui ❤️"
+            bits = extract_outfit_bits(scene)
+            if bits:
+                set_current_outfit(user_id, character_id, " ".join(bits[:6]))
 
             await self.context_manager.record(
                 user_id,
@@ -550,8 +526,7 @@ Pedidos de foto são tratados pelo aplicativo.
 
 Se o usuário pedir uma foto, selfie ou imagem da personagem,
 não responda que ela não possui câmera.
-
-O aplicativo detecta pedidos de imagem e pode gerar uma fotografia
+ O aplicativo detecta pedidos de imagem e pode gerar uma fotografia
 da personagem.
 
 Se uma imagem for efetivamente enviada pelo aplicativo, continue
@@ -639,20 +614,7 @@ Essa resposta deve ser evitada.
 """.strip()
 
     def _fallback_reply(self, context):
-        character = context.get(
-            "character",
-            {},
-        )
-
-        name = character.get(
-            "name",
-            "Pâmela",
-        )
-
-        return (
-            f"❤️"
-            
-        )
+        return "❤️"
 
     async def autonomous_tick(self):
         if not self.autonomy_service:
@@ -663,6 +625,117 @@ Essa resposta deve ser evitada.
             }
 
         return await self.autonomy_service.tick()
+
+    def _scene_from_conversation(self, user_text, reply_text, context, user_id, character_id):
+        """Roupa atual + o que esta acontecendo na conversa."""
+        base = build_image_scene(
+            user_text or reply_text or "selfie",
+            user_id=user_id,
+            character_id=character_id,
+        )
+        action_bits = []
+        blob = f"{user_text or ''} {reply_text or ''}".lower()
+        pairs = [
+            (r"\bcama\b|\bdeitada\b|\bquarto\b", "in bedroom on bed soft light"),
+            (r"\bbalada\b|\bfesta\b|\bclub\b", "at night club party lights"),
+            (r"\bpraia\b|\bmar\b", "at the beach sunny"),
+            (r"\bacademia\b|\btreino\b", "at the gym working out"),
+            (r"\bcarr?o\b|\bdirig", "in a car selfie"),
+            (r"\bcasa\b|\bsofa\b|\bsala\b", "at home cozy living room"),
+            (r"\bespelho\b|\bselfie\b", "mirror selfie"),
+            (r"\bbeij|\bamando|\bcarinh", "flirty close up romantic mood"),
+            (r"\bcozinha\b", "in the kitchen casual"),
+            (r"\bruas?\b|\brua\b", "street style outdoor"),
+        ]
+        for pat, eng in pairs:
+            if re.search(pat, blob, re.I):
+                action_bits.append(eng)
+        if not action_bits:
+            action_bits.append("candid photo natural pose looking at camera")
+
+        outfit = get_current_outfit(user_id, character_id) or "micro mini dress high heels"
+        m = re.search(r"OUTFIT:\s*([^|]+)", base or "", re.I)
+        if m:
+            outfit = m.group(1).strip()
+
+        scene = (
+            f"OUTFIT: {outfit} | "
+            f"PEDIDO: foto espontanea no momento da conversa; "
+            f"acao: {' '.join(action_bits[:2])}; "
+            f"contexto user: {(user_text or '')[:120]}; "
+            f"o que ela disse: {(reply_text or '')[:120]}"
+        )
+        print(f"[AUTO-PHOTO] scene={scene[:160]!r}", flush=True)
+        return scene
+
+    async def _auto_photo_for_reply(
+        self,
+        user_id,
+        character_id,
+        user_text,
+        reply_text,
+        context=None,
+    ):
+        """Gera foto a cada mensagem. Caption = fala da personagem."""
+        try:
+            from app.config import settings
+            enabled = bool(getattr(settings, "photo_every_message", True))
+        except Exception:
+            enabled = True
+
+        if not enabled or not self.image_service:
+            return None
+
+        scene = self._scene_from_conversation(
+            user_text, reply_text, context, user_id, character_id
+        )
+
+        try:
+            result = await self.generate_image(user_id, character_id, scene)
+        except Exception as e:
+            print(f"[AUTO-PHOTO] exception: {e}", flush=True)
+            result = None
+
+        if not result or not getattr(result, "success", False):
+            print(
+                f"[AUTO-PHOTO] falhou error={getattr(result, 'error', None)!r} — so texto",
+                flush=True,
+            )
+            return {"type": "text", "text": reply_text}
+
+        bits = extract_outfit_bits(scene)
+        if bits:
+            set_current_outfit(user_id, character_id, " ".join(bits[:6]))
+
+        try:
+            await self.context_manager.record(
+                user_id,
+                character_id,
+                "assistant",
+                f"[foto] {(reply_text or '')[:80]}",
+                metadata={
+                    "type": "image",
+                    "auto": True,
+                    "provider": getattr(result, "provider", None),
+                    "face_swapped": getattr(result, "face_swapped", False),
+                },
+            )
+        except Exception as e:
+            print(f"[AUTO-PHOTO] record fail: {e}", flush=True)
+
+        print(
+            f"[AUTO-PHOTO] ok provider={getattr(result, 'provider', None)} "
+            f"bytes={len(result.image_bytes) if result.image_bytes else 0}",
+            flush=True,
+        )
+
+        return {
+            "type": "image",
+            "url": result.image_url,
+            "bytes": result.image_bytes,
+            "caption": reply_text,
+            "text": reply_text,
+        }
 
     async def generate_image(
         self,
@@ -676,4 +749,4 @@ Essa resposta deve ser evitada.
                 character_id=character_id,
                 scene=scene,
             )
-        )
+        )      
