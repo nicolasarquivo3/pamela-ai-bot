@@ -20,6 +20,7 @@ from app.images.gelbooru_images import GelbooruSearchService
 from app.providers.huggingface_image import HuggingFaceImageProvider
 from app.providers.pollinations_image import PollinationsImageProvider
 from app.providers.stable_horde_image import StableHordeImageProvider
+from app.providers.perchance_image import PerchanceImageProvider
 
 from app.repositories import CharacterRepository, UserRepository
 
@@ -70,7 +71,49 @@ async def main():
 
     providers = []
 
-    # 1) Stable Horde FREE (melhor opcao gratis / NSFW ok)
+    # 1) Perchance (PRIORIDADE) â€” estilo do seu gerador
+    # Se a key cair: log perchance:invalid_key â†’ usa Horde/HF/etc atÃ© vocÃª trocar a key
+    # Channel: https://perchance.org/5yf90s8rdo
+    import os as _os
+    pc_key = (
+        getattr(settings, "perchance_user_key", None)
+        or _os.getenv("PERCHANCE_USER_KEY")
+    )
+    pc_channel = (
+        getattr(settings, "perchance_channel", None)
+        or _os.getenv("PERCHANCE_CHANNEL")
+        or "5yf90s8rdo"
+    )
+    if pc_key:
+        # lista de geradores (mesma API, channels diferentes)
+        raw_chs = (
+            getattr(settings, "perchance_channels", None)
+            or _os.getenv("PERCHANCE_CHANNELS")
+            or ""
+        )
+        extra_channels = [c.strip() for c in str(raw_chs).split(",") if c.strip()]
+        providers.append(
+            PerchanceImageProvider(
+                user_key=pc_key.strip(),
+                channel=(pc_channel or "5yf90s8rdo").strip(),
+                channels=extra_channels or None,
+                timeout=int(getattr(settings, "image_timeout_seconds", 180) or 180),
+                resolution=getattr(settings, "perchance_resolution", None) or "512x768",
+            )
+        )
+        print(
+            f"[IMAGE] Perchance #1 key={pc_key[:8]}... "
+            f"primary={pc_channel!r} extras={extra_channels}",
+            flush=True,
+        )
+    else:
+        print(
+            "[IMAGE] Perchance SEM KEY â€” defina PERCHANCE_USER_KEY "
+            "(cai direto no Stable Horde)",
+            flush=True,
+        )
+
+    # 2) Stable Horde FREE (fallback se Perchance falhar / key morta)
     # Key gratis: https://stablehorde.net/register
     horde = StableHordeImageProvider(
         api_key=getattr(settings, "stable_horde_api_key", None),
@@ -81,14 +124,14 @@ async def main():
     )
     providers.append(horde)
 
-    # 2) HuggingFace Space Flux (gratis, mas SSE falha muito)
+    # 3) HuggingFace Space Flux (gratis, mas SSE falha muito)
     huggingface_provider = HuggingFaceImageProvider(
         space_url="https://xurxowsky-flux2-klein-4b-playground.hf.space",
         timeout=settings.image_timeout_seconds,
     )
     providers.append(huggingface_provider)
 
-    # 3) Pollinations â€” so se tiver key com pollen (402 = sem credito)
+    # 4) Pollinations â€” so se tiver key com pollen (402 = sem credito)
     pol_key = getattr(settings, "pollinations_api_key", None)
     if pol_key:
         pollinations = PollinationsImageProvider(
