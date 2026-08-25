@@ -158,7 +158,7 @@ async def main():
         context_manager,
     ) = make_brain_components(session)
 
-    # LLM: Gemini -> se bloquear/falhar -> OpenRouter free chain
+    # LLM: Gemini -> se bloquear/falhar -> OpenRouter Venice
     gemini = GeminiLLM(
         settings.gemini_api_key,
         settings.gemini_model,
