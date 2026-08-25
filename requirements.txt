@@ -13,3 +13,4 @@ gradio_client>=1.0,<2
 psycopg2-binary
 requests>=2.31.0
 ddgs>=9.0.0
+httpx
