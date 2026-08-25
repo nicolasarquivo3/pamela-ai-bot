@@ -2,7 +2,9 @@
 Busca fotos reais no Pexels (100% free) e devolve a melhor URL
 para face swap.
 
-Estilo da personagem: sensual / cropped / minissaia / salto / lingerie.
+Prioridade:
+1) roupa / local / pose que o usuário PEDIU na mensagem
+2) senão, um STYLE_PACK sensual da personagem
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import httpx
 class PexelsSearchService:
     name = "pexels"
 
+    # Looks base da personagem (só quando o usuário NÃO pediu roupa específica)
     STYLE_PACKS = (
         "beautiful young woman tight mini dress crop top bodycon mirror selfie",
         "beautiful young woman leather jacket crop top sequin mini skirt night club selfie",
@@ -35,6 +38,101 @@ class PexelsSearchService:
         "beautiful young woman denim corset matching mini skirt fashion selfie",
     )
 
+    # PT/EN → termos curtos de busca no Pexels (roupa, local, pose)
+    CLOTHING_MAP = (
+        # vestidos
+        (r"\bvestido\s+preto\b", "black mini dress"),
+        (r"\bvestido\s+branco\b", "white mini dress"),
+        (r"\bvestido\s+azul\b", "blue mini dress"),
+        (r"\bvestido\s+vermelho\b", "red mini dress"),
+        (r"\bvestido\s+verde\b", "green mini dress"),
+        (r"\bvestido\s+rosa\b", "pink mini dress"),
+        (r"\bvestido\s+de\s+renda\b", "lace mini dress"),
+        (r"\bvestido\s+curto\b", "mini dress"),
+        (r"\bvestido\s+longo\b", "long dress"),
+        (r"\bvestido\s+justo\b", "bodycon mini dress"),
+        (r"\bvestido\s+paet[eê]\b", "sequin mini dress"),
+        (r"\bvestido\b", "mini dress"),
+        # saias
+        (r"\bsaia\s+jeans\b", "denim mini skirt"),
+        (r"\bsaia\s+preta\b", "black mini skirt"),
+        (r"\bsaia\s+branca\b", "white mini skirt"),
+        (r"\bsaia\s+de\s+paet[eê]\b", "sequin mini skirt"),
+        (r"\bminissaia\b", "mini skirt"),
+        (r"\bsaia\s+curta\b", "mini skirt"),
+        (r"\bsaia\b", "mini skirt"),
+        # tops
+        (r"\bcropped\b", "crop top"),
+        (r"\bcrop\s*top\b", "crop top"),
+        (r"\bblusa\s+de\s+renda\b", "lace top"),
+        (r"\bblusa\b", "blouse"),
+        (r"\btop\s+faixa\b", "bandeau top"),
+        (r"\btop\b", "crop top"),
+        (r"\bcorset\b", "corset"),
+        (r"\bcors[eé]\b", "corset"),
+        # conjuntos / looks
+        (r"\blingerie\b", "lingerie"),
+        (r"\blina\b", "lingerie"),
+        (r"\bcalcinha\b", "lingerie"),
+        (r"\bsuti[aã]n\b", "lingerie bra"),
+        (r"\bbody\b", "bodysuit"),
+        (r"\bmacac[aã]o\b", "catsuit jumpsuit"),
+        (r"\bjumpsuit\b", "jumpsuit"),
+        (r"\bjeans\b", "denim"),
+        (r"\bcouro\b", "leather"),
+        (r"\bjaqueta\s+de\s+couro\b", "leather jacket"),
+        (r"\bjaqueta\s+jeans\b", "denim jacket"),
+        (r"\bjaqueta\b", "jacket"),
+        (r"\bshort\b", "shorts"),
+        (r"\bshorts?\s+jeans\b", "denim shorts"),
+        (r"\bmeia\s*[-\s]?cal[cç]a\b", "stockings"),
+        (r"\bmeia\s*7\b", "thigh high stockings"),
+        (r"\bfishnet\b", "fishnet stockings"),
+        (r"\brede\b", "fishnet"),
+        # sapatos
+        (r"\bsalto\s+alto\b", "high heels"),
+        (r"\bsalto\b", "high heels"),
+        (r"\bscarpin\b", "high heels"),
+        (r"\bbota\s+over\b", "thigh high boots"),
+        (r"\bbota\s+alta\b", "thigh high boots"),
+        (r"\bbota\b", "boots"),
+        (r"\bsand[aá]lia\b", "sandals heels"),
+        (r"\bt[eê]nis\b", "sneakers"),
+        # locais
+        (r"\bpraia\b", "beach"),
+        (r"\bquarto\b", "bedroom"),
+        (r"\bcama\b", "bed"),
+        (r"\bcasa\b", "home"),
+        (r"\bbalada\b", "night club"),
+        (r"\bfesta\b", "party night"),
+        (r"\bacademia\b", "gym fitness"),
+        (r"\bbanheiro\b", "bathroom mirror"),
+        (r"\bespelho\b", "mirror selfie"),
+        (r"\bcozinha\b", "kitchen"),
+        (r"\brua\b", "street outdoor"),
+        (r"\bcarro\b", "car"),
+        (r"\bpiscina\b", "pool"),
+        # pose / enquadramento
+        (r"\bselfie\b", "selfie"),
+        (r"\bdeitada\b", "lying on bed"),
+        (r"\bdeitado\b", "lying on bed"),
+        (r"\bsorrindo\b", "smiling"),
+        (r"\bde\s+costas\b", "looking over shoulder"),
+        (r"\bcostas\s+nuas\b", "backless looking over shoulder"),
+        (r"\bagachad[oa]\b", "squatting pose"),
+        (r"\bsentinad[oa]\b", "sitting pose"),
+        # cores avulsas
+        (r"\bpreto\b", "black"),
+        (r"\bpreta\b", "black"),
+        (r"\bbranco\b", "white"),
+        (r"\bbranca\b", "white"),
+        (r"\bvermelho\b", "red"),
+        (r"\bvermelha\b", "red"),
+        (r"\bazul\b", "blue"),
+        (r"\brosa\b", "pink"),
+        (r"\bverde\b", "green"),
+    )
+
     def __init__(
         self,
         api_key: str | None,
@@ -51,42 +149,46 @@ class PexelsSearchService:
     async def available(self) -> bool:
         return bool(self.api_key)
 
-    def _clean_query(self, raw: str) -> str:
-        style = random.choice(self.STYLE_PACKS)
+    def _extract_user_bits(self, raw: str) -> list[str]:
+        """Extrai roupa/local/pose do texto do usuário (PT → EN)."""
         text = (raw or "").strip()
+        m = re.search(r"contexto da fotografia:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
+        if m:
+            text = m.group(1)
+        for bad in (
+            "Criar uma fotografia",
+            "fotografia espontânea",
+            "personagem Pâmela",
+            "personagem Pamela",
+            "mulher adulta",
+            "identidade visual",
+            "Interpretar o pedido",
+            "Preservar os detalhes",
+            "PHOTOREALISTIC",
+            "Create a photorealistic",
+        ):
+            text = re.sub(re.escape(bad), " ", text, flags=re.IGNORECASE)
 
-        extra: list[str] = []
-        replacements = {
-            r"\bsorrindo\b": "smiling",
-            r"\bsorriso\b": "smile",
-            r"\bna praia\b": "beach",
-            r"\bpraia\b": "beach",
-            r"\bdeitada\b": "lying on bed",
-            r"\bdeitado\b": "lying on bed",
-            r"\bcama\b": "bed",
-            r"\bquarto\b": "bedroom",
-            r"\bcasa\b": "home",
-            r"\bsofá\b": "couch",
-            r"\bsofa\b": "couch",
-            r"\bsexy\b": "sensual",
-            r"\blina\b": "lingerie",
-            r"\blingerie\b": "lingerie",
-            r"\bsalto\b": "high heels",
-            r"\bsapatos?\b": "high heels",
-            r"\bnoite\b": "night",
-            r"\bselfie\b": "selfie",
-            r"\bacademia\b": "gym",
-            r"\bbalada\b": "night club",
-        }
-        for pat, rep in replacements.items():
+        text = re.sub(r"\s+", " ", text).strip()
+        found: list[str] = []
+        for pat, eng in self.CLOTHING_MAP:
             if re.search(pat, text, flags=re.IGNORECASE):
-                extra.append(rep)
+                if eng not in found:
+                    found.append(eng)
+        return found
 
-        parts = [style]
-        if extra:
-            parts.append(" ".join(dict.fromkeys(extra)))
+    def _clean_query(self, raw: str) -> str:
+        bits = self._extract_user_bits(raw)
 
-        q = " ".join(parts)
+        if bits:
+            core = " ".join(bits[:6])
+            q = f"beautiful young woman {core} portrait mirror selfie"
+            print(f"[PEXELS] pedido do usuário: {bits}", flush=True)
+        else:
+            style = random.choice(self.STYLE_PACKS)
+            q = style
+            print(f"[PEXELS] sem roupa no pedido → pack: {style}", flush=True)
+
         if len(q) > 120:
             q = q[:120].rsplit(" ", 1)[0]
         return q.strip()
@@ -96,7 +198,7 @@ class PexelsSearchService:
             return None
 
         q = self._clean_query(query)
-        print(f"[PEXELS] query estilo: {q}", flush=True)
+        print(f"[PEXELS] query final: {q}", flush=True)
 
         params = {
             "query": q,
@@ -119,7 +221,7 @@ class PexelsSearchService:
 
             photos = (r.json().get("photos") or [])
             if not photos:
-                print(f"[PEXELS] zero results, fallback pack", flush=True)
+                print(f"[PEXELS] zero results for: {q}", flush=True)
                 fallback = random.choice(self.STYLE_PACKS)
                 return await self._search_raw(fallback)
 
