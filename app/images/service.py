@@ -144,6 +144,17 @@ class ImageService:
                         return ImageResult(False, error=err, provider="ai+faceswap")
                     print("[IMAGE] face_swap nao obrigatorio â€” usando AI sem swap", flush=True)
 
+            # anti-repeat final (pos face swap)
+            if RECENT is not None:
+                if RECENT.seen(content=result.image_bytes):
+                    print("[IMAGE] AI result DUPLICATA (hash) â€” descarta", flush=True)
+                    await self.image_repository.fail(record, "duplicate_image")
+                    return ImageResult(False, error="duplicate_image", provider=result.provider)
+                RECENT.remember(
+                    url=result.image_url,
+                    content=result.image_bytes,
+                )
+
             await self.image_repository.complete(record, result)
             await self.quota.consume(request.user_id, result.provider or "ai")
             return result
@@ -215,6 +226,12 @@ class ImageService:
                         await self.image_repository.fail(record, err)
                         return None
 
+            # rejeita se o RESULTADO final (pos face swap) ja foi usado
+            if RECENT is not None and RECENT.seen(content=result.image_bytes):
+                print(f"[IMAGE] {provider_name} resultado final DUPLICATA â€” tenta outra", flush=True)
+                await self.image_repository.fail(record, "duplicate_final")
+                return None
+
             await self.image_repository.complete(record, result)
             await self.quota.consume(request.user_id, result.provider or provider_name)
 
@@ -224,6 +241,7 @@ class ImageService:
                     photo_id=photo.get("photo_id"),
                     content=result.image_bytes or photo.get("bytes"),
                 )
+                RECENT.remember(content=result.image_bytes)
             return result
         except Exception as e:
             print(f"[IMAGE] {provider_name} error: {e}", flush=True)
