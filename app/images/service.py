@@ -1,14 +1,23 @@
+"""
+Ordem:
+  1) AI (Flux) + seed + face swap
+  2) Fallback: DDG → Bing → Reddit → Pixabay → Gelbooru → Pexels + face swap
+"""
+from __future__ import annotations
+
+import random
+import time
+
 from app.images.models import ImageResult, ImageRequest
 from app.images.prompt_builder import PromptBuilder
 
+try:
+    from app.images.recent_guard import RECENT
+except Exception:
+    RECENT = None  # type: ignore
+
 
 class ImageService:
-    """
-    Ordem (Pexels por ultimo):
-      1. DuckDuckGo  2. Bing  3. Reddit  4. Pixabay  5. Gelbooru  6. Pexels  7. AI
-    Padrao: micro saia / micro vestido.
-    """
-
     def __init__(
         self,
         character_repository,
@@ -23,6 +32,7 @@ class ImageService:
         pixabay_service=None,
         gelbooru_service=None,
         prefer_real_photos: bool = True,
+        prefer_ai_first: bool = True,
     ):
         self.character_repository = character_repository
         self.router = router
@@ -36,7 +46,11 @@ class ImageService:
         self.pixabay_service = pixabay_service
         self.gelbooru_service = gelbooru_service
         self.prefer_real_photos = bool(prefer_real_photos)
+        self.prefer_ai_first = bool(prefer_ai_first)
         self.prompt_builder = PromptBuilder()
+
+    def _fresh_seed(self) -> int:
+        return (int(time.time() * 1000) + random.randint(0, 1_000_000)) % 2_147_483_647
 
     async def generate(self, request: ImageRequest) -> ImageResult:
         if not await self.quota.allowed(request.user_id):
@@ -47,10 +61,33 @@ class ImageService:
             return ImageResult(False, error="character_not_found")
 
         scene = (request.scene or "").strip() or (
-            "sexy woman micro mini dress micro mini skirt fashion selfie"
+            "OUTFIT: micro mini dress high heels | PEDIDO: selfie"
         )
-        print(f"[IMAGE] generate scene={scene[:100]!r}", flush=True)
+        request.seed = self._fresh_seed()
+        request.randomize_seed = True
 
+        print(
+            f"[IMAGE] generate seed={request.seed} scene={scene[:120]!r}",
+            flush=True,
+        )
+
+        # 1) AI
+        if self.prefer_ai_first:
+            ai = await self._try_ai_generation(request, character, scene)
+            if ai and ai.success:
+                print(
+                    f"[IMAGE] AI ok provider={ai.provider} "
+                    f"bytes={len(ai.image_bytes or b'')}",
+                    flush=True,
+                )
+                return ai
+            print(
+                f"[IMAGE] AI falhou ({getattr(ai, 'error', None)}) "
+                f"-> fallback fotos reais",
+                flush=True,
+            )
+
+        # 2) Fallback real
         if self.prefer_real_photos:
             chain = [
                 ("duckduckgo", self.web_image_service),
@@ -67,12 +104,58 @@ class ImageService:
                 if result and result.success:
                     return result
 
-        return await self._try_ai_generation(request, character, scene)
+        if not self.prefer_ai_first:
+            return await self._try_ai_generation(request, character, scene)
+
+        return ImageResult(False, error="all_image_providers_failed")
+
+    async def _try_ai_generation(self, request, character, scene) -> ImageResult:
+        if not (request.scene or "").strip():
+            request.scene = scene
+
+        prompt = self.prompt_builder.build(character, request)
+        negative_prompt = self.prompt_builder.NEGATIVE_PROMPT
+        print(f"[IMAGE] AI prompt[:200]={prompt[:200]!r}", flush=True)
+
+        record = await self.image_repository.create(
+            request, prompt, negative_prompt
+        )
+
+        try:
+            result = await self.router.generate(request, prompt)
+
+            if not result or not result.success:
+                err = getattr(result, "error", None) or "generation_failed"
+                await self.image_repository.fail(record, err)
+                return result or ImageResult(False, error=err)
+
+            if self.face_swap_service:
+                result = await self.face_swap_service.apply(result)
+                if not result.success:
+                    await self.image_repository.fail(
+                        record, result.error or "face_swap_failed"
+                    )
+                    print(f"[IMAGE] Face swap falhou no AI: {result.error}", flush=True)
+                    return result
+
+            await self.image_repository.complete(record, result)
+            await self.quota.consume(request.user_id, result.provider or "ai")
+            return result
+
+        except Exception as exc:
+            await self.image_repository.fail(record, str(exc))
+            print(f"[IMAGE] AI exception: {exc}", flush=True)
+            return ImageResult(False, error=str(exc))
 
     async def _try_source(self, provider_name, service, request, scene):
         try:
             if hasattr(service, "available"):
-                if not await service.available():
+                ok = service.available
+                if callable(ok):
+                    ok = ok()
+                    if hasattr(ok, "__await__"):
+                        ok = await ok
+                if not ok:
                     return None
 
             photo = await service.search(scene)
@@ -80,11 +163,20 @@ class ImageService:
                 print(f"[IMAGE] {provider_name}: nenhuma foto", flush=True)
                 return None
 
-            print(
-                f"[IMAGE] {provider_name} ok: query={photo.get('query')} "
-                f"bytes={len(photo.get('bytes') or b'')}",
-                flush=True,
-            )
+            if RECENT is not None and RECENT.seen(
+                url=photo.get("url"),
+                photo_id=photo.get("photo_id"),
+                content=photo.get("bytes"),
+            ):
+                photo = await service.search(scene + " alternative pose")
+                if not photo or RECENT.seen(
+                    url=photo.get("url"),
+                    photo_id=photo.get("photo_id"),
+                    content=photo.get("bytes"),
+                ):
+                    return None
+
+            print(f"[IMAGE] {provider_name} ok: query={photo.get('query')}", flush=True)
 
             record = await self.image_repository.create(
                 request,
@@ -113,36 +205,14 @@ class ImageService:
 
             await self.image_repository.complete(record, result)
             await self.quota.consume(request.user_id, result.provider or provider_name)
+
+            if RECENT is not None:
+                RECENT.remember(
+                    url=result.image_url or photo.get("url"),
+                    photo_id=photo.get("photo_id"),
+                    content=result.image_bytes or photo.get("bytes"),
+                )
             return result
         except Exception as e:
             print(f"[IMAGE] {provider_name} error: {e}", flush=True)
             return None
-
-    async def _try_ai_generation(self, request, character, scene):
-        prompt = self.prompt_builder.build(character, request)
-        negative_prompt = self.prompt_builder.NEGATIVE_PROMPT
-
-        record = await self.image_repository.create(request, prompt, negative_prompt)
-
-        try:
-            result = await self.router.generate(request, prompt)
-            if not result.success:
-                await self.image_repository.fail(
-                    record, result.error or "generation_failed"
-                )
-                return result
-
-            if self.face_swap_service:
-                result = await self.face_swap_service.apply(result)
-                if not result.success:
-                    await self.image_repository.fail(
-                        record, result.error or "face_swap_failed"
-                    )
-                    return result
-
-            await self.image_repository.complete(record, result)
-            await self.quota.consume(request.user_id, result.provider or "unknown")
-            return result
-        except Exception as exc:
-            await self.image_repository.fail(record, str(exc))
-            return ImageResult(False, error=str(exc))
