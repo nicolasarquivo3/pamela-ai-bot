@@ -4,9 +4,8 @@ import httpx
 class GeminiLLM:
     """
     Adaptador REST para Gemini.
-
-    O Gemini recebe o prompt de personalidade separado do histórico
-    da conversa.
+    Retorna None em erro, safety block, candidate vazio
+    (dispara fallback OpenRouter no LLMRouter).
     """
 
     def __init__(
@@ -20,7 +19,6 @@ class GeminiLLM:
         self.model = model
         self.timeout = timeout
         self.max_output_tokens = max_output_tokens
-
         self.url = (
             "https://generativelanguage.googleapis.com/"
             f"v1beta/models/{model}:generateContent"
@@ -29,61 +27,35 @@ class GeminiLLM:
     async def available(self):
         return bool(self.api_key)
 
-    async def generate(
-        self,
-        system_instruction,
-        messages,
-    ):
+    async def generate(self, system_instruction, messages):
         if not await self.available():
-            print(
-                "[Gemini] GEMINI_API_KEY não configurada."
-            )
+            print("[Gemini] GEMINI_API_KEY nao configurada.", flush=True)
             return None
 
         contents = []
-
         for message in messages:
-            content = (
-                message.get("content")
-                or ""
-            ).strip()
-
+            content = (message.get("content") or "").strip()
             if not content:
                 continue
-
-            role = (
-                "model"
-                if message.get("role") == "assistant"
-                else "user"
-            )
-
-            contents.append(
-                {
-                    "role": role,
-                    "parts": [
-                        {
-                            "text": content,
-                        }
-                    ],
-                }
-            )
+            role = "model" if message.get("role") == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": content}]})
 
         if not contents:
             return None
 
         payload = {
-            "system_instruction": {
-                "parts": [
-                    {
-                        "text": system_instruction,
-                    }
-                ]
-            },
+            "system_instruction": {"parts": [{"text": system_instruction}]},
             "contents": contents,
             "generationConfig": {
                 "maxOutputTokens": self.max_output_tokens,
                 "temperature": 0.85,
             },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+            ],
         }
 
         headers = {
@@ -92,98 +64,58 @@ class GeminiLLM:
         }
 
         try:
-            print(
-                "[Gemini] Enviando requisição para "
-                f"modelo: {self.model}"
-            )
+            print(f"[Gemini] Enviando requisicao para modelo: {self.model}", flush=True)
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(self.url, headers=headers, json=payload)
 
-            async with httpx.AsyncClient(
-                timeout=self.timeout
-            ) as client:
-                response = await client.post(
-                    self.url,
-                    headers=headers,
-                    json=payload,
-                )
-
-            print(
-                f"[Gemini] HTTP {response.status_code}"
-            )
+            print(f"[Gemini] HTTP {response.status_code}", flush=True)
 
             if response.status_code != 200:
-                print(
-                    "[Gemini] ERRO DA API:",
-                    response.text[:3000],
-                )
+                print("[Gemini] ERRO DA API:", response.text[:3000], flush=True)
                 return None
 
             data = response.json()
 
-            candidates = (
-                data.get("candidates")
-                or []
-            )
+            feedback = data.get("promptFeedback") or {}
+            if feedback.get("blockReason"):
+                print(
+                    f"[Gemini] BLOQUEADO promptFeedback={feedback.get('blockReason')}",
+                    flush=True,
+                )
+                return None
 
+            candidates = data.get("candidates") or []
             if not candidates:
-                print(
-                    "[Gemini] Nenhum candidate retornado."
-                )
-                print(
-                    "[Gemini] Resposta:",
-                    data,
-                )
+                print("[Gemini] Nenhum candidate (provavel safety).", flush=True)
+                print("[Gemini] Resposta:", data, flush=True)
                 return None
 
             candidate = candidates[0]
+            finish = (candidate.get("finishReason") or "").upper()
+            if finish in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "OTHER"):
+                print(f"[Gemini] finishReason={finish} -> trata como bloqueio", flush=True)
+                return None
 
-            content = (
-                candidate.get("content")
-                or {}
-            )
-
-            parts = (
-                content.get("parts")
-                or []
-            )
-
+            content = candidate.get("content") or {}
+            parts = content.get("parts") or []
             text = "".join(
-                part.get("text", "")
-                for part in parts
-                if part.get("text")
+                part.get("text", "") for part in parts if part.get("text")
             ).strip()
 
             if not text:
-                print(
-                    "[Gemini] Candidate sem texto."
-                )
-                print(
-                    "[Gemini] Candidate:",
-                    candidate,
-                )
+                print("[Gemini] Candidate sem texto.", flush=True)
+                print("[Gemini] Candidate:", candidate, flush=True)
                 return None
 
-            print(
-                "[Gemini] Resposta recebida "
-                "com sucesso."
-            )
-
+            print("[Gemini] Resposta recebida com sucesso.", flush=True)
             return text
 
         except httpx.TimeoutException as exc:
-            print(
-                f"[Gemini] TIMEOUT: {exc}"
-            )
+            print(f"[Gemini] TIMEOUT: {exc}", flush=True)
             return None
-
         except httpx.HTTPError as exc:
-            print(
-                f"[Gemini] ERRO HTTP: {exc}"
-            )
+            print(f"[Gemini] ERRO HTTP: {exc}", flush=True)
             return None
-
         except Exception as exc:
-            print(
-                "[Gemini] ERRO INESPERADO: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            print(f"[Gemini] ERRO INESPERADO: {type(exc).__name__}: {exc}", flush=True)
             return None
