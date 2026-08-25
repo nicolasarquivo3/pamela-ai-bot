@@ -12,8 +12,6 @@ from app.images.service import ImageService
 from app.images.face_swap import FaceSwapService
 
 from app.providers.huggingface_image import HuggingFaceImageProvider
-from app.providers.pollinations_image import PollinationsImageProvider
-from app.providers.cloudflare_image import CloudflareImageProvider
 
 from app.repositories import CharacterRepository, UserRepository
 
@@ -76,60 +74,36 @@ async def main():
     users = UserRepository(session)
 
     # =========================================================
-    # PROVIDERS DE IMAGEM
+    # PROVIDER DE IMAGEM
+    # =========================================================
+    #
+    # Neste momento usamos somente o Hugging Face.
+    #
+    # Isso evita o Pollinations 402 Payment Required e deixa
+    # o sistema focado no Space gratuito que você configurou.
+    #
     # =========================================================
 
     providers = []
-
-    # ---------------------------------------------------------
-    # HUGGING FACE SPACE
-    # ---------------------------------------------------------
 
     huggingface_space_url = (
         "https://xurxowsky-flux2-klein-4b-playground.hf.space"
     )
 
-    providers.append(
-        HuggingFaceImageProvider(
-            space_url=huggingface_space_url,
-            timeout=settings.image_timeout_seconds,
-            hf_token=settings.hf_token,
-        )
+    huggingface_provider = HuggingFaceImageProvider(
+        space_url=huggingface_space_url,
+        timeout=settings.image_timeout_seconds,
+        hf_token=settings.hf_token,
     )
 
-    # ---------------------------------------------------------
-    # CLOUDFLARE
-    # ---------------------------------------------------------
-
-    if (
-        settings.cloudflare_account_id
-        and settings.cloudflare_api_token
-    ):
-        providers.append(
-            CloudflareImageProvider(
-                settings.cloudflare_account_id,
-                settings.cloudflare_api_token,
-                settings.cloudflare_image_model,
-                settings.image_timeout_seconds,
-            )
-        )
-
-    # ---------------------------------------------------------
-    # POLLINATIONS
-    # ---------------------------------------------------------
-
-    if settings.pollinations_api_key:
-        providers.append(
-            PollinationsImageProvider(
-                settings.pollinations_api_key,
-                settings.pollinations_image_model,
-                settings.image_timeout_seconds,
-            )
-        )
+    providers.append(huggingface_provider)
 
     print(
         "[IMAGE] Providers configurados: "
-        + ", ".join(provider.name for provider in providers),
+        + ", ".join(
+            provider.name
+            for provider in providers
+        ),
         flush=True,
     )
 
@@ -143,7 +117,7 @@ async def main():
 
         reference_path = settings.face_reference_image_path
 
-        if not reference_path.startswith("/"):
+        if reference_path and not reference_path.startswith("/"):
             reference_path = f"/app/{reference_path}"
 
         face_swap_service = FaceSwapService(
@@ -259,7 +233,7 @@ async def main():
     )
 
     # =========================================================
-    # UVICORN
+    # UVICORN / RENDER
     # =========================================================
 
     port = int(
@@ -289,9 +263,15 @@ async def main():
 
     finally:
 
-        await telegram.bot.session.close()
+        try:
+            await telegram.bot.session.close()
+        except Exception:
+            pass
 
-        await session.close()
+        try:
+            await session.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
