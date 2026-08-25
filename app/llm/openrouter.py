@@ -1,17 +1,46 @@
 """
 OpenRouter LLM (OpenAI-compatible).
-Padrao: Venice Dolphin uncensored free.
+
+Lista free atualizada (ago/2026): os slugs :free mudam.
+Ordem: menos filtrados primeiro, depois router generico.
 """
 from __future__ import annotations
 
 import httpx
 
 
+# Modelos free que ainda existem na API (ago/2026).
+# Venice :free morreu; versao paga exige credito.
+DEFAULT_FREE_MODELS = [
+    # Router automatico free
+    "openrouter/free",
+    # Compactos / chat
+    "liquid/lfm-2.5-2.6b:free",
+    "thinkingmachines/inkling-small:free",
+    "thinkingmachines/inkling:free",
+    # Geral
+    "nvidia/nemotron-3.5-lightning:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "z-ai/glm-5.2:free",
+    "poolside/laguna-xs-2.1:free",
+    "poolside/laguna-s-2.1:free",
+    "stealth/ox-alpha",
+    # Se tiver credito OpenRouter (nao free):
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition",
+]
+
+
 class OpenRouterLLM:
+    """
+    generate(system_instruction, messages) -> str | None
+    Mesma interface do GeminiLLM.
+    """
+
     def __init__(
         self,
         api_key: str | None,
-        model: str = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+        model: str | None = None,
         timeout: int = 90,
         max_output_tokens: int = 1000,
         site_url: str = "https://pamela-ai.onrender.com",
@@ -19,15 +48,21 @@ class OpenRouterLLM:
         extra_models: list[str] | None = None,
     ):
         self.api_key = (api_key or "").strip()
-        self.model = model
+        self.model = (model or DEFAULT_FREE_MODELS[0]).strip()
         self.timeout = int(timeout)
         self.max_output_tokens = int(max_output_tokens)
         self.site_url = site_url
         self.app_name = app_name
-        self.extra_models = extra_models or [
-            "poolside/laguna-xs.2:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
-        ]
+
+        extras = list(extra_models) if extra_models else list(DEFAULT_FREE_MODELS)
+        # garante principal no inicio, sem duplicar
+        ordered: list[str] = []
+        for m in [self.model] + extras:
+            m = (m or "").strip()
+            if m and m not in ordered:
+                ordered.append(m)
+        self.models = ordered
+        self.extra_models = ordered[1:]
         self.url = "https://openrouter.ai/api/v1/chat/completions"
 
     async def available(self) -> bool:
@@ -71,16 +106,16 @@ class OpenRouterLLM:
         data = response.json()
         choices = data.get("choices") or []
         if not choices:
-            print(f"[OpenRouter] sem choices: {data}", flush=True)
+            print(f"[OpenRouter] sem choices: {str(data)[:500]}", flush=True)
             return None
 
-        msg = (choices[0].get("message") or {})
+        msg = choices[0].get("message") or {}
         text = (msg.get("content") or "").strip()
         if not text:
             print("[OpenRouter] resposta vazia", flush=True)
             return None
 
-        print("[OpenRouter] sucesso", flush=True)
+        print(f"[OpenRouter] sucesso model={model} chars={len(text)}", flush=True)
         return text
 
     async def generate(self, system_instruction, messages):
@@ -92,9 +127,8 @@ class OpenRouterLLM:
         if len(openai_messages) <= 1:
             return None
 
-        models = [self.model] + [m for m in self.extra_models if m != self.model]
         last_err = None
-        for model in models:
+        for model in self.models:
             try:
                 text = await self._call_model(model, openai_messages)
                 if text:
@@ -108,4 +142,6 @@ class OpenRouterLLM:
 
         if last_err:
             print(f"[OpenRouter] todos falharam: {last_err}", flush=True)
+        else:
+            print("[OpenRouter] todos falharam (sem texto)", flush=True)
         return None
