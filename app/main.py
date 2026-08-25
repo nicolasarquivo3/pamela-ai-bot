@@ -158,6 +158,7 @@ async def main():
         context_manager,
     ) = make_brain_components(session)
 
+    # LLM: Gemini -> se bloquear/falhar -> OpenRouter free chain
     gemini = GeminiLLM(
         settings.gemini_api_key,
         settings.gemini_model,
@@ -169,7 +170,7 @@ async def main():
         model=getattr(
             settings,
             "openrouter_model",
-            "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+            "openrouter/free",
         ),
         timeout=int(getattr(settings, "llm_timeout_seconds", 90) or 90),
         max_output_tokens=int(
@@ -214,6 +215,7 @@ async def main():
 
     app = create_web_app(agent, telegram)
 
+    # Loop interno: mensagens proativas
     autonomy_interval = int(
         getattr(settings, "autonomy_tick_seconds", None)
         or os.getenv("AUTONOMY_TICK_SECONDS", "600")
