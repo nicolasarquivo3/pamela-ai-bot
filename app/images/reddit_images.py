@@ -1,6 +1,7 @@
 """
 Busca imagens no Reddit (JSON publico, sem API key).
 Fashion / lingerie adult 18+.
+No Render pode retornar 403 — o service cai no Pexels.
 """
 from __future__ import annotations
 
@@ -42,7 +43,6 @@ class RedditImageSearchService:
     def __init__(self, timeout: int = 40, limit: int = 30):
         self.timeout = int(timeout)
         self.limit = min(int(limit), 50)
-        self.base = "https://www.reddit.com"
 
     async def available(self) -> bool:
         return True
@@ -91,9 +91,20 @@ class RedditImageSearchService:
         print(f"[REDDIT] subs={subs}", flush=True)
 
         headers = {
-            "User-Agent": "pamela-ai-bot/1.0 (face-swap fashion; contact: bot)"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
         }
+
         candidates: list[dict[str, Any]] = []
+        bases = (
+            "https://www.reddit.com",
+            "https://old.reddit.com",
+        )
 
         try:
             async with httpx.AsyncClient(
@@ -102,26 +113,43 @@ class RedditImageSearchService:
                 headers=headers,
             ) as client:
                 for sub in subs:
-                    api = f"{self.base}/r/{sub}/hot.json"
-                    try:
-                        r = await client.get(api, params={"limit": self.limit})
-                        if r.status_code != 200:
-                            print(f"[REDDIT] {sub} status={r.status_code}", flush=True)
-                            continue
-                        children = (r.json().get("data") or {}).get("children") or []
-                        for post in children:
-                            img = self._extract_image_url(post)
-                            if not img:
-                                continue
-                            title = (post.get("data") or {}).get("title") or ""
-                            candidates.append(
-                                {"url": img, "title": title, "sub": sub}
+                    for base in bases:
+                        api = f"{base}/r/{sub}/hot.json"
+                        try:
+                            r = await client.get(
+                                api,
+                                params={"limit": self.limit, "raw_json": 1},
                             )
-                    except Exception as e:
-                        print(f"[REDDIT] fetch {sub} error: {e}", flush=True)
+                            if r.status_code == 403:
+                                print(f"[REDDIT] {sub} 403 via {base}", flush=True)
+                                continue
+                            if r.status_code != 200:
+                                print(
+                                    f"[REDDIT] {sub} status={r.status_code}",
+                                    flush=True,
+                                )
+                                continue
+
+                            children = (
+                                (r.json().get("data") or {}).get("children") or []
+                            )
+                            for post in children:
+                                img = self._extract_image_url(post)
+                                if not img:
+                                    continue
+                                title = (post.get("data") or {}).get("title") or ""
+                                candidates.append(
+                                    {"url": img, "title": title, "sub": sub}
+                                )
+                            break
+                        except Exception as e:
+                            print(f"[REDDIT] fetch {sub} error: {e}", flush=True)
 
                 if not candidates:
-                    print("[REDDIT] zero candidates", flush=True)
+                    print(
+                        "[REDDIT] zero candidates (comum no Render/cloud)",
+                        flush=True,
+                    )
                     return None
 
                 random.shuffle(candidates)
