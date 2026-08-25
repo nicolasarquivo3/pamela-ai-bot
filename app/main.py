@@ -70,17 +70,8 @@ async def main():
 
     providers = []
 
-    # 1) Pollinations FREE (prioridade)
-    pollinations = PollinationsImageProvider(
-        api_key=getattr(settings, "pollinations_api_key", None),
-        model=getattr(settings, "pollinations_image_model", None) or "flux",
-        timeout=int(getattr(settings, "image_timeout_seconds", 120) or 120),
-        width=768,
-        height=1024,
-    )
-    providers.append(pollinations)
-
-    # 2) Stable Horde FREE (distribuido, NSFW ok)
+    # 1) Stable Horde FREE (melhor opcao gratis / NSFW ok)
+    # Key gratis: https://stablehorde.net/register
     horde = StableHordeImageProvider(
         api_key=getattr(settings, "stable_horde_api_key", None),
         timeout=int(getattr(settings, "image_timeout_seconds", 180) or 180),
@@ -90,12 +81,31 @@ async def main():
     )
     providers.append(horde)
 
-    # 3) HuggingFace Space Flux (muitas vezes falha SSE)
+    # 2) HuggingFace Space Flux (gratis, mas SSE falha muito)
     huggingface_provider = HuggingFaceImageProvider(
         space_url="https://xurxowsky-flux2-klein-4b-playground.hf.space",
         timeout=settings.image_timeout_seconds,
     )
     providers.append(huggingface_provider)
+
+    # 3) Pollinations â€” so se tiver key com pollen (402 = sem credito)
+    pol_key = getattr(settings, "pollinations_api_key", None)
+    if pol_key:
+        pollinations = PollinationsImageProvider(
+            api_key=pol_key,
+            model=getattr(settings, "pollinations_image_model", None) or "flux",
+            timeout=int(getattr(settings, "image_timeout_seconds", 120) or 120),
+            width=768,
+            height=1024,
+            max_retries=2,
+        )
+        providers.append(pollinations)
+        print("[IMAGE] Pollinations ativo (key presente)", flush=True)
+    else:
+        print(
+            "[IMAGE] Pollinations desligado (sem key / free acabou â€” use Stable Horde)",
+            flush=True,
+        )
 
     print(
         "[IMAGE] Providers AI: " + ", ".join(p.name for p in providers),
