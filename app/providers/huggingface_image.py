@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import json
+import random
 from urllib.parse import quote
 
 import httpx
@@ -8,6 +11,38 @@ from app.providers.image import ImageProvider
 
 
 class HuggingFaceImageProvider(ImageProvider):
+    """
+    Provider específico para o Space:
+
+        Xurxowsky/flux2-klein-4b-playground
+
+    URL esperada:
+
+        https://xurxowsky-flux2-klein-4b-playground.hf.space
+
+    A função pública do Space é:
+
+        generate_images(
+            mode,
+            t2i_prompt,
+            i2i_prompt,
+            i2i_image,
+            strength,
+            steps,
+            guidance_scale,
+            seed,
+        )
+
+    IMPORTANTE:
+    O Space NÃO possui os parâmetros style_preset ou aspect_ratio.
+
+    O endpoint utilizado é o sistema de Queue/SSE do Gradio:
+
+        POST /gradio_api/call/generate_images
+
+        GET  /gradio_api/call/generate_images/{event_id}
+    """
+
     name = "huggingface"
 
     def __init__(
@@ -20,6 +55,10 @@ class HuggingFaceImageProvider(ImageProvider):
         self.timeout = timeout
         self.hf_token = hf_token
 
+    # =========================================================
+    # AVAILABILITY
+    # =========================================================
+
     async def available(self) -> bool:
         return bool(self.space_url)
 
@@ -30,6 +69,7 @@ class HuggingFaceImageProvider(ImageProvider):
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
+            "Content-Type": "application/json",
             "User-Agent": "pamela-ai/1.0",
             "x-gradio-user": "api",
         }
@@ -56,120 +96,133 @@ class HuggingFaceImageProvider(ImageProvider):
 
     @staticmethod
     def _generation_parameters(request=None) -> dict:
-        style_preset = "Photoreal / Fotorrealista"
-        aspect_ratio = "Portrait 4:5 / Retrato 4:5"
+        """
+        Prepara SOMENTE os parâmetros aceitos pelo Space.
 
-        steps = 28
+        O Space aceita:
+
+            mode
+            t2i_prompt
+            i2i_prompt
+            i2i_image
+            strength
+            steps
+            guidance_scale
+            seed
+
+        Não enviamos:
+
+            style_preset
+            aspect_ratio
+
+        porque esses campos NÃO existem na função
+        generate_images() desse Space.
+        """
+
+        # -----------------------------------------------------
+        # Valores padrão do Space
+        # -----------------------------------------------------
+
+        steps = 4
         guidance_scale = 4.0
-        seed = -1
-        strength = 0.0
+        seed = 42
+        strength = 0.8
 
         if request is None:
             return {
-                "style_preset": style_preset,
-                "aspect_ratio": aspect_ratio,
                 "steps": steps,
                 "guidance_scale": guidance_scale,
                 "seed": seed,
                 "strength": strength,
             }
 
-        width = getattr(
-            request,
-            "width",
-            1024,
-        )
+        # -----------------------------------------------------
+        # Steps
+        # -----------------------------------------------------
 
-        height = getattr(
+        requested_steps = getattr(
             request,
-            "height",
-            1024,
+            "steps",
+            steps,
         )
 
         try:
-            width = int(width)
+            steps = int(requested_steps)
         except (TypeError, ValueError):
-            width = 1024
+            steps = 4
+
+        # O Space aceita de 1 a 50.
+        steps = max(1, min(steps, 50))
+
+        # -----------------------------------------------------
+        # Guidance
+        # -----------------------------------------------------
+
+        requested_guidance = getattr(
+            request,
+            "guidance_scale",
+            guidance_scale,
+        )
 
         try:
-            height = int(height)
+            guidance_scale = float(
+                requested_guidance
+            )
         except (TypeError, ValueError):
-            height = 1024
+            guidance_scale = 4.0
 
-        width = max(width, 1)
-        height = max(height, 1)
+        # O componente do Space usa 1.0 até 10.0.
+        guidance_scale = max(
+            1.0,
+            min(guidance_scale, 10.0),
+        )
 
         # -----------------------------------------------------
-        # Aspect ratio
+        # Seed
         # -----------------------------------------------------
 
-        if width > height:
-            ratio = width / height
+        requested_seed = getattr(
+            request,
+            "seed",
+            seed,
+        )
 
-            if ratio >= 1.6:
-                aspect_ratio = (
-                    "Wide 16:9 / Panoramico 16:9"
-                )
-            else:
-                aspect_ratio = (
-                    "Landscape 5:4 / Horizontal 5:4"
-                )
+        try:
+            seed = int(requested_seed)
+        except (TypeError, ValueError):
+            seed = 42
 
-        elif height > width:
-            ratio = height / width
-
-            if ratio >= 1.6:
-                aspect_ratio = (
-                    "Tall 9:16 / Vertical 9:16"
-                )
-            else:
-                aspect_ratio = (
-                    "Portrait 4:5 / Retrato 4:5"
-                )
-
-        else:
-            aspect_ratio = (
-                "Square 1:1 / Cuadrado 1:1"
+        # Nosso projeto usa -1 para "aleatório".
+        # O Space espera uma seed inteira.
+        if seed < 0:
+            seed = random.randint(
+                0,
+                2_147_483_647,
             )
 
         # -----------------------------------------------------
-        # Style
+        # Strength
         # -----------------------------------------------------
 
-        requested_style = getattr(
+        requested_strength = getattr(
             request,
-            "style",
-            None,
+            "strength",
+            strength,
         )
 
-        if requested_style:
-            normalized_style = str(
-                requested_style
-            ).lower()
+        try:
+            strength = float(
+                requested_strength
+            )
+        except (TypeError, ValueError):
+            strength = 0.8
 
-            if "cinematic" in normalized_style:
-                style_preset = (
-                    "Cinematic / Cinematografico"
-                )
-
-            elif "illustration" in normalized_style:
-                style_preset = (
-                    "Illustration / Ilustracion"
-                )
-
-            elif "editorial" in normalized_style:
-                style_preset = (
-                    "Editorial / Editorial"
-                )
-
-            elif "fantasy" in normalized_style:
-                style_preset = (
-                    "Fantasy / Fantasia"
-                )
+        strength = max(
+            0.0,
+            min(strength, 1.0),
+        )
 
         return {
-            "style_preset": style_preset,
-            "aspect_ratio": aspect_ratio,
             "steps": steps,
             "guidance_scale": guidance_scale,
             "seed": seed,
@@ -177,7 +230,110 @@ class HuggingFaceImageProvider(ImageProvider):
         }
 
     # =========================================================
-    # RESPONSE PARSING
+    # SAFE JSON
+    # =========================================================
+
+    @staticmethod
+    def _safe_json(
+        value,
+        limit: int = 2000,
+    ) -> str:
+        try:
+            text = json.dumps(
+                value,
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception:
+            text = repr(value)
+
+        return text[:limit]
+
+    # =========================================================
+    # ERROR EXTRACTION
+    # =========================================================
+
+    @classmethod
+    def _extract_error_message(
+        cls,
+        value,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            text = value.strip()
+
+            if not text:
+                return None
+
+            # Às vezes o Gradio manda JSON como string.
+            if (
+                text.startswith("{")
+                or text.startswith("[")
+            ):
+                try:
+                    decoded = json.loads(text)
+
+                    nested = cls._extract_error_message(
+                        decoded
+                    )
+
+                    if nested:
+                        return nested
+                except Exception:
+                    pass
+
+            return text
+
+        if isinstance(value, dict):
+            for key in (
+                "error",
+                "exception",
+                "message",
+                "detail",
+                "msg",
+                "code",
+            ):
+                if key not in value:
+                    continue
+
+                candidate = value.get(key)
+
+                if candidate is None:
+                    continue
+
+                if isinstance(candidate, str):
+                    text = candidate.strip()
+
+                    if text:
+                        return text
+
+                else:
+                    try:
+                        return json.dumps(
+                            candidate,
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                    except Exception:
+                        return str(candidate)
+
+            return None
+
+        if isinstance(value, list):
+            for item in value:
+                message = cls._extract_error_message(
+                    item
+                )
+
+                if message:
+                    return message
+
+        return None
+
+    # =========================================================
+    # IMAGE DETECTION
     # =========================================================
 
     @staticmethod
@@ -188,37 +344,68 @@ class HuggingFaceImageProvider(ImageProvider):
         return bool(
             value.get("url")
             or value.get("path")
+            or value.get("image")
         )
 
+    # =========================================================
+    # IMAGE EXTRACTION
+    # =========================================================
+
     @classmethod
-    def _extract_image_info(cls, value):
+    def _extract_image_info(
+        cls,
+        value,
+    ):
         """
-        Procura recursivamente informações de imagem.
+        Extrai recursivamente uma imagem retornada pelo Gradio.
 
-        Aceita formatos como:
+        O Space retorna:
 
-            {
-                "image": {
-                    "url": "...",
-                    "path": "..."
-                }
-            }
+            return [result], status
 
-        ou:
+        e o Gallery pode representar a imagem como:
 
             [
                 {
-                    "image": {
-                        "url": "...",
-                        "path": "..."
-                    }
+                    "path": "...",
+                    "url": "..."
                 }
             ]
 
-        ou estruturas aninhadas retornadas por GalleryData.
+        Também suportamos estruturas aninhadas do Gradio.
         """
 
         if value is None:
+            return None
+
+        # -----------------------------------------------------
+        # String
+        # -----------------------------------------------------
+
+        if isinstance(value, str):
+            text = value.strip()
+
+            if not text:
+                return None
+
+            if (
+                text.startswith("http://")
+                or text.startswith("https://")
+            ):
+                return {
+                    "url": text,
+                    "path": None,
+                }
+
+            if (
+                text.startswith("/")
+                or text.startswith("file=")
+            ):
+                return {
+                    "url": None,
+                    "path": text,
+                }
+
             return None
 
         # -----------------------------------------------------
@@ -227,12 +414,18 @@ class HuggingFaceImageProvider(ImageProvider):
 
         if isinstance(value, dict):
 
-            if cls._is_image_dict(value):
+            # Gradio file object.
+            if (
+                value.get("url")
+                or value.get("path")
+            ):
                 return {
                     "url": value.get("url"),
                     "path": value.get("path"),
                 }
 
+            # Algumas respostas podem colocar a imagem
+            # dentro de "image".
             for key in (
                 "image",
                 "output",
@@ -241,6 +434,7 @@ class HuggingFaceImageProvider(ImageProvider):
                 "results",
                 "gallery",
                 "images",
+                "value",
             ):
                 if key not in value:
                     continue
@@ -255,10 +449,10 @@ class HuggingFaceImageProvider(ImageProvider):
             return None
 
         # -----------------------------------------------------
-        # List
+        # List / Tuple
         # -----------------------------------------------------
 
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
 
             for item in value:
 
@@ -271,101 +465,8 @@ class HuggingFaceImageProvider(ImageProvider):
 
         return None
 
-    @staticmethod
-    def _extract_error_message(value) -> str | None:
-        """
-        Extrai mensagens de erro de diferentes formatos.
-        """
-
-        if value is None:
-            return None
-
-        if isinstance(value, str):
-
-            text = value.strip()
-
-            if text:
-                return text
-
-            return None
-
-        if isinstance(value, dict):
-
-            for key in (
-                "error",
-                "message",
-                "detail",
-                "msg",
-                "exception",
-                "code",
-            ):
-                if key not in value:
-                    continue
-
-                candidate = value.get(key)
-
-                if candidate is None:
-                    continue
-
-                if isinstance(candidate, str):
-
-                    text = candidate.strip()
-
-                    if text:
-                        return text
-
-                else:
-
-                    try:
-                        return json.dumps(
-                            candidate,
-                            ensure_ascii=False,
-                        )
-
-                    except Exception:
-                        return str(candidate)
-
-            return None
-
-        if isinstance(value, list):
-
-            for item in value:
-
-                message = (
-                    HuggingFaceImageProvider
-                    ._extract_error_message(
-                        item
-                    )
-                )
-
-                if message:
-                    return message
-
-        return None
-
-    @staticmethod
-    def _safe_json(
-        value,
-        limit: int = 1500,
-    ) -> str:
-        """
-        Serializa dados para log/erro sem correr risco
-        de gerar SyntaxError ou quebrar a resposta.
-        """
-
-        try:
-            text = json.dumps(
-                value,
-                ensure_ascii=False,
-            )
-
-        except Exception:
-            text = repr(value)
-
-        return text[:limit]
-
     # =========================================================
-    # DOWNLOAD IMAGE
+    # IMAGE DOWNLOAD
     # =========================================================
 
     async def _download_image(
@@ -378,7 +479,7 @@ class HuggingFaceImageProvider(ImageProvider):
         candidates: list[str] = []
 
         # -----------------------------------------------------
-        # URL direta
+        # URL retornada diretamente pelo Gradio
         # -----------------------------------------------------
 
         if image_url:
@@ -415,7 +516,6 @@ class HuggingFaceImageProvider(ImageProvider):
                 )
 
             else:
-
                 normalized_path = (
                     image_path.lstrip("/")
                 )
@@ -425,24 +525,31 @@ class HuggingFaceImageProvider(ImageProvider):
                     safe="",
                 )
 
+                # Gradio moderno.
                 candidates.append(
                     f"{self.space_url}"
-                    f"/gradio_api/file={encoded_path}"
+                    f"/gradio_api/file="
+                    f"{encoded_path}"
                 )
 
-                candidates.append(
-                    f"{self.space_url}"
-                    f"/file={encoded_path}"
-                )
-
+                # Algumas versões retornam o caminho
+                # sem o prefixo esperado.
                 candidates.append(
                     f"{self.space_url}"
                     f"/gradio_api/file=/{encoded_path}"
                 )
 
+                # Endpoint legado.
+                candidates.append(
+                    f"{self.space_url}"
+                    f"/file={encoded_path}"
+                )
+
+                # Última tentativa: caminho direto.
                 if image_path.startswith("/"):
                     candidates.append(
-                        f"{self.space_url}{image_path}"
+                        f"{self.space_url}"
+                        f"{image_path}"
                     )
 
         # -----------------------------------------------------
@@ -453,8 +560,17 @@ class HuggingFaceImageProvider(ImageProvider):
             dict.fromkeys(candidates)
         )
 
+        if not candidates:
+            return None
+
+        print(
+            "[IMAGE] Hugging Face: "
+            f"download candidates={candidates}",
+            flush=True,
+        )
+
         # -----------------------------------------------------
-        # Tenta cada URL
+        # Download
         # -----------------------------------------------------
 
         for candidate in candidates:
@@ -466,11 +582,6 @@ class HuggingFaceImageProvider(ImageProvider):
                     headers=self._headers(),
                 )
 
-                if response.status_code != 200:
-                    continue
-
-                content = response.content
-
                 content_type = (
                     response.headers.get(
                         "content-type",
@@ -478,6 +589,24 @@ class HuggingFaceImageProvider(ImageProvider):
                     )
                     .lower()
                 )
+
+                print(
+                    "[IMAGE] Hugging Face: "
+                    f"download status="
+                    f"{response.status_code} "
+                    f"content-type="
+                    f"{content_type!r} "
+                    f"url={candidate}",
+                    flush=True,
+                )
+
+                if response.status_code != 200:
+                    continue
+
+                content = response.content
+
+                if not content:
+                    continue
 
                 # -------------------------------------------------
                 # PNG
@@ -509,6 +638,18 @@ class HuggingFaceImageProvider(ImageProvider):
                     return content
 
                 # -------------------------------------------------
+                # GIF
+                # -------------------------------------------------
+
+                if content.startswith(
+                    (
+                        b"GIF87a",
+                        b"GIF89a",
+                    )
+                ):
+                    return content
+
+                # -------------------------------------------------
                 # MIME
                 # -------------------------------------------------
 
@@ -520,7 +661,16 @@ class HuggingFaceImageProvider(ImageProvider):
             except (
                 httpx.HTTPError,
                 OSError,
-            ):
+            ) as exc:
+
+                print(
+                    "[IMAGE] Hugging Face: "
+                    f"download failed "
+                    f"url={candidate!r} "
+                    f"error={exc}",
+                    flush=True,
+                )
+
                 continue
 
         return None
@@ -554,27 +704,25 @@ class HuggingFaceImageProvider(ImageProvider):
         # -----------------------------------------------------
 
         try:
-
             event_data = json.loads(
                 raw_data
             )
 
         except json.JSONDecodeError:
-
             event_data = raw_data
 
         print(
             "[IMAGE] Hugging Face: "
             f"SSE event={event_name!r} "
-            f"data={self._safe_json(event_data, 1000)}",
+            f"data={self._safe_json(event_data, 1500)}",
             flush=True,
         )
 
         # =====================================================
-        # EVENT ERROR
+        # ERROR
         # =====================================================
 
-        if event_name == "error":
+        if event_name.lower() == "error":
 
             message = (
                 self._extract_error_message(
@@ -582,28 +730,16 @@ class HuggingFaceImageProvider(ImageProvider):
                 )
             )
 
-            # -------------------------------------------------
-            # O problema que apareceu no log atual:
-            #
-            # event='error'
-            # data='null'
-            #
-            # Nesse caso o Gradio não forneceu a exceção.
-            # Não podemos tratar None como uma mensagem.
-            # -------------------------------------------------
-
             if not message:
+                message = (
+                    "Hugging Face/Gradio returned "
+                    "an SSE error event"
+                )
 
-                if raw_data.lower() == "null":
-
-                    message = (
-                        "Hugging Face/Gradio returned "
-                        "an SSE error event with data=null"
+                if raw_data:
+                    message += (
+                        f": {raw_data[:1000]}"
                     )
-
-                else:
-
-                    message = raw_data
 
             return (
                 "error",
@@ -618,8 +754,118 @@ class HuggingFaceImageProvider(ImageProvider):
             )
 
         # =====================================================
-        # ERROR EMBUTIDO
+        # COMPLETE
         # =====================================================
+
+        if event_name.lower() in (
+            "complete",
+            "completed",
+        ):
+
+            image_info = (
+                self._extract_image_info(
+                    event_data
+                )
+            )
+
+            if not image_info:
+                return (
+                    "error",
+                    ImageResult(
+                        False,
+                        self.name,
+                        error=(
+                            "sse_complete_without_image: "
+                            f"{self._safe_json(event_data)}"
+                        ),
+                    ),
+                )
+
+            image_url = image_info.get(
+                "url"
+            )
+
+            image_path = image_info.get(
+                "path"
+            )
+
+            image_bytes = (
+                await self._download_image(
+                    client,
+                    image_url,
+                    image_path,
+                )
+            )
+
+            if image_bytes:
+
+                return (
+                    "success",
+                    ImageResult(
+                        True,
+                        self.name,
+                        image_url=image_url,
+                        image_bytes=image_bytes,
+                    ),
+                )
+
+            return (
+                "error",
+                ImageResult(
+                    False,
+                    self.name,
+                    image_url=image_url,
+                    error=(
+                        "image_download_failed: "
+                        f"url={image_url!r} "
+                        f"path={image_path!r}"
+                    ),
+                ),
+            )
+
+        # =====================================================
+        # EVENTOS DE PROGRESSO / GENERAÇÃO
+        # =====================================================
+
+        image_info = (
+            self._extract_image_info(
+                event_data
+            )
+        )
+
+        if image_info:
+
+            image_url = image_info.get(
+                "url"
+            )
+
+            image_path = image_info.get(
+                "path"
+            )
+
+            image_bytes = (
+                await self._download_image(
+                    client,
+                    image_url,
+                    image_path,
+                )
+            )
+
+            if image_bytes:
+
+                return (
+                    "success",
+                    ImageResult(
+                        True,
+                        self.name,
+                        image_url=image_url,
+                        image_bytes=image_bytes,
+                    ),
+                )
+
+        # -----------------------------------------------------
+        # Alguns eventos de erro podem não ter o nome "error".
+        # -----------------------------------------------------
 
         if isinstance(
             event_data,
@@ -655,198 +901,9 @@ class HuggingFaceImageProvider(ImageProvider):
                     ),
                 )
 
-        # =====================================================
-        # IMAGE
-        # =====================================================
-
-        image_info = (
-            self._extract_image_info(
-                event_data
-            )
-        )
-
-        if not image_info:
-
-            return (
-                "continue",
-                None,
-            )
-
-        image_url = image_info.get(
-            "url"
-        )
-
-        image_path = image_info.get(
-            "path"
-        )
-
-        image_bytes = (
-            await self._download_image(
-                client,
-                image_url,
-                image_path,
-            )
-        )
-
-        if image_bytes:
-
-            return (
-                "success",
-                ImageResult(
-                    True,
-                    self.name,
-                    image_url=image_url,
-                    image_bytes=image_bytes,
-                ),
-            )
-
         return (
-            "error",
-            ImageResult(
-                False,
-                self.name,
-                image_url=image_url,
-                error=(
-                    "image_download_failed: "
-                    f"url={image_url!r} "
-                    f"path={image_path!r}"
-                ),
-            ),
-        )
-
-    # =========================================================
-    # DIRECT REST ENDPOINT
-    # =========================================================
-
-    async def _generate_direct(
-        self,
-        client: httpx.AsyncClient,
-        prompt: str,
-        request=None,
-    ) -> ImageResult:
-
-        params = (
-            self._generation_parameters(
-                request
-            )
-        )
-
-        payload = {
-            "t2i_prompt": prompt,
-            "i2i_prompt": "",
-            "i2i_image": None,
-            "strength": params["strength"],
-            "style_preset": params["style_preset"],
-            "aspect_ratio": params["aspect_ratio"],
-            "steps": params["steps"],
-            "guidance_scale": params["guidance_scale"],
-            "seed": params["seed"],
-        }
-
-        print(
-            "[IMAGE] Hugging Face: "
-            "trying direct /run/generate_images",
-            flush=True,
-        )
-
-        try:
-
-            response = await client.post(
-                f"{self.space_url}"
-                "/run/generate_images",
-                json=payload,
-                headers=self._headers(),
-            )
-
-        except httpx.HTTPError as exc:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "direct_http_error: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ),
-            )
-
-        if response.status_code != 200:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    f"http_{response.status_code}: "
-                    f"{response.text[:1500]}"
-                ),
-            )
-
-        try:
-
-            data = response.json()
-
-        except json.JSONDecodeError:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "invalid_json_response: "
-                    f"{response.text[:1000]}"
-                ),
-            )
-
-        image_info = (
-            self._extract_image_info(
-                data
-            )
-        )
-
-        if not image_info:
-
-            return ImageResult(
-                False,
-                self.name,
-                error=(
-                    "no_image_output: "
-                    f"{self._safe_json(data)}"
-                ),
-            )
-
-        image_url = image_info.get(
-            "url"
-        )
-
-        image_path = image_info.get(
-            "path"
-        )
-
-        image_bytes = (
-            await self._download_image(
-                client,
-                image_url,
-                image_path,
-            )
-        )
-
-        if not image_bytes:
-
-            return ImageResult(
-                False,
-                self.name,
-                image_url=image_url,
-                error=(
-                    "image_download_failed: "
-                    f"url={image_url!r} "
-                    f"path={image_path!r}"
-                ),
-            )
-
-        return ImageResult(
-            True,
-            self.name,
-            image_url=image_url,
-            image_bytes=image_bytes,
+            "continue",
+            None,
         )
 
     # =========================================================
@@ -862,7 +919,7 @@ class HuggingFaceImageProvider(ImageProvider):
 
         print(
             "[IMAGE] Hugging Face: "
-            "starting SSE generation",
+            "starting Gradio SSE generation",
             flush=True,
         )
 
@@ -874,34 +931,65 @@ class HuggingFaceImageProvider(ImageProvider):
 
         print(
             "[IMAGE] Hugging Face: "
-            f"style={params['style_preset']!r} "
-            f"aspect={params['aspect_ratio']!r} "
             f"steps={params['steps']} "
             f"guidance={params['guidance_scale']} "
-            f"seed={params['seed']}",
+            f"seed={params['seed']} "
+            f"strength={params['strength']}",
             flush=True,
         )
 
-        # -----------------------------------------------------
-        # Gradio queue API
-        # -----------------------------------------------------
+        # =====================================================
+        # PAYLOAD CORRETO DO SPACE
+        # =====================================================
+        #
+        # A assinatura do Space é:
+        #
+        # 0 = mode
+        # 1 = t2i_prompt
+        # 2 = i2i_prompt
+        # 3 = i2i_image
+        # 4 = strength
+        # 5 = steps
+        # 6 = guidance_scale
+        # 7 = seed
+        #
+        # Portanto são EXATAMENTE 8 valores.
+        #
+        # Para T2I:
+        #
+        # [
+        #     "t2i",
+        #     prompt,
+        #     "",
+        #     None,
+        #     strength,
+        #     steps,
+        #     guidance_scale,
+        #     seed,
+        # ]
+        # =====================================================
 
         payload = {
             "data": [
+                "t2i",
                 prompt,
                 "",
                 None,
                 params["strength"],
-                params["style_preset"],
-                params["aspect_ratio"],
                 params["steps"],
                 params["guidance_scale"],
                 params["seed"],
             ]
         }
 
+        print(
+            "[IMAGE] Hugging Face: "
+            f"POST payload={self._safe_json(payload, 2000)}",
+            flush=True,
+        )
+
         # =====================================================
-        # POST INICIAL
+        # POST PARA CRIAR JOB
         # =====================================================
 
         try:
@@ -911,6 +999,14 @@ class HuggingFaceImageProvider(ImageProvider):
                 "/gradio_api/call/generate_images",
                 json=payload,
                 headers=self._headers(),
+            )
+
+        except httpx.TimeoutException:
+
+            return ImageResult(
+                False,
+                self.name,
+                error="sse_post_timeout",
             )
 
         except httpx.HTTPError as exc:
@@ -931,22 +1027,21 @@ class HuggingFaceImageProvider(ImageProvider):
                 ),
             )
 
-        if response.status_code != 200:
+        print(
+            "[IMAGE] Hugging Face: "
+            f"SSE POST status={response.status_code} "
+            f"body={response.text[:1500]}",
+            flush=True,
+        )
 
-            print(
-                "[IMAGE] Hugging Face: "
-                f"SSE POST HTTP "
-                f"{response.status_code}: "
-                f"{response.text[:1000]}",
-                flush=True,
-            )
+        if response.status_code != 200:
 
             return ImageResult(
                 False,
                 self.name,
                 error=(
                     f"sse_http_{response.status_code}: "
-                    f"{response.text[:1000]}"
+                    f"{response.text[:1500]}"
                 ),
             )
 
@@ -965,12 +1060,19 @@ class HuggingFaceImageProvider(ImageProvider):
                 self.name,
                 error=(
                     "sse_invalid_initial_response: "
-                    f"{response.text[:1000]}"
+                    f"{response.text[:1500]}"
                 ),
             )
 
-        event_id = initial_data.get(
-            "event_id"
+        event_id = (
+            initial_data.get(
+                "event_id"
+            )
+            if isinstance(
+                initial_data,
+                dict,
+            )
+            else None
         )
 
         if not event_id:
@@ -980,7 +1082,7 @@ class HuggingFaceImageProvider(ImageProvider):
                 self.name,
                 error=(
                     "sse_no_event_id: "
-                    f"{self._safe_json(initial_data, 1000)}"
+                    f"{self._safe_json(initial_data)}"
                 ),
             )
 
@@ -994,7 +1096,7 @@ class HuggingFaceImageProvider(ImageProvider):
         # SSE STREAM
         # =====================================================
 
-        current_event = None
+        current_event: str | None = None
         current_data_lines: list[str] = []
 
         try:
@@ -1007,6 +1109,13 @@ class HuggingFaceImageProvider(ImageProvider):
                 f"{event_id}",
                 headers=self._sse_headers(),
             ) as result_response:
+
+                print(
+                    "[IMAGE] Hugging Face: "
+                    f"SSE stream status="
+                    f"{result_response.status_code}",
+                    flush=True,
+                )
 
                 if (
                     result_response.status_code
@@ -1045,7 +1154,7 @@ class HuggingFaceImageProvider(ImageProvider):
                     )
 
                     # -------------------------------------------------
-                    # Evento terminou
+                    # Fim do evento SSE
                     # -------------------------------------------------
 
                     if line == "":
@@ -1131,8 +1240,7 @@ class HuggingFaceImageProvider(ImageProvider):
                         continue
 
                 # -----------------------------------------------------
-                # Alguns servidores encerram o stream sem mandar
-                # uma linha vazia depois do último evento.
+                # Último evento sem linha vazia.
                 # -----------------------------------------------------
 
                 if current_data_lines:
@@ -1187,9 +1295,177 @@ class HuggingFaceImageProvider(ImageProvider):
         return ImageResult(
             False,
             self.name,
-            error=(
-                "no_image_in_sse_response"
+            error="no_image_in_sse_response",
+        )
+
+    # =========================================================
+    # LEGACY DIRECT ENDPOINT
+    # =========================================================
+
+    async def _generate_direct(
+        self,
+        client: httpx.AsyncClient,
+        prompt: str,
+        request=None,
+    ) -> ImageResult:
+        """
+        Fallback para instalações antigas do Gradio.
+
+        O caminho principal continua sendo SSE.
+
+        IMPORTANTE:
+        Mesmo neste fallback usamos a assinatura correta
+        de 8 argumentos do Space.
+        """
+
+        params = (
+            self._generation_parameters(
+                request
+            )
+        )
+
+        payload = {
+            "data": [
+                "t2i",
+                prompt,
+                "",
+                None,
+                params["strength"],
+                params["steps"],
+                params["guidance_scale"],
+                params["seed"],
+            ]
+        }
+
+        print(
+            "[IMAGE] Hugging Face: "
+            "trying legacy direct endpoint",
+            flush=True,
+        )
+
+        # -----------------------------------------------------
+        # Primeiro endpoint legado
+        # -----------------------------------------------------
+
+        endpoints = [
+            (
+                f"{self.space_url}"
+                "/run/generate_images"
             ),
+            (
+                f"{self.space_url}"
+                "/api/predict"
+            ),
+        ]
+
+        last_error = (
+            "direct_endpoint_failed"
+        )
+
+        for endpoint in endpoints:
+
+            try:
+
+                response = await client.post(
+                    endpoint,
+                    json=payload,
+                    headers=self._headers(),
+                )
+
+            except httpx.HTTPError as exc:
+
+                last_error = (
+                    f"{endpoint}: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
+
+                continue
+
+            print(
+                "[IMAGE] Hugging Face: "
+                f"direct status="
+                f"{response.status_code} "
+                f"endpoint={endpoint}",
+                flush=True,
+            )
+
+            if response.status_code != 200:
+
+                last_error = (
+                    f"{endpoint}: "
+                    f"http_{response.status_code}: "
+                    f"{response.text[:1000]}"
+                )
+
+                continue
+
+            try:
+
+                data = response.json()
+
+            except json.JSONDecodeError:
+
+                last_error = (
+                    f"{endpoint}: "
+                    "invalid_json_response: "
+                    f"{response.text[:1000]}"
+                )
+
+                continue
+
+            image_info = (
+                self._extract_image_info(
+                    data
+                )
+            )
+
+            if not image_info:
+
+                last_error = (
+                    f"{endpoint}: "
+                    "no_image_output: "
+                    f"{self._safe_json(data)}"
+                )
+
+                continue
+
+            image_url = image_info.get(
+                "url"
+            )
+
+            image_path = image_info.get(
+                "path"
+            )
+
+            image_bytes = (
+                await self._download_image(
+                    client,
+                    image_url,
+                    image_path,
+                )
+            )
+
+            if image_bytes:
+
+                return ImageResult(
+                    True,
+                    self.name,
+                    image_url=image_url,
+                    image_bytes=image_bytes,
+                )
+
+            last_error = (
+                f"{endpoint}: "
+                "image_download_failed: "
+                f"url={image_url!r} "
+                f"path={image_path!r}"
+            )
+
+        return ImageResult(
+            False,
+            self.name,
+            error=last_error,
         )
 
     # =========================================================
@@ -1229,14 +1505,18 @@ class HuggingFaceImageProvider(ImageProvider):
                 error="empty_prompt",
             )
 
-        try:
+        # -----------------------------------------------------
+        # HTTP timeout
+        # -----------------------------------------------------
 
-            timeout = httpx.Timeout(
-                connect=30.0,
-                read=self.timeout,
-                write=self.timeout,
-                pool=30.0,
-            )
+        timeout = httpx.Timeout(
+            connect=30.0,
+            read=self.timeout,
+            write=self.timeout,
+            pool=30.0,
+        )
+
+        try:
 
             async with httpx.AsyncClient(
                 timeout=timeout,
@@ -1244,7 +1524,7 @@ class HuggingFaceImageProvider(ImageProvider):
             ) as client:
 
                 # =================================================
-                # PRIMEIRA TENTATIVA
+                # PRINCIPAL
                 #
                 # Gradio Queue / SSE
                 # =================================================
@@ -1268,68 +1548,29 @@ class HuggingFaceImageProvider(ImageProvider):
                 # =================================================
                 # FALLBACK
                 #
-                # O log atual mostrou:
-                #
-                # SSE event='error' data='null'
-                #
-                # Nesse cenário o Space recusou/falhou durante
-                # a execução. Tentamos a rota REST direta antes
-                # de desistir.
+                # Só usamos o endpoint antigo quando o SSE
+                # não está disponível.
                 # =================================================
 
-                if (
-                    "sse_generation_error"
-                    in error_text
-                    or "no_image_in_sse_response"
-                    in error_text
-                ):
-
-                    print(
-                        "[IMAGE] Hugging Face: "
-                        "SSE failed; "
-                        "trying direct endpoint",
-                        flush=True,
-                    )
-
-                    direct_result = (
-                        await self
-                        ._generate_direct(
-                            client,
-                            prompt,
-                            request,
-                        )
-                    )
-
-                    if direct_result.success:
-                        return direct_result
-
-                    return ImageResult(
-                        False,
-                        self.name,
-                        error=(
-                            f"sse={result.error}; "
-                            f"direct="
-                            f"{direct_result.error}"
-                        ),
-                    )
-
-                # =================================================
-                # SSE INDISPONÍVEL
-                # =================================================
-
-                if (
+                should_try_direct = (
                     "sse_http_404"
                     in error_text
                     or "sse_http_405"
                     in error_text
                     or "sse_post_error"
                     in error_text
-                ):
+                    or "sse_result_http_404"
+                    in error_text
+                    or "sse_result_http_405"
+                    in error_text
+                )
+
+                if should_try_direct:
 
                     print(
                         "[IMAGE] Hugging Face: "
                         "SSE endpoint unavailable; "
-                        "trying direct endpoint",
+                        "trying legacy direct endpoint",
                         flush=True,
                     )
 
@@ -1354,6 +1595,11 @@ class HuggingFaceImageProvider(ImageProvider):
                             f"{direct_result.error}"
                         ),
                     )
+
+                # -------------------------------------------------
+                # Se o próprio Space retornou erro durante geração,
+                # não escondemos o erro real.
+                # -------------------------------------------------
 
                 return result
 
@@ -1386,7 +1632,7 @@ class HuggingFaceImageProvider(ImageProvider):
             )
 
         # =====================================================
-        # QUALQUER OUTRO ERRO
+        # OUTRO ERRO
         # =====================================================
 
         except Exception as exc:
