@@ -420,7 +420,7 @@ class HuggingFaceImageProvider:
             name = self._parameter_name(parameter)
             data.append(payload.get(name) if name else None)
         return data
-        def _call_generation(self, payload: dict[str, Any]) -> str:
+    def _call_generation(self, payload: dict[str, Any]) -> str:
         if not self._endpoint:
             self._discover_endpoint()
         if not self._endpoint:
