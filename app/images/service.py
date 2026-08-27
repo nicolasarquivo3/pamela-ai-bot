@@ -34,6 +34,7 @@ class ImageService:
         prefer_real_photos: bool = True,
         prefer_ai_first: bool = True,
         album_service=None,
+        drive_album_service=None,
         album_first: bool = True,
     ):
         self.character_repository = character_repository
@@ -50,6 +51,7 @@ class ImageService:
         self.prefer_real_photos = bool(prefer_real_photos)
         self.prefer_ai_first = bool(prefer_ai_first)
         self.album_service = album_service
+        self.drive_album_service = drive_album_service
         self.album_first = bool(album_first)
         self.prompt_builder = PromptBuilder()
 
@@ -125,6 +127,49 @@ class ImageService:
 
         # 0) ALBUM do canal Telegram (fotos reais suas)
         # Baixa file_id -> face swap (rosto da Pamela) -> envia bytes
+
+        # 0a) Google Drive album (nuvem)
+        if self.drive_album_service is not None:
+            try:
+                if await self.drive_album_service.available():
+                    picked = await self.drive_album_service.pick_best(scene)
+                    if picked and picked.get("image_bytes"):
+                        print(
+                            f"[IMAGE] DRIVE hit name={picked.get('name')!r} "
+                            f"bytes={len(picked['image_bytes'])}",
+                            flush=True,
+                        )
+                        result = ImageResult(
+                            success=True,
+                            provider="album:drive",
+                            image_bytes=picked["image_bytes"],
+                        )
+                        if self.face_swap_service:
+                            print("[IMAGE] DRIVE -> face swap...", flush=True)
+                            result = await self.face_swap_service.apply(result)
+                            if result.success:
+                                result.provider = "album:drive+faceswap"
+                                print(
+                                    f"[IMAGE] DRIVE+swap ok bytes="
+                                    f"{len(result.image_bytes or b'')}",
+                                    flush=True,
+                                )
+                                return result
+                            print(
+                                f"[IMAGE] DRIVE face swap falhou: {result.error}",
+                                flush=True,
+                            )
+                            if not self._face_swap_required():
+                                return ImageResult(
+                                    success=True,
+                                    provider="album:drive",
+                                    image_bytes=picked["image_bytes"],
+                                )
+                        else:
+                            return result
+            except Exception as e:
+                print(f"[IMAGE] drive album error: {e}", flush=True)
+
         if self.album_first and self.album_service:
             try:
                 if await self.album_service.available():
