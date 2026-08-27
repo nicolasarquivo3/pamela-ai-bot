@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     album_use_llm_match: bool = True
     album_use_vision_match: bool = True  # grátis; se false so tags
     # no bulk de milhares de fotos: false = nao chama LLM por foto
-    album_caption_on_ingest: bool = False
+    album_caption_on_ingest: bool = True  # Gemini Vision tag automatica
 
     timezone: str = "America/Sao_Paulo"
 
