@@ -9,6 +9,10 @@ from app.database.session import SessionLocal
 from app.images.repository import ImageQuota, ImageRepository
 from app.images.router import ImageProviderRouter
 from app.images.service import ImageService
+try:
+    from app.images.album_service import AlbumService
+except Exception:
+    AlbumService = None  # type: ignore
 from app.images.face_swap import FaceSwapService
 from app.images.pexels import PexelsSearchService
 from app.images.web_search_images import WebImageSearchService
@@ -71,8 +75,8 @@ async def main():
 
     providers = []
 
-    # 1) Perchance (PRIORIDADE) â€” estilo do seu gerador
-    # Se a key cair: log perchance:invalid_key â†’ usa Horde/HF/etc atÃ© vocÃª trocar a key
+    # 1) Perchance (PRIORIDADE) — estilo do seu gerador
+    # Se a key cair: log perchance:invalid_key → usa Horde/HF/etc até você trocar a key
     # Channel: https://perchance.org/5yf90s8rdo
     import os as _os
     pc_key = (
@@ -95,6 +99,10 @@ async def main():
         providers.append(
             PerchanceImageProvider(
                 user_key=pc_key.strip(),
+                cookies=(
+                    getattr(settings, "perchance_cookies", None)
+                    or _os.getenv("PERCHANCE_COOKIES")
+                ),
                 channel=(pc_channel or "5yf90s8rdo").strip(),
                 channels=extra_channels or None,
                 timeout=int(getattr(settings, "image_timeout_seconds", 180) or 180),
@@ -108,7 +116,7 @@ async def main():
         )
     else:
         print(
-            "[IMAGE] Perchance SEM KEY â€” defina PERCHANCE_USER_KEY "
+            "[IMAGE] Perchance SEM KEY — defina PERCHANCE_USER_KEY "
             "(cai direto no Stable Horde)",
             flush=True,
         )
@@ -131,7 +139,7 @@ async def main():
     )
     providers.append(huggingface_provider)
 
-    # 4) Pollinations â€” so se tiver key com pollen (402 = sem credito)
+    # 4) Pollinations — so se tiver key com pollen (402 = sem credito)
     pol_key = getattr(settings, "pollinations_api_key", None)
     if pol_key:
         pollinations = PollinationsImageProvider(
@@ -146,7 +154,7 @@ async def main():
         print("[IMAGE] Pollinations ativo (key presente)", flush=True)
     else:
         print(
-            "[IMAGE] Pollinations desligado (sem key / free acabou â€” use Stable Horde)",
+            "[IMAGE] Pollinations desligado (sem key / free acabou — use Stable Horde)",
             flush=True,
         )
 
@@ -208,7 +216,30 @@ async def main():
         )
         print("[IMAGE] Pexels ativo (ultimo fallback)", flush=True)
 
+    # Album Telegram (opcional — so ativa se album_service.py existir)
+    album_service = None
+    if AlbumService is not None and bool(getattr(settings, "album_enabled", True)):
+        _album_ch = getattr(settings, "album_channel_id", None) or "-1004349291324"
+        try:
+            _album_ch_int = int(str(_album_ch).strip())
+        except Exception:
+            _album_ch_int = None
+        album_service = AlbumService(
+            session=session,
+            channel_id=_album_ch_int,
+            enabled=True,
+            use_llm_match=bool(getattr(settings, "album_use_llm_match", True)),
+            llm=None,
+        )
+        print(
+            f"[ALBUM] enabled={album_service.enabled} channel={album_service.channel_id}",
+            flush=True,
+        )
+    else:
+        print("[ALBUM] desligado (sem modulo ou album_enabled=false)", flush=True)
+
     image_service = ImageService(
+
         chars,
         ImageProviderRouter(providers),
         ImageRepository(session),
@@ -224,6 +255,8 @@ async def main():
         reddit_image_service=reddit_image_service,
         pixabay_service=pixabay_service,
         gelbooru_service=gelbooru_service,
+        album_service=album_service,
+        album_first=bool(getattr(settings, "album_first", True)),
         prefer_real_photos=settings.prefer_real_photos,
         prefer_ai_first=True,
     )
@@ -238,10 +271,11 @@ async def main():
 
     # LLM: Gemini -> se bloquear/falhar -> OpenRouter Venice
     gemini = GeminiLLM(
-        settings.gemini_api_key,
-        settings.gemini_model,
-        settings.llm_timeout_seconds,
-        settings.llm_max_output_tokens,
+        api_key=getattr(settings, "gemini_api_key", None),
+        api_keys=getattr(settings, "gemini_api_keys", None),
+        model=settings.gemini_model,
+        timeout=int(getattr(settings, "llm_timeout_seconds", 60) or 60),
+        max_output_tokens=int(getattr(settings, "llm_max_output_tokens", 1000) or 1000),
     )
     openrouter = OpenRouterLLM(
         api_key=getattr(settings, "openrouter_api_key", None),
@@ -257,7 +291,8 @@ async def main():
     )
     llm = LLMRouter(primary=gemini, fallback=openrouter)
     print(
-        f"[LLM] Router: primary=Gemini fallback=OpenRouter "
+        f"[LLM] Router: primary=Gemini(keys={len(getattr(gemini, 'keys', []) or [])}) "
+        f"fallback=OpenRouter "
         f"(key={'sim' if openrouter.api_key else 'NAO'})",
         flush=True,
     )
@@ -273,7 +308,14 @@ async def main():
         llm,
     )
 
-    telegram = TelegramApp(agent)
+    # liga LLM no album (match opcional)
+    if album_service is not None:
+        album_service.llm = llm
+    try:
+        telegram = TelegramApp(agent, album_service=album_service)
+    except TypeError:
+        telegram = TelegramApp(agent)
+
     await telegram.set_webhook()
 
     def memory_factory(tick_session):

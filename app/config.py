@@ -8,8 +8,11 @@ class Settings(BaseSettings):
     webhook_base_url: str | None = None
     webhook_secret: str = "change-me"
 
-    # GEMINI
+    # GEMINI (uma key ou varias)
+    # GEMINI_API_KEY=key1
+    # GEMINI_API_KEYS=key1,key2,key3   <- rodizio de cota
     gemini_api_key: str | None = None
+    gemini_api_keys: str | None = None
     gemini_model: str = "gemini-2.5-flash-lite"
 
     # OPENROUTER (fallback quando Gemini SAFETY; free rota openrouter/free)
@@ -31,13 +34,15 @@ class Settings(BaseSettings):
 
     pollinations_api_key: str | None = None
     pollinations_image_model: str = "flux"
-    # Stable Horde (grÃ¡tis): crie key em https://stablehorde.net/register
+    # Stable Horde (grátis): crie key em https://stablehorde.net/register
     # ou deixe None para usar anonimo 0000000000 (mais lento)
     stable_horde_api_key: str | None = None
 
     # Perchance PRIORIDADE (https://perchance.org/5yf90s8rdo)
     # Renove PERCHANCE_USER_KEY quando log disser invalid_key
     perchance_user_key: str | None = None
+    # Cookie header do MESMO request generate (cf_clearance=...; ...)
+    perchance_cookies: str | None = None
     perchance_channel: str = "5yf90s8rdo"
     # varios geradores (mesma API): separados por virgula
     perchance_channels: str = (
@@ -55,11 +60,11 @@ class Settings(BaseSettings):
     pexels_api_key: str | None = None
     pixabay_api_key: str | None = None
     prefer_real_photos: bool = True
-    # False = NÃƒO manda foto em toda mensagem
+    # False = NÃO manda foto em toda mensagem
     photo_every_message: bool = False
-    # True = foto sÃ³ quando a cena pede (provocar / look / flerte)
+    # True = foto só quando a cena pede (provocar / look / flerte)
     photo_contextual: bool = True
-    # Chance de surpresa espontÃ¢nea (0.0 a 1.0). 0.08 â‰ˆ 8%
+    # Chance de surpresa espontânea (0.0 a 1.0). 0.08 ≈ 8%
     photo_surprise_chance: float = 0.03
 
     # FACE SWAP
@@ -83,6 +88,15 @@ class Settings(BaseSettings):
         "codeplugtech/face-swap:"
         "278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34"
     )
+
+    # ALBUM Telegram (canal privado com fotos)
+    # ID: -1004349291324
+    album_channel_id: str | None = "-1004349291324"
+    album_enabled: bool = True
+    album_first: bool = True  # tenta album antes de IA
+    album_use_llm_match: bool = True  # grátis; se false so tags
+    # no bulk de milhares de fotos: false = nao chama LLM por foto
+    album_caption_on_ingest: bool = False
 
     timezone: str = "America/Sao_Paulo"
 
