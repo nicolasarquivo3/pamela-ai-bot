@@ -500,88 +500,188 @@ class AlbumService:
         return []
 
     async def _auto_caption_vision(self, image_bytes: bytes) -> str:
+        """Legenda com Gemini Vision — suporta key AQ. (Auth) e AIza (legacy)."""
         import httpx
         import asyncio
+        import base64 as _b64
 
         keys = self._gemini_keys()
         if not keys or not image_bytes:
-            print("[ALBUM] caption abort: sem key ou sem bytes", flush=True)
+            print("[ALBUM] caption abort: sem key ou bytes", flush=True)
             return ""
-        raw = image_bytes[:4_000_000]
-        b64 = base64.b64encode(raw).decode("ascii")
-        # descobre modelos reais com a primeira key
-        discovered = await self._discover_models(keys[0])
-        model_list = discovered or self._vision_models()
-        print(f"[ALBUM] caption tentando models={model_list[:8]}", flush=True)
+
+        raw = image_bytes[:3_500_000]
+        b64 = _b64.b64encode(raw).decode("ascii")
+
+        # modelo do chat primeiro
+        models = self._vision_models()
+        try:
+            discovered = await self._discover_models(keys[0])
+            if discovered:
+                models = discovered + [m for m in models if m not in discovered]
+        except Exception as e:
+            print(f"[ALBUM] discover skip: {e}", flush=True)
+
         prompt = (
             "Descreva esta foto de mulher adulta em UMA linha curta em portugues, "
-            "so fatos visuais uteis para busca: tipo de roupa, cor principal, "
-            "acessorios, local se visivel. "
+            "so fatos visuais: tipo de roupa, cor, acessorios, local. "
             "Exemplo: vestido branco curto salto alto espelho. "
             "Sem nome. Sem emoji. Maximo 12 palavras."
         )
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt},
-                        {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-                    ],
-                }
-            ],
-            "generationConfig": {"maxOutputTokens": 40, "temperature": 0.2},
-        }
-        for model in model_list:
-            for key in keys[:4]:
-                url = (
-                    "https://generativelanguage.googleapis.com/v1beta/models/"
-                    f"{model}:generateContent"
+
+        # dois formatos de part (snake e camel) — APIs variam
+        parts_snake = [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+        ]
+        parts_camel = [
+            {"text": prompt},
+            {"inlineData": {"mimeType": "image/jpeg", "data": b64}},
+        ]
+
+        def build_payload(parts):
+            return {
+                "contents": [{"role": "user", "parts": parts}],
+                "generationConfig": {
+                    "maxOutputTokens": 40,
+                    "temperature": 0.2,
+                },
+            }
+
+        def urls_for(model: str, key: str) -> list:
+            """AQ. keys costumam ser Auth/Vertex Express; AIza = AI Studio."""
+            out = []
+            if key.startswith("AQ.") or key.startswith("AQ_"):
+                out.extend(
+                    [
+                        f"https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent",
+                        f"https://aiplatform.googleapis.com/v1beta1/publishers/google/models/{model}:generateContent",
+                    ]
                 )
-                try:
-                    async with httpx.AsyncClient(timeout=60) as client:
-                        r = await client.post(
-                            url,
-                            headers={
-                                "x-goog-api-key": key,
-                                "Content-Type": "application/json",
-                            },
-                            json=payload,
-                        )
-                    print(
-                        f"[ALBUM] caption model={model} HTTP {r.status_code} "
-                        f"key={key[:6]}...",
-                        flush=True,
-                    )
-                    if r.status_code == 404:
-                        print(
-                            f"[ALBUM] caption 404 body={r.text[:180]}",
-                            flush=True,
-                        )
-                        break
-                    if r.status_code in (429, 503):
-                        await asyncio.sleep(1.5)
+            out.extend(
+                [
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                    f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent",
+                ]
+            )
+            return out
+
+        # 1) tenta SDK google-genai se instalado (melhor com AQ.)
+        try:
+            from google import genai
+            from google.genai import types
+
+            for key in keys[:3]:
+                for vertex_flag in (True, False):
+                    try:
+                        client = genai.Client(api_key=key, vertexai=vertex_flag)
+                        for model in models[:6]:
+                            try:
+                                print(
+                                    f"[ALBUM] caption SDK vertex={vertex_flag} "
+                                    f"model={model} key={key[:8]}...",
+                                    flush=True,
+                                )
+                                resp = client.models.generate_content(
+                                    model=model,
+                                    contents=[
+                                        types.Content(
+                                            role="user",
+                                            parts=[
+                                                types.Part.from_text(text=prompt),
+                                                types.Part.from_bytes(
+                                                    data=raw,
+                                                    mime_type="image/jpeg",
+                                                ),
+                                            ],
+                                        )
+                                    ],
+                                )
+                                text = (getattr(resp, "text", None) or "").strip()
+                                if text:
+                                    text = text.replace("\n", " ")[:120]
+                                    print(
+                                        f"[ALBUM] caption ok SDK model={model}",
+                                        flush=True,
+                                    )
+                                    return text
+                            except Exception as e:
+                                print(
+                                    f"[ALBUM] caption SDK fail model={model}: {e}",
+                                    flush=True,
+                                )
+                                continue
+                    except Exception as e:
+                        print(f"[ALBUM] caption SDK client fail: {e}", flush=True)
+        except ImportError:
+            print(
+                "[ALBUM] google-genai nao instalado — usando REST",
+                flush=True,
+            )
+
+        # 2) REST multi-endpoint
+        for model in models[:8]:
+            for key in keys[:3]:
+                for url in urls_for(model, key):
+                    for parts in (parts_camel, parts_snake):
+                        payload = build_payload(parts)
+                        try:
+                            async with httpx.AsyncClient(timeout=60) as client:
+                                r = await client.post(
+                                    url,
+                                    headers={
+                                        "x-goog-api-key": key,
+                                        "Content-Type": "application/json",
+                                    },
+                                    params={"key": key},
+                                    json=payload,
+                                )
+                            short = url.split(".com")[-1][:60]
+                            print(
+                                f"[ALBUM] caption REST {short} "
+                                f"model={model} HTTP {r.status_code} "
+                                f"key={key[:8]}...",
+                                flush=True,
+                            )
+                            if r.status_code == 404:
+                                print(
+                                    f"[ALBUM] 404 body={r.text[:160]}",
+                                    flush=True,
+                                )
+                                # troca modelo/url
+                                break  # next url format/parts still try? break parts
+                            if r.status_code in (429, 503):
+                                await asyncio.sleep(2)
+                                continue
+                            if r.status_code != 200:
+                                print(
+                                    f"[ALBUM] body={r.text[:200]}",
+                                    flush=True,
+                                )
+                                continue
+                            data = r.json()
+                            cands = data.get("candidates") or []
+                            if not cands:
+                                continue
+                            pr = (cands[0].get("content") or {}).get("parts") or []
+                            text = "".join(
+                                x.get("text", "") for x in pr if x.get("text")
+                            ).strip()
+                            text = text.replace("\n", " ").strip().strip('"')[:120]
+                            if text:
+                                print(
+                                    f"[ALBUM] caption ok REST model={model}",
+                                    flush=True,
+                                )
+                                return text
+                        except Exception as e:
+                            print(f"[ALBUM] caption REST err: {e}", flush=True)
+                            continue
+                    else:
                         continue
-                    if r.status_code != 200:
-                        print(f"[ALBUM] caption body={r.text[:200]}", flush=True)
-                        continue
-                    data = r.json()
-                    cands = data.get("candidates") or []
-                    if not cands:
-                        continue
-                    parts = (cands[0].get("content") or {}).get("parts") or []
-                    text = "".join(
-                        x.get("text", "") for x in parts if x.get("text")
-                    ).strip()
-                    text = text.replace("\n", " ").strip().strip('"')
-                    if len(text) > 120:
-                        text = text[:120]
-                    if text:
-                        print(f"[ALBUM] caption ok model={model}", flush=True)
-                        return text
-                except Exception as e:
-                    print(f"[ALBUM] caption err: {e}", flush=True)
+                    # 404 broke inner parts loop
                     continue
+        print("[ALBUM] caption: todas tentativas falharam", flush=True)
         return ""
 
     async def backfill_captions(self, limit: int = 20) -> int:
