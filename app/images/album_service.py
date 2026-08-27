@@ -479,22 +479,47 @@ class AlbumService:
                         flush=True,
                     )
                     # prioriza flash com vision
+                    # ignora tts / image-gen / embedding para caption de foto
+                    skip = ("tts", "embed", "imagen", "image", "robotics", "computer")
+                    usable = [
+                        n for n in found
+                        if not any(s in n.lower() for s in skip)
+                        or n.endswith("-flash")
+                        or "flash-lite" in n
+                        or "flash" in n and "image" not in n and "tts" not in n
+                    ]
+                    # refiltra limpo
+                    usable = []
+                    for n in found:
+                        nl = n.lower()
+                        if any(x in nl for x in ("tts", "embed", "imagen", "robotics")):
+                            continue
+                        if "image" in nl and "flash" in nl:
+                            # gemini-2.5-flash-image = gerador, nao vision caption
+                            continue
+                        usable.append(n)
                     preferred = []
                     for needle in (
-                        "flash-lite",
+                        "2.5-flash-lite",
+                        "flash-lite-latest",
                         "2.5-flash",
-                        "3.7-flash",
+                        "flash-latest",
                         "3.5-flash",
+                        "3.7-flash",
                         "flash",
                     ):
-                        for n in found:
+                        for n in usable:
                             if needle in n and n not in preferred:
                                 preferred.append(n)
-                    for n in found:
+                    for n in usable:
                         if n not in preferred:
                             preferred.append(n)
-                    AlbumService._models_cache = preferred[:20]
-                    return preferred[:20]
+                    AlbumService._models_cache = preferred[:15]
+                    print(
+                        f"[ALBUM] models caption-priority={preferred[:8]}",
+                        flush=True,
+                    )
+                    return preferred[:15]
             except Exception as e:
                 print(f"[ALBUM] listModels err: {e}", flush=True)
         return []
@@ -549,21 +574,18 @@ class AlbumService:
             }
 
         def urls_for(model: str, key: str) -> list:
-            """AQ. keys costumam ser Auth/Vertex Express; AIza = AI Studio."""
-            out = []
-            if key.startswith("AQ.") or key.startswith("AQ_"):
+            """Prioriza AI Studio (generativelanguage) — listModels ja funcionou la."""
+            out = [
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent",
+            ]
+            # Vertex so se usuario ativar a API (senao 403 barulho)
+            if key.startswith("AQ."):
                 out.extend(
                     [
                         f"https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent",
-                        f"https://aiplatform.googleapis.com/v1beta1/publishers/google/models/{model}:generateContent",
                     ]
                 )
-            out.extend(
-                [
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                    f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent",
-                ]
-            )
             return out
 
         # 1) tenta SDK google-genai se instalado (melhor com AQ.)
@@ -572,7 +594,7 @@ class AlbumService:
             from google.genai import types
 
             for key in keys[:3]:
-                for vertex_flag in (True, False):
+                for vertex_flag in (False,):  # AI Studio; Vertex pede API extra
                     try:
                         client = genai.Client(api_key=key, vertexai=vertex_flag)
                         for model in models[:6]:
