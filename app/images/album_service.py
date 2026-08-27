@@ -166,6 +166,17 @@ class AlbumService:
             return False
         await self.ensure_table()
         caption = (caption_hint or "").strip()
+        # IA legenda automatica se vazio (Gemini Vision — gratis)
+        if generate_caption and not caption:
+            try:
+                raw = await self._download_file(file_id)
+                if raw:
+                    ai_cap = await self._auto_caption_vision(raw)
+                    if ai_cap:
+                        caption = ai_cap
+                        print(f"[ALBUM] auto-caption={caption[:80]!r}", flush=True)
+            except Exception as e:
+                print(f"[ALBUM] auto-caption fail: {e}", flush=True)
         tags = " ".join(sorted(_tokenize(caption))[:32])
         try:
             await self.session.execute(
@@ -400,6 +411,121 @@ class AlbumService:
             return keys
         except Exception:
             return []
+
+
+    async def _auto_caption_vision(self, image_bytes: bytes) -> str:
+        """Uma linha: roupa, cor, local — tags automaticas via Gemini Vision."""
+        import httpx
+        import base64 as _b64
+
+        keys = self._gemini_keys()
+        if not keys or not image_bytes:
+            return ""
+        raw = image_bytes
+        if len(raw) > 4_000_000:
+            raw = raw[:4_000_000]
+        b64 = _b64.b64encode(raw).decode("ascii")
+        prompt = (
+            "Descreva esta foto de mulher adulta em UMA linha curta em portugues, "
+            "so fatos visuais uteis para busca: tipo de roupa, cor principal, "
+            "acessorios, local/cenario se visivel. "
+            "Exemplo: vestido branco curto salto alto espelho. "
+            "Sem nome de pessoa. Sem emoji. Maximo 12 palavras."
+        )
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": b64,
+                            }
+                        },
+                    ],
+                }
+            ],
+            "generationConfig": {"maxOutputTokens": 40, "temperature": 0.2},
+        }
+        model = "gemini-2.0-flash"
+        for key in keys[:4]:
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent"
+            )
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.post(
+                        url,
+                        headers={
+                            "x-goog-api-key": key,
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                if r.status_code == 429:
+                    continue
+                if r.status_code != 200:
+                    print(f"[ALBUM] caption HTTP {r.status_code}", flush=True)
+                    continue
+                data = r.json()
+                cands = data.get("candidates") or []
+                if not cands:
+                    continue
+                parts = (cands[0].get("content") or {}).get("parts") or []
+                text = "".join(
+                    x.get("text", "") for x in parts if x.get("text")
+                ).strip()
+                text = text.replace("\n", " ").strip().strip('"').strip()
+                if len(text) > 120:
+                    text = text[:120]
+                return text
+            except Exception as e:
+                print(f"[ALBUM] caption err: {e}", flush=True)
+                continue
+        return ""
+
+    async def backfill_captions(self, limit: int = 20) -> int:
+        """Gera caption IA para fotos ja no banco sem tag."""
+        await self.ensure_table()
+        r = await self.session.execute(
+            text(
+                """
+                SELECT id, file_id FROM album_photos
+                WHERE (caption IS NULL OR caption = '')
+                   OR (tags IS NULL OR tags = '')
+                ORDER BY id DESC
+                LIMIT :lim
+                """
+            ),
+            {"lim": int(limit)},
+        )
+        rows = list(r.mappings().all())
+        done = 0
+        for row in rows:
+            raw = await self._download_file(row["file_id"])
+            if not raw:
+                continue
+            cap = await self._auto_caption_vision(raw)
+            if not cap:
+                continue
+            tags = " ".join(sorted(_tokenize(cap))[:32])
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE album_photos
+                    SET caption = :c, tags = :t
+                    WHERE id = :id
+                    """
+                ),
+                {"c": cap, "t": tags, "id": row["id"]},
+            )
+            await self.session.commit()
+            done += 1
+            print(f"[ALBUM] backfill id={row['id']} cap={cap[:60]!r}", flush=True)
+        return done
 
     async def _vision_choose(self, scene: str, pedido: str, pool: list):
         import httpx
