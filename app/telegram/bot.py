@@ -3,6 +3,7 @@ Telegram bot.
 - 1 mensagem do usuario = 1 processamento (lock por user + dedup)
 - Foto SEM legenda; texto em mensagem separada
 - channel_post: indexa fotos do ALBUM_CHANNEL_ID
+- /album_drive_sync: indexa Google Drive
 """
 from __future__ import annotations
 
@@ -18,11 +19,12 @@ from app.config import settings
 
 class TelegramApp:
 
-    def __init__(self, agent, album_service=None):
+    def __init__(self, agent, album_service=None, drive_album_service=None):
         self.bot = Bot(token=settings.telegram_bot_token)
         self.dp = Dispatcher()
         self.agent = agent
         self.album_service = album_service
+        self.drive_album_service = drive_album_service
 
         self._user_locks: dict[int, asyncio.Lock] = {}
         self._seen_updates: deque[int] = deque(maxlen=800)
@@ -64,6 +66,7 @@ class TelegramApp:
         self._seen_message_set.add(key)
 
     def _mark_update(self, update_id: int | None) -> bool:
+        """True se ja visto (skip)."""
         if update_id is None:
             return False
         if update_id in self._seen_update_set:
@@ -78,33 +81,26 @@ class TelegramApp:
     async def _handle_channel_post(self, message: Message) -> None:
         if not self.album_service:
             return
-        chat = message.chat
-        chat_id = chat.id if chat else None
+        chat_id = message.chat.id if message.chat else None
         if not self.album_service.is_album_channel(chat_id):
-            print(
-                f"[ALBUM] channel_post ignorado chat_id={chat_id} "
-                f"(esperado {self.album_service.channel_id})",
-                flush=True,
-            )
             return
 
-        photos = message.photo or []
-        if not photos:
-            # document image?
-            doc = message.document
-            if doc and (doc.mime_type or "").startswith("image/"):
-                file_id = doc.file_id
-                fuid = doc.file_unique_id
-                w = h = None
-            else:
-                return
-        else:
-            # maior resolucao
+        file_id = None
+        fuid = None
+        w = h = None
+
+        if message.photo:
+            photos = message.photo
             best = photos[-1]
             file_id = best.file_id
             fuid = best.file_unique_id
             w = best.width
             h = best.height
+        elif message.document and (message.document.mime_type or "").startswith("image/"):
+            file_id = message.document.file_id
+            fuid = message.document.file_unique_id
+        else:
+            return
 
         gen_cap = bool(getattr(settings, "album_caption_on_ingest", False))
         ok = await self.album_service.ingest_telegram_photo(
@@ -121,21 +117,28 @@ class TelegramApp:
     async def _handle_one(self, message: Message) -> None:
         session = self.agent.context_manager.session
         try:
-            text = message.text or message.caption or ""
-            # comando album stats
-            low = text.strip().lower()
+            text = (message.text or message.caption or "").strip()
+            low = text.lower()
+
+            # --- comandos album ---
             if low in ("/album", "/album_stats"):
+                lines = []
                 if self.album_service:
                     n = await self.album_service.count()
-                    await message.answer(f"Album: {n} foto(s) indexada(s).")
+                    lines.append(f"Canal Telegram: {n} foto(s)")
+                if self.drive_album_service:
+                    nd = await self.drive_album_service.count()
+                    lines.append(f"Google Drive: {nd} foto(s)")
+                if lines:
+                    await message.answer("Album:\n" + "\n".join(lines))
                 else:
                     await message.answer("Album desativado.")
                 await session.commit()
                 return
+
             if low.startswith("/album_tag"):
-                # /album_tag ou /album_tag 30 — gera caption IA nas fotos sem tag
                 if not self.album_service:
-                    await message.answer("Album desativado.")
+                    await message.answer("Album canal desativado.")
                     await session.commit()
                     return
                 parts = low.split()
@@ -143,10 +146,73 @@ class TelegramApp:
                 if len(parts) > 1 and parts[1].isdigit():
                     lim = min(int(parts[1]), 50)
                 await message.answer(
-                    f"Tagueando ate {lim} fotos sem legenda com IA... aguarde."
+                    f"Tagueando ate {lim} fotos do canal com IA... aguarde."
                 )
                 n = await self.album_service.backfill_captions(limit=lim)
-                await message.answer(f"Pronto: {n} foto(s) com tag automatica.")
+                await message.answer(f"Canal: {n} foto(s) com tag automatica.")
+                await session.commit()
+                return
+
+            if low.startswith("/album_drive") or low.startswith("/drive"):
+                if not self.drive_album_service:
+                    await message.answer(
+                        "Drive desligado.\n"
+                        "Configure:\n"
+                        "DRIVE_ALBUM_ENABLED=true\n"
+                        "GOOGLE_DRIVE_FOLDER_ID=...\n"
+                        "GOOGLE_SERVICE_ACCOUNT_JSON={...}"
+                    )
+                    await session.commit()
+                    return
+                parts = text.strip().split()
+                if low in (
+                    "/album_drive",
+                    "/drive",
+                    "/album_drive_stats",
+                    "/drive_stats",
+                ):
+                    n = await self.drive_album_service.count()
+                    await message.answer(f"Drive album: {n} foto(s) indexada(s).")
+                    await session.commit()
+                    return
+                if "sync" in low:
+                    lim = 50
+                    for p in parts[1:]:
+                        if p.isdigit():
+                            lim = min(int(p), 200)
+                    await message.answer(
+                        f"Sincronizando ate {lim} fotos do Drive (IA tag)... aguarde."
+                    )
+                    res = await self.drive_album_service.sync(
+                        limit=lim, caption_new=True
+                    )
+                    await message.answer(
+                        f"Drive sync: ok={res.get('ok')} "
+                        f"scanned={res.get('scanned')} "
+                        f"added={res.get('added')} "
+                        f"captioned={res.get('captioned')} "
+                        f"total={res.get('total')} "
+                        f"err={res.get('error')}"
+                    )
+                    await session.commit()
+                    return
+                if "tag" in low:
+                    lim = 20
+                    for p in parts[1:]:
+                        if p.isdigit():
+                            lim = min(int(p), 50)
+                    await message.answer(f"Tagueando ate {lim} fotos do Drive...")
+                    n = await self.drive_album_service.backfill_captions(limit=lim)
+                    await message.answer(f"Drive tags: {n} foto(s).")
+                    await session.commit()
+                    return
+                await message.answer(
+                    "Comandos Drive:\n"
+                    "/album_drive — total\n"
+                    "/album_drive_sync 50 — forcar sync agora\n"
+                    "/album_drive_tag 20 — so captions\n"
+                    "(Auto: a cada ~15 min o bot pega fotos NOVAS do Drive e tagueia sozinho)"
+                )
                 await session.commit()
                 return
 
@@ -160,20 +226,22 @@ class TelegramApp:
                 message.from_user.id,
                 text,
             )
-
             await session.commit()
 
             if not isinstance(result, dict):
                 return
 
-            # texto primeiro (mensagem separada)
             reply = (result.get("text") or result.get("reply") or "").strip()
             if reply:
                 await message.answer(reply)
 
-            # foto: agent pode devolver type=image no root ou em "image"
             img = None
-            if result.get("type") == "image" or result.get("telegram_file_id") or result.get("bytes") or result.get("url"):
+            if (
+                result.get("type") == "image"
+                or result.get("telegram_file_id")
+                or result.get("bytes")
+                or result.get("url")
+            ):
                 img = {
                     "success": result.get("success", True),
                     "image_url": result.get("url") or result.get("image_url"),
@@ -203,7 +271,11 @@ class TelegramApp:
                         "caption": None,
                     }
 
-            if img and (img.get("telegram_file_id") or img.get("image_bytes") or img.get("image_url")):
+            if img and (
+                img.get("telegram_file_id")
+                or img.get("image_bytes")
+                or img.get("image_url")
+            ):
                 await self._send_image_result(message, img)
 
         except Exception as e:
@@ -213,33 +285,35 @@ class TelegramApp:
             except Exception:
                 pass
             try:
-                await message.answer("Amor, deu um probleminha aqui agora. Tenta de novo? ❤️")
+                await message.answer(
+                    "Amor, deu um probleminha aqui agora. Tenta de novo? ❤️"
+                )
             except Exception:
                 pass
 
     async def _send_image_result(self, message: Message, result: dict) -> bool:
-        if not result or not result.get("success"):
+        if not result:
             return False
-
-        # SEM legenda
+        # sem legenda nas fotos
         caption = None
-        file_id = result.get("telegram_file_id")
-        image_bytes = result.get("image_bytes")
-        image_url = result.get("image_url")
+        telegram_file_id = result.get("telegram_file_id")
+        image_bytes = result.get("image_bytes") or result.get("bytes")
+        image_url = result.get("image_url") or result.get("url")
 
         print(
-            f"[TelegramApp] image payload: file_id={'yes' if file_id else 'no'} "
-            f"url={'yes' if image_url else 'no'} bytes={len(image_bytes or b'')} "
-            f"caption=False provider={result.get('provider')}",
+            f"[TelegramApp] image payload: file_id="
+            f"{'yes' if telegram_file_id else 'no'} "
+            f"bytes={len(image_bytes) if image_bytes else 0} "
+            f"url={'yes' if image_url else 'no'} caption=False",
             flush=True,
         )
 
-        try:
-            if file_id:
-                await message.answer_photo(file_id, caption=caption)
+        if telegram_file_id:
+            try:
+                await message.answer_photo(telegram_file_id, caption=caption)
                 return True
-        except Exception as e:
-            print(f"[TelegramApp] send file_id failed: {e}", flush=True)
+            except Exception as e:
+                print(f"[TelegramApp] send file_id failed: {e}", flush=True)
 
         try:
             if image_bytes:
@@ -265,11 +339,10 @@ class TelegramApp:
                 except Exception as e2:
                     print(f"[TelegramApp] answer_photo url failed: {e2}", flush=True)
 
-        print("[TelegramApp] sem dados de imagem utilizáveis", flush=True)
+        print("[TelegramApp] sem dados de imagem utilizaveis", flush=True)
         return False
 
     async def feed_webhook_update(self, update):
-        raw = update
         if isinstance(update, dict):
             uid = update.get("update_id")
         else:
@@ -281,15 +354,14 @@ class TelegramApp:
 
         await self.dp.feed_update(
             self.bot,
-            Update.model_validate(update) if not isinstance(update, Update) else update,
+            Update.model_validate(update)
+            if not isinstance(update, Update)
+            else update,
         )
 
     async def set_webhook(self):
         if settings.webhook_base_url:
-            url = (
-                settings.webhook_base_url.rstrip("/")
-                + "/telegram/webhook"
-            )
+            url = settings.webhook_base_url.rstrip("/") + "/telegram/webhook"
             await self.bot.set_webhook(
                 url,
                 secret_token=settings.webhook_secret,
