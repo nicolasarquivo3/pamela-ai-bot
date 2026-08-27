@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # GEMINI_API_KEYS=key1,key2,key3   <- rodizio de cota
     gemini_api_key: str | None = None
     gemini_api_keys: str | None = None
-    gemini_model: str = "gemini-2.5-flash-lite"
+    gemini_model: str = "gemini-flash-lite-latest"
 
     # OPENROUTER (fallback quando Gemini SAFETY; free rota openrouter/free)
     openrouter_api_key: str | None = None
@@ -98,6 +98,18 @@ class Settings(BaseSettings):
     album_use_vision_match: bool = True  # grátis; se false so tags
     # no bulk de milhares de fotos: false = nao chama LLM por foto
     album_caption_on_ingest: bool = True  # Gemini Vision tag automatica
+
+    # ALBUM Google Drive (fotos na nuvem — libera espaco do celular)
+    drive_album_enabled: bool = False
+    drive_album_first: bool = True  # Drive antes do canal Telegram
+    drive_folder_id: str | None = None  # ID da pasta compartilhada
+    # JSON da service account (uma linha). Alternativa: arquivo via secret.
+    google_service_account_json: str | None = None
+    drive_auto_sync: bool = True  # tag automatica de fotos novas no Drive
+    drive_sync_interval_seconds: int = 900  # 15 min
+    drive_sync_batch: int = 30  # fotos por ciclo (cota Gemini)
+
+
 
     timezone: str = "America/Sao_Paulo"
 

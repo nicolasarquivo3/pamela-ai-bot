@@ -13,6 +13,14 @@ try:
     from app.images.album_service import AlbumService
 except Exception:
     AlbumService = None  # type: ignore
+try:
+    from app.images.drive_album import DriveAlbumService
+except Exception:
+    DriveAlbumService = None  # type: ignore
+try:
+    from app.images.drive_sync_loop import DriveSyncLoop
+except Exception:
+    DriveSyncLoop = None  # type: ignore
 from app.images.face_swap import FaceSwapService
 from app.images.pexels import PexelsSearchService
 from app.images.web_search_images import WebImageSearchService
@@ -262,6 +270,31 @@ async def main():
     else:
         print("[ALBUM] desligado (sem modulo ou album_enabled=false)", flush=True)
 
+    # Google Drive album
+    drive_album_service = None
+    try:
+        _df = getattr(settings, "drive_folder_id", None) or __import__("os").getenv("GOOGLE_DRIVE_FOLDER_ID")
+        _sj = getattr(settings, "google_service_account_json", None) or __import__("os").getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+        _de = bool(getattr(settings, "drive_album_enabled", False)) or (
+            str(__import__("os").getenv("DRIVE_ALBUM_ENABLED", "")).lower() in ("1", "true", "yes")
+        )
+        if DriveAlbumService is not None and _de and _df and _sj:
+            drive_album_service = DriveAlbumService(
+                session=session,
+                folder_id=str(_df).strip(),
+                sa_json=_sj,
+                enabled=True,
+                use_vision_caption=True,
+                caption_fn=None,  # ligado depois se album_service tiver vision
+            )
+            print(f"[DRIVE] enabled folder={str(_df)[:20]}...", flush=True)
+        else:
+            print("[DRIVE] desligado (sem folder/json ou DRIVE_ALBUM_ENABLED)", flush=True)
+    except Exception as _e:
+        print(f"[DRIVE] init fail: {_e}", flush=True)
+        drive_album_service = None
+
+
     image_service = ImageService(
 
         chars,
@@ -280,6 +313,7 @@ async def main():
         pixabay_service=pixabay_service,
         gelbooru_service=gelbooru_service,
         album_service=album_service,
+        drive_album_service=drive_album_service,
         album_first=bool(getattr(settings, "album_first", True)),
         prefer_real_photos=settings.prefer_real_photos,
         prefer_ai_first=True,
@@ -335,12 +369,54 @@ async def main():
     # liga LLM no album (match opcional)
     if album_service is not None:
         album_service.llm = llm
+
+    # caption IA do Drive reutiliza AlbumService vision se existir
+    if drive_album_service is not None and album_service is not None:
+        drive_album_service._caption_fn = album_service._auto_caption_vision
+    elif drive_album_service is not None:
+        # fallback: sem caption automatica no sync
+        pass
+
     try:
         telegram = TelegramApp(agent, album_service=album_service)
     except TypeError:
         telegram = TelegramApp(agent)
 
     await telegram.set_webhook()
+
+    # Drive auto-sync (fotos novas no Drive -> caption IA automatica)
+    try:
+        _auto = bool(getattr(settings, "drive_auto_sync", True)) or (
+            str(os.getenv("DRIVE_AUTO_SYNC", "true")).lower() in ("1", "true", "yes")
+        )
+        _iv = int(
+            getattr(settings, "drive_sync_interval_seconds", None)
+            or os.getenv("DRIVE_SYNC_INTERVAL_SECONDS")
+            or 900
+        )
+        _batch = int(
+            getattr(settings, "drive_sync_batch", None)
+            or os.getenv("DRIVE_SYNC_BATCH")
+            or 30
+        )
+        if (
+            DriveSyncLoop is not None
+            and drive_album_service is not None
+            and _auto
+        ):
+            drive_loop = DriveSyncLoop(
+                drive_album_service,
+                interval_seconds=_iv,
+                batch=_batch,
+                enabled=True,
+            )
+            await drive_loop.start()
+        else:
+            print("[DriveSync] nao iniciado", flush=True)
+    except Exception as _e:
+        print(f"[DriveSync] start fail: {_e}", flush=True)
+
+
 
     def memory_factory(tick_session):
         mm, sm, ee, re, cm = make_brain_components(tick_session)
