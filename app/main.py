@@ -96,22 +96,45 @@ async def main():
             or ""
         )
         extra_channels = [c.strip() for c in str(raw_chs).split(",") if c.strip()]
-        providers.append(
-            PerchanceImageProvider(
-                user_key=pc_key.strip(),
-                cookies=(
-                    getattr(settings, "perchance_cookies", None)
-                    or _os.getenv("PERCHANCE_COOKIES")
+        # Compat: se perchance_image.py for antigo (sem cookies),
+        # so passa kwargs que o __init__ aceitar.
+        import inspect as _inspect
+
+        _pc_kwargs = {
+            "user_key": pc_key.strip(),
+            "cookies": (
+                getattr(settings, "perchance_cookies", None)
+                or _os.getenv("PERCHANCE_COOKIES")
+            ),
+            "channel": (pc_channel or "5yf90s8rdo").strip(),
+            "channels": extra_channels or None,
+            "timeout": int(getattr(settings, "image_timeout_seconds", 180) or 180),
+            "resolution": getattr(settings, "perchance_resolution", None)
+            or "512x768",
+        }
+        try:
+            _sig = _inspect.signature(PerchanceImageProvider.__init__)
+            _allowed = set(_sig.parameters.keys()) - {"self"}
+            if any(
+                p.kind == _inspect.Parameter.VAR_KEYWORD
+                for p in _sig.parameters.values()
+            ):
+                _final = _pc_kwargs
+            else:
+                _final = {k: v for k, v in _pc_kwargs.items() if k in _allowed}
+        except Exception:
+            _final = {
+                "user_key": pc_key.strip(),
+                "timeout": int(
+                    getattr(settings, "image_timeout_seconds", 180) or 180
                 ),
-                channel=(pc_channel or "5yf90s8rdo").strip(),
-                channels=extra_channels or None,
-                timeout=int(getattr(settings, "image_timeout_seconds", 180) or 180),
-                resolution=getattr(settings, "perchance_resolution", None) or "512x768",
-            )
-        )
+            }
+
+        providers.append(PerchanceImageProvider(**_final))
         print(
             f"[IMAGE] Perchance #1 key={pc_key[:8]}... "
-            f"primary={pc_channel!r} extras={extra_channels}",
+            f"primary={pc_channel!r} extras={extra_channels} "
+            f"kwargs={list(_final.keys())}",
             flush=True,
         )
     else:
