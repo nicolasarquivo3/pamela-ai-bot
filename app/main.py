@@ -252,6 +252,7 @@ async def main():
             channel_id=_album_ch_int,
             enabled=True,
             use_llm_match=bool(getattr(settings, "album_use_llm_match", True)),
+            use_vision_match=bool(getattr(settings, "album_use_vision_match", True)),
             llm=None,
         )
         print(
