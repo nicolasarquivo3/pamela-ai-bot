@@ -30,3 +30,4 @@ class ImageResult:
     image_bytes: bytes | None = None
     error: str | None = None
     face_swapped: bool = False
+    telegram_file_id: str | None = None

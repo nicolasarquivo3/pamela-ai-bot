@@ -1,7 +1,7 @@
 """
 Ordem:
   1) AI (Flux) + seed + face swap
-  2) Fallback: DDG â†’ Bing â†’ Reddit â†’ Pixabay â†’ Gelbooru â†’ Pexels + face swap
+  2) Fallback: DDG → Bing → Reddit → Pixabay → Gelbooru → Pexels + face swap
 """
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ class ImageService:
         gelbooru_service=None,
         prefer_real_photos: bool = True,
         prefer_ai_first: bool = True,
+        album_service=None,
+        album_first: bool = True,
     ):
         self.character_repository = character_repository
         self.router = router
@@ -47,6 +49,8 @@ class ImageService:
         self.gelbooru_service = gelbooru_service
         self.prefer_real_photos = bool(prefer_real_photos)
         self.prefer_ai_first = bool(prefer_ai_first)
+        self.album_service = album_service
+        self.album_first = bool(album_first)
         self.prompt_builder = PromptBuilder()
 
     def _fresh_seed(self) -> int:
@@ -73,6 +77,26 @@ class ImageService:
         request.randomize_seed = True
 
         print(f"[IMAGE] generate seed={request.seed} scene={scene[:120]!r}", flush=True)
+
+        # 0) ALBUM do canal Telegram (fotos reais suas)
+        if self.album_first and self.album_service:
+            try:
+                if await self.album_service.available():
+                    picked = await self.album_service.pick_best(scene)
+                    if picked and picked.get("file_id"):
+                        print(
+                            f"[IMAGE] ALBUM hit file_id={str(picked['file_id'])[:24]}...",
+                            flush=True,
+                        )
+                        return ImageResult(
+                            success=True,
+                            provider="album:telegram",
+                            telegram_file_id=picked["file_id"],
+                            image_bytes=None,
+                            image_url=None,
+                        )
+            except Exception as e:
+                print(f"[IMAGE] album error: {e}", flush=True)
 
         if self.prefer_ai_first:
             ai = await self._try_ai_generation(request, character, scene)
@@ -142,12 +166,12 @@ class ImageService:
                     if self._face_swap_required():
                         await self.image_repository.fail(record, err)
                         return ImageResult(False, error=err, provider="ai+faceswap")
-                    print("[IMAGE] face_swap nao obrigatorio â€” usando AI sem swap", flush=True)
+                    print("[IMAGE] face_swap nao obrigatorio — usando AI sem swap", flush=True)
 
             # anti-repeat final (pos face swap)
             if RECENT is not None:
                 if RECENT.seen(content=result.image_bytes):
-                    print("[IMAGE] AI result DUPLICATA (hash) â€” descarta", flush=True)
+                    print("[IMAGE] AI result DUPLICATA (hash) — descarta", flush=True)
                     await self.image_repository.fail(record, "duplicate_image")
                     return ImageResult(False, error="duplicate_image", provider=result.provider)
                 RECENT.remember(
@@ -228,7 +252,7 @@ class ImageService:
 
             # rejeita se o RESULTADO final (pos face swap) ja foi usado
             if RECENT is not None and RECENT.seen(content=result.image_bytes):
-                print(f"[IMAGE] {provider_name} resultado final DUPLICATA â€” tenta outra", flush=True)
+                print(f"[IMAGE] {provider_name} resultado final DUPLICATA — tenta outra", flush=True)
                 await self.image_repository.fail(record, "duplicate_final")
                 return None
 
