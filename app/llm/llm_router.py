@@ -1,6 +1,6 @@
 """
 Roteador de LLMs:
-  1) Gemini (rapido / barato)
+  1) Gemini (rapido / barato; varias keys = rodizio de cota)
   2) Se bloquear, vazio, safety, 503, timeout -> OpenRouter (Venice etc.)
 """
 from __future__ import annotations
@@ -12,9 +12,9 @@ from typing import Any
 # sinais de recusa / bloqueio no texto do Gemini
 _REFUSAL_RE = re.compile(
     r"("
-    r"n[aÃ£]o\s+posso\s+(ajudar|continuar|falar|gerar|responder)|"
-    r"n[aÃ£]o\s+consigo\s+(ajudar|gerar|falar)|"
-    r"contra\s+(as\s+)?(minhas\s+)?pol[iÃ­]ticas|"
+    r"n[aã]o\s+posso\s+(ajudar|continuar|falar|gerar|responder)|"
+    r"n[aã]o\s+consigo\s+(ajudar|gerar|falar)|"
+    r"contra\s+(as\s+)?(minhas\s+)?pol[ií]ticas|"
     r"as\s+a\s+(an\s+)?ai|"
     r"i\s+can'?t\s+(help|assist|generate)|"
     r"i\s+cannot\s+(help|assist|generate)|"
@@ -22,8 +22,8 @@ _REFUSAL_RE = re.compile(
     r"content\s+policy|"
     r"safety\s+guidelines|"
     r"violat(e|es|ing)\s+(the\s+)?(policy|policies)|"
-    r"n[aÃ£]o\s+vou\s+(gerar|escrever|continuar)|"
-    r"prefiro\s+n[aÃ£]o\s+(falar|continuar)|"
+    r"n[aã]o\s+vou\s+(gerar|escrever|continuar)|"
+    r"prefiro\s+n[aã]o\s+(falar|continuar)|"
     r"isso\s+vai\s+contra"
     r")",
     re.I,
@@ -123,5 +123,5 @@ class LLMRouter:
                 return fb
             print("[LLMRouter] FALLBACK tambem falhou", flush=True)
 
-        # se primary tinha texto de recusa, nao devolve a recusa â€” deixa agent usar â¤ï¸
+        # se primary tinha texto de recusa, nao devolve a recusa — deixa agent usar ❤️
         return None
