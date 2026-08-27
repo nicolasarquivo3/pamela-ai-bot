@@ -396,41 +396,123 @@ class AlbumService:
                     keys.append(k)
             if single.strip() and single.strip() not in keys:
                 keys.append(single.strip())
+            if keys:
+                print(
+                    f"[ALBUM] gemini keys={len(keys)} "
+                    f"prefixes={[k[:8]+'...' for k in keys[:4]]}",
+                    flush=True,
+                )
             return keys
         except Exception:
             return []
 
+    _models_cache: list | None = None
+
     def _vision_models(self) -> list:
+        """Prefer o mesmo modelo do chat + descoberta via ListModels."""
+        if AlbumService._models_cache:
+            return list(AlbumService._models_cache)
+
         models = []
         try:
             from app.config import settings
 
             m = (getattr(settings, "gemini_model", None) or "").strip()
-            # lite as vezes nao aceita imagem bem — tenta full flash primeiro
-            if m and "lite" not in m:
+            if m:
                 models.append(m)
         except Exception:
             pass
+        # nomes atuais (2026) + legados
         for m in (
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-latest",
             "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-3.7-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-2.0-flash",
             "gemini-flash-latest",
         ):
             if m not in models:
                 models.append(m)
         return models
 
+    async def _discover_models(self, key: str) -> list:
+        """Pergunta a API quais modelos a key realmente ve."""
+        import httpx
+
+        found = []
+        for base in (
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            "https://generativelanguage.googleapis.com/v1/models",
+        ):
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.get(
+                        base,
+                        headers={"x-goog-api-key": key},
+                        params={"pageSize": 100},
+                    )
+                print(
+                    f"[ALBUM] listModels {base.split('.com')[-1]} "
+                    f"HTTP {r.status_code} key={key[:8]}...",
+                    flush=True,
+                )
+                if r.status_code != 200:
+                    print(f"[ALBUM] listModels body={r.text[:250]}", flush=True)
+                    continue
+                data = r.json()
+                for m in data.get("models") or []:
+                    name = (m.get("name") or "").replace("models/", "")
+                    methods = m.get("supportedGenerationMethods") or m.get(
+                        "supported_generation_methods"
+                    ) or []
+                    # se nao listar methods, ainda tenta
+                    if methods and "generateContent" not in methods:
+                        continue
+                    if name and name not in found:
+                        found.append(name)
+                if found:
+                    print(
+                        f"[ALBUM] modelos disponiveis ({len(found)}): "
+                        f"{found[:12]}",
+                        flush=True,
+                    )
+                    # prioriza flash com vision
+                    preferred = []
+                    for needle in (
+                        "flash-lite",
+                        "2.5-flash",
+                        "3.7-flash",
+                        "3.5-flash",
+                        "flash",
+                    ):
+                        for n in found:
+                            if needle in n and n not in preferred:
+                                preferred.append(n)
+                    for n in found:
+                        if n not in preferred:
+                            preferred.append(n)
+                    AlbumService._models_cache = preferred[:20]
+                    return preferred[:20]
+            except Exception as e:
+                print(f"[ALBUM] listModels err: {e}", flush=True)
+        return []
+
     async def _auto_caption_vision(self, image_bytes: bytes) -> str:
         import httpx
+        import asyncio
 
         keys = self._gemini_keys()
         if not keys or not image_bytes:
+            print("[ALBUM] caption abort: sem key ou sem bytes", flush=True)
             return ""
         raw = image_bytes[:4_000_000]
         b64 = base64.b64encode(raw).decode("ascii")
+        # descobre modelos reais com a primeira key
+        discovered = await self._discover_models(keys[0])
+        model_list = discovered or self._vision_models()
+        print(f"[ALBUM] caption tentando models={model_list[:8]}", flush=True)
         prompt = (
             "Descreva esta foto de mulher adulta em UMA linha curta em portugues, "
             "so fatos visuais uteis para busca: tipo de roupa, cor principal, "
@@ -450,7 +532,7 @@ class AlbumService:
             ],
             "generationConfig": {"maxOutputTokens": 40, "temperature": 0.2},
         }
-        for model in self._vision_models():
+        for model in model_list:
             for key in keys[:4]:
                 url = (
                     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -472,8 +554,13 @@ class AlbumService:
                         flush=True,
                     )
                     if r.status_code == 404:
+                        print(
+                            f"[ALBUM] caption 404 body={r.text[:180]}",
+                            flush=True,
+                        )
                         break
-                    if r.status_code == 429:
+                    if r.status_code in (429, 503):
+                        await asyncio.sleep(1.5)
                         continue
                     if r.status_code != 200:
                         print(f"[ALBUM] caption body={r.text[:200]}", flush=True)
