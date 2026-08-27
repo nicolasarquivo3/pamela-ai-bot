@@ -14,3 +14,4 @@ psycopg2-binary
 requests>=2.31.0
 ddgs>=9.0.0
 httpx
+google-genai>=1.0.0
