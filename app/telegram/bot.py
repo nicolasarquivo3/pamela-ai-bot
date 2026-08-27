@@ -123,12 +123,30 @@ class TelegramApp:
         try:
             text = message.text or message.caption or ""
             # comando album stats
-            if text.strip().lower() in ("/album", "/album_stats"):
+            low = text.strip().lower()
+            if low in ("/album", "/album_stats"):
                 if self.album_service:
                     n = await self.album_service.count()
                     await message.answer(f"Album: {n} foto(s) indexada(s).")
                 else:
                     await message.answer("Album desativado.")
+                await session.commit()
+                return
+            if low.startswith("/album_tag"):
+                # /album_tag ou /album_tag 30 — gera caption IA nas fotos sem tag
+                if not self.album_service:
+                    await message.answer("Album desativado.")
+                    await session.commit()
+                    return
+                parts = low.split()
+                lim = 20
+                if len(parts) > 1 and parts[1].isdigit():
+                    lim = min(int(parts[1]), 50)
+                await message.answer(
+                    f"Tagueando ate {lim} fotos sem legenda com IA... aguarde."
+                )
+                n = await self.album_service.backfill_captions(limit=lim)
+                await message.answer(f"Pronto: {n} foto(s) com tag automatica.")
                 await session.commit()
                 return
 
