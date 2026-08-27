@@ -1,17 +1,16 @@
 """
-Perchance — mesma API, varios CHANNELS (geradores).
+Perchance image provider.
 
-Backend unico:
-  https://image-generation.perchance.org/api/generate
-  https://image-generation.perchance.org/api/downloadTemporaryImage
+Por que a key do browser da invalid_key no Render:
+  - userKey sozinha NAO basta
+  - o request do browser manda cookies (cf_clearance etc.)
+  - sem cookie, a API devolve {"status":"invalid_key"}
 
-O que muda entre paginas e so o parametro `channel` (slug do gerador).
-
-Canais padrao (ordem):
-  1) 5yf90s8rdo
-  2) ai-photo-generator
-  3) image-generator-professional
-  4) ai-text-to-image-generator
+Env:
+  PERCHANCE_USER_KEY   = hex da query userKey=
+  PERCHANCE_COOKIES    = header Cookie completo do MESMO request generate
+  PERCHANCE_CHANNELS   = lista separada por virgula
+  PERCHANCE_CHANNEL    = canal preferido (vai pro final da fila)
 """
 from __future__ import annotations
 
@@ -24,11 +23,9 @@ import httpx
 from app.images.models import ImageResult
 
 DEFAULT_CHANNELS = [
-    # oficiais primeiro (melhor qualidade foto)
     "ai-photo-generator",
     "image-generator-professional",
     "ai-text-to-image-generator",
-    # o gerador do usuario por ultimo
     "5yf90s8rdo",
 ]
 
@@ -39,6 +36,7 @@ class PerchanceImageProvider:
     def __init__(
         self,
         user_key: str | None = None,
+        cookies: str | None = None,
         channel: str | None = None,
         channels: list[str] | None = None,
         timeout: int = 180,
@@ -50,13 +48,13 @@ class PerchanceImageProvider:
         ),
     ):
         self.user_key = (user_key or "").strip() or None
+        self.cookies = (cookies or "").strip() or None
         self.timeout = int(timeout)
         self.resolution = resolution
         self.guidance_scale = float(guidance_scale)
         self.negative_prompt = negative_prompt
         self.base = "https://image-generation.perchance.org/api"
 
-        # oficiais / lista env primeiro; channel "preferido" do user por ULTIMO
         ordered: list[str] = []
         if channels:
             for c in channels:
@@ -66,7 +64,6 @@ class PerchanceImageProvider:
         for c in DEFAULT_CHANNELS:
             if c not in ordered:
                 ordered.append(c)
-        # channel unico (ex: 5yf90s8rdo) vai no FINAL se ainda nao estiver
         if channel and str(channel).strip():
             ch = str(channel).strip()
             if ch in ordered:
@@ -78,16 +75,27 @@ class PerchanceImageProvider:
         return bool(self.user_key)
 
     def _headers(self, channel: str) -> dict[str, str]:
-        return {
+        h = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/122.0.0.0 Safari/537.36"
             ),
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": f"https://perchance.org/{channel}",
             "Origin": "https://perchance.org",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
         }
+        if self.cookies:
+            # aceita "Cookie: a=b" ou so "a=b; c=d"
+            raw = self.cookies
+            if raw.lower().startswith("cookie:"):
+                raw = raw.split(":", 1)[1].strip()
+            h["Cookie"] = raw
+        return h
 
     async def generate(self, request, prompt: str) -> ImageResult:
         if not self.user_key:
@@ -95,6 +103,13 @@ class PerchanceImageProvider:
                 False,
                 error="perchance:missing_PERCHANCE_USER_KEY",
                 provider="perchance",
+            )
+
+        if not self.cookies:
+            print(
+                "[IMAGE] Perchance AVISO: sem PERCHANCE_COOKIES "
+                "(cf_clearance). Muitas vezes da invalid_key no Render.",
+                flush=True,
             )
 
         seed = getattr(request, "seed", None)
@@ -105,7 +120,7 @@ class PerchanceImageProvider:
 
         print(
             f"[IMAGE] Perchance: channels={self.channels} seed={seed} "
-            f"key={self.user_key[:8]}...",
+            f"key={self.user_key[:8]}... cookies={'yes' if self.cookies else 'no'}",
             flush=True,
         )
 
@@ -123,7 +138,8 @@ class PerchanceImageProvider:
                     last_err = err
                     if "invalid_key" in err or "not_verified" in err:
                         print(
-                            "[IMAGE] Perchance: key invalida — para todos os channels",
+                            "[IMAGE] Perchance: key/cookies invalidos — "
+                            "renove USER_KEY + COOKIES no Render (mesmo request)",
                             flush=True,
                         )
                         break
@@ -222,12 +238,12 @@ class PerchanceImageProvider:
                 last_err = f"perchance:{channel}:bad_json"
                 continue
 
-            for _ in range(12):
+            for _ in range(15):
                 if data.get("imageId") or data.get("filePath"):
                     break
                 status = str(data.get("status") or data.get("message") or "")
                 if any(x in status.lower() for x in ("wait", "queue", "pending")):
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(4)
                     try:
                         r2 = await client.get(
                             f"{self.base}/generate",
@@ -242,6 +258,9 @@ class PerchanceImageProvider:
 
             image_id = data.get("imageId") or data.get("filePath")
             if image_id:
+                break
+            if data.get("status") == "invalid_data":
+                last_err = f"perchance:{channel}:invalid_data"
                 break
 
         if not image_id:
