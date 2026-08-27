@@ -62,6 +62,51 @@ class ImageService:
             return False
         return bool(getattr(fs, "required", True))
 
+
+    async def _download_telegram_file(self, file_id: str):
+        """Baixa bytes de um file_id do Telegram (album)."""
+        try:
+            from app.config import settings
+            import httpx
+
+            token = (settings.telegram_bot_token or "").strip()
+            if not token or not file_id:
+                return None
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.get(
+                    f"https://api.telegram.org/bot{token}/getFile",
+                    params={"file_id": file_id},
+                )
+                if r.status_code != 200:
+                    print(f"[ALBUM] getFile HTTP {r.status_code}", flush=True)
+                    return None
+                data = r.json()
+                if not data.get("ok"):
+                    print(f"[ALBUM] getFile not ok: {data}", flush=True)
+                    return None
+                path = (data.get("result") or {}).get("file_path")
+                if not path:
+                    return None
+                r2 = await client.get(
+                    f"https://api.telegram.org/file/bot{token}/{path}"
+                )
+                if r2.status_code != 200 or len(r2.content) < 500:
+                    print(
+                        f"[ALBUM] download HTTP {r2.status_code} "
+                        f"len={len(r2.content)}",
+                        flush=True,
+                    )
+                    return None
+                print(
+                    f"[ALBUM] downloaded bytes={len(r2.content)} path={path}",
+                    flush=True,
+                )
+                return r2.content
+        except Exception as e:
+            print(f"[ALBUM] download error: {e}", flush=True)
+            return None
+
+
     async def generate(self, request: ImageRequest) -> ImageResult:
         if not await self.quota.allowed(request.user_id):
             return ImageResult(False, error="daily_or_monthly_image_limit")
