@@ -1,5 +1,7 @@
 """
-Album canal Telegram — match por PEDIDO + sinonimos + Gemini Vision se tags vazias.
+Album canal Telegram.
+- Ingest: Gemini Vision legenda automatica (roupa/cor/local)
+- Match: PEDIDO + tags + Vision se precisar
 """
 from __future__ import annotations
 
@@ -9,7 +11,6 @@ import re
 from typing import Any
 
 from sqlalchemy import text
-
 
 _STOP = {
     "uma", "para", "com", "sem", "pelo", "pela", "mais", "foto", "manda",
@@ -69,9 +70,8 @@ def _expand_token(t: str) -> set:
 def _tokenize(s: str) -> set:
     s = (s or "").lower()
     s = re.sub(r"[^a-z0-9à-ü\s\-]", " ", s)
-    parts = re.split(r"[\s\-_/,|]+", s)
     out = set()
-    for p in parts:
+    for p in re.split(r"[\s\-_/,|]+", s):
         p = p.strip()
         if len(p) < 3 or p in _STOP:
             continue
@@ -91,7 +91,7 @@ def _pedido_from_scene(scene: str) -> str:
 
 def _outfit_from_scene(scene: str) -> str:
     m = re.search(r"OUTFIT:\s*([^|]+)", scene or "", flags=re.I)
-    return (m.group(1).strip() if m else "")
+    return m.group(1).strip() if m else ""
 
 
 class AlbumService:
@@ -166,7 +166,6 @@ class AlbumService:
             return False
         await self.ensure_table()
         caption = (caption_hint or "").strip()
-        # IA legenda automatica se vazio (Gemini Vision — gratis)
         if generate_caption and not caption:
             try:
                 raw = await self._download_file(file_id)
@@ -256,16 +255,10 @@ class AlbumService:
                 bad = opposites.get(c, set())
                 if bad & photo_toks and not (color_pedido & photo_toks):
                     score -= 4.0
-        if "dress" in pedido_toks or "vestido" in pedido_toks:
-            if photo_toks & {"skirt", "saia", "miniskirt"} and not (
-                photo_toks & {"dress", "vestido"}
-            ):
-                score -= 3.0
-        if "skirt" in pedido_toks or "saia" in pedido_toks:
-            if photo_toks & {"dress", "vestido"} and not (
-                photo_toks & {"skirt", "saia"}
-            ):
-                score -= 3.0
+        if ("dress" in pedido_toks or "vestido" in pedido_toks) and (
+            photo_toks & {"skirt", "saia", "miniskirt"}
+        ) and not (photo_toks & {"dress", "vestido"}):
+            score -= 3.0
         if not photo_toks and not blob.strip():
             score = 0.05
         if row.get("file_id") in self._recent_file_ids:
@@ -313,15 +306,12 @@ class AlbumService:
             flush=True,
         )
 
-        need_vision = (
+        if (
             self.use_vision_match
             and best_score < 2.5
             and bool(pedido_toks or outfit_toks)
-        )
-        if need_vision:
-            pool_ids = []
-            for s, d in top[:5]:
-                pool_ids.append(d)
+        ):
+            pool_ids = [d for _, d in top[:5]]
             recent = rows[: min(50, len(rows))]
             random.shuffle(recent)
             for d in recent:
@@ -342,9 +332,7 @@ class AlbumService:
 
         if best_score < 0.5:
             pool = [
-                d
-                for d in rows[:50]
-                if d.get("file_id") not in self._recent_file_ids
+                d for d in rows[:50] if d.get("file_id") not in self._recent_file_ids
             ] or rows[:50]
             chosen = random.choice(pool)
             print("[ALBUM] score baixo e vision falhou -> aleatoria", flush=True)
@@ -392,7 +380,7 @@ class AlbumService:
                     return None
                 return r2.content
         except Exception as e:
-            print(f"[ALBUM] vision download err: {e}", flush=True)
+            print(f"[ALBUM] download err: {e}", flush=True)
             return None
 
     def _gemini_keys(self):
@@ -412,25 +400,43 @@ class AlbumService:
         except Exception:
             return []
 
+    def _vision_models(self) -> list:
+        models = []
+        try:
+            from app.config import settings
+
+            m = (getattr(settings, "gemini_model", None) or "").strip()
+            # lite as vezes nao aceita imagem bem — tenta full flash primeiro
+            if m and "lite" not in m:
+                models.append(m)
+        except Exception:
+            pass
+        for m in (
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-2.5-flash-lite",
+            "gemini-flash-latest",
+        ):
+            if m not in models:
+                models.append(m)
+        return models
 
     async def _auto_caption_vision(self, image_bytes: bytes) -> str:
-        """Uma linha: roupa, cor, local — tags automaticas via Gemini Vision."""
         import httpx
-        import base64 as _b64
 
         keys = self._gemini_keys()
         if not keys or not image_bytes:
             return ""
-        raw = image_bytes
-        if len(raw) > 4_000_000:
-            raw = raw[:4_000_000]
-        b64 = _b64.b64encode(raw).decode("ascii")
+        raw = image_bytes[:4_000_000]
+        b64 = base64.b64encode(raw).decode("ascii")
         prompt = (
             "Descreva esta foto de mulher adulta em UMA linha curta em portugues, "
             "so fatos visuais uteis para busca: tipo de roupa, cor principal, "
-            "acessorios, local/cenario se visivel. "
+            "acessorios, local se visivel. "
             "Exemplo: vestido branco curto salto alto espelho. "
-            "Sem nome de pessoa. Sem emoji. Maximo 12 palavras."
+            "Sem nome. Sem emoji. Maximo 12 palavras."
         )
         payload = {
             "contents": [
@@ -438,57 +444,60 @@ class AlbumService:
                     "role": "user",
                     "parts": [
                         {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": b64,
-                            }
-                        },
+                        {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
                     ],
                 }
             ],
             "generationConfig": {"maxOutputTokens": 40, "temperature": 0.2},
         }
-        model = "gemini-2.0-flash"
-        for key in keys[:4]:
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent"
-            )
-            try:
-                async with httpx.AsyncClient(timeout=60) as client:
-                    r = await client.post(
-                        url,
-                        headers={
-                            "x-goog-api-key": key,
-                            "Content-Type": "application/json",
-                        },
-                        json=payload,
+        for model in self._vision_models():
+            for key in keys[:4]:
+                url = (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model}:generateContent"
+                )
+                try:
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        r = await client.post(
+                            url,
+                            headers={
+                                "x-goog-api-key": key,
+                                "Content-Type": "application/json",
+                            },
+                            json=payload,
+                        )
+                    print(
+                        f"[ALBUM] caption model={model} HTTP {r.status_code} "
+                        f"key={key[:6]}...",
+                        flush=True,
                     )
-                if r.status_code == 429:
+                    if r.status_code == 404:
+                        break
+                    if r.status_code == 429:
+                        continue
+                    if r.status_code != 200:
+                        print(f"[ALBUM] caption body={r.text[:200]}", flush=True)
+                        continue
+                    data = r.json()
+                    cands = data.get("candidates") or []
+                    if not cands:
+                        continue
+                    parts = (cands[0].get("content") or {}).get("parts") or []
+                    text = "".join(
+                        x.get("text", "") for x in parts if x.get("text")
+                    ).strip()
+                    text = text.replace("\n", " ").strip().strip('"')
+                    if len(text) > 120:
+                        text = text[:120]
+                    if text:
+                        print(f"[ALBUM] caption ok model={model}", flush=True)
+                        return text
+                except Exception as e:
+                    print(f"[ALBUM] caption err: {e}", flush=True)
                     continue
-                if r.status_code != 200:
-                    print(f"[ALBUM] caption HTTP {r.status_code}", flush=True)
-                    continue
-                data = r.json()
-                cands = data.get("candidates") or []
-                if not cands:
-                    continue
-                parts = (cands[0].get("content") or {}).get("parts") or []
-                text = "".join(
-                    x.get("text", "") for x in parts if x.get("text")
-                ).strip()
-                text = text.replace("\n", " ").strip().strip('"').strip()
-                if len(text) > 120:
-                    text = text[:120]
-                return text
-            except Exception as e:
-                print(f"[ALBUM] caption err: {e}", flush=True)
-                continue
         return ""
 
     async def backfill_captions(self, limit: int = 20) -> int:
-        """Gera caption IA para fotos ja no banco sem tag."""
         await self.ensure_table()
         r = await self.session.execute(
             text(
@@ -514,11 +523,7 @@ class AlbumService:
             tags = " ".join(sorted(_tokenize(cap))[:32])
             await self.session.execute(
                 text(
-                    """
-                    UPDATE album_photos
-                    SET caption = :c, tags = :t
-                    WHERE id = :id
-                    """
+                    "UPDATE album_photos SET caption=:c, tags=:t WHERE id=:id"
                 ),
                 {"c": cap, "t": tags, "id": row["id"]},
             )
@@ -543,82 +548,71 @@ class AlbumService:
                 continue
             images_b64.append(base64.b64encode(raw).decode("ascii"))
             valid_pool.append(p)
-
         if not valid_pool:
-            print("[ALBUM] vision: nenhuma imagem baixada", flush=True)
             return None
         if len(valid_pool) == 1:
             return valid_pool[0]
 
         prompt = (
             "Voce escolhe UMA foto de um album de uma mulher adulta.\n"
-            f"Pedido do usuario: {pedido[:200]}\n"
+            f"Pedido: {pedido[:200]}\n"
             f"Contexto: {scene[:250]}\n"
-            f"Ha {len(valid_pool)} fotos numeradas 1 a {len(valid_pool)}.\n"
-            "Escolha a que MELHOR combina (roupa, cor, tipo de peca).\n"
-            "Se pediu VESTIDO BRANCO, priorize vestido branco; ignore saia preta.\n"
-            "Responda SOMENTE com o numero (ex: 2)."
+            f"Fotos 1 a {len(valid_pool)}. Escolha a que melhor combina "
+            "(roupa, cor). Se pediu VESTIDO BRANCO, ignore saia preta.\n"
+            "Responda SOMENTE o numero."
         )
         parts = [{"text": prompt}]
         for i, b64 in enumerate(images_b64, 1):
             parts.append({"text": f"Foto {i}:"})
             parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
 
-        model = "gemini-2.0-flash"
-        try:
-            from app.config import settings as _s
-
-            model = getattr(_s, "gemini_model", None) or model
-            if "lite" in str(model):
-                model = "gemini-2.0-flash"
-        except Exception:
-            pass
-
         payload = {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"maxOutputTokens": 16, "temperature": 0.1},
         }
-
-        for key in keys[:4]:
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent"
-            )
-            try:
-                async with httpx.AsyncClient(timeout=90) as client:
-                    r = await client.post(
-                        url,
-                        headers={
-                            "x-goog-api-key": key,
-                            "Content-Type": "application/json",
-                        },
-                        json=payload,
-                    )
-                print(
-                    f"[ALBUM] vision HTTP {r.status_code} key={key[:6]}...",
-                    flush=True,
+        for model in self._vision_models():
+            for key in keys[:4]:
+                url = (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model}:generateContent"
                 )
-                if r.status_code == 429:
+                try:
+                    async with httpx.AsyncClient(timeout=90) as client:
+                        r = await client.post(
+                            url,
+                            headers={
+                                "x-goog-api-key": key,
+                                "Content-Type": "application/json",
+                            },
+                            json=payload,
+                        )
+                    print(
+                        f"[ALBUM] vision model={model} HTTP {r.status_code} "
+                        f"key={key[:6]}...",
+                        flush=True,
+                    )
+                    if r.status_code == 404:
+                        break
+                    if r.status_code == 429:
+                        continue
+                    if r.status_code != 200:
+                        continue
+                    data = r.json()
+                    cands = data.get("candidates") or []
+                    if not cands:
+                        continue
+                    parts_out = (cands[0].get("content") or {}).get("parts") or []
+                    text_out = "".join(
+                        x.get("text", "") for x in parts_out if x.get("text")
+                    ).strip()
+                    print(f"[ALBUM] vision resposta={text_out!r}", flush=True)
+                    m = re.search(r"([1-9][0-9]*)", text_out)
+                    if not m:
+                        continue
+                    n = int(m.group(1)) - 1
+                    if 0 <= n < len(valid_pool):
+                        return valid_pool[n]
+                except Exception as e:
+                    print(f"[ALBUM] vision err: {e}", flush=True)
                     continue
-                if r.status_code != 200:
-                    print(f"[ALBUM] vision body={r.text[:300]}", flush=True)
-                    continue
-                data = r.json()
-                cands = data.get("candidates") or []
-                if not cands:
-                    continue
-                parts_out = (cands[0].get("content") or {}).get("parts") or []
-                text_out = "".join(
-                    x.get("text", "") for x in parts_out if x.get("text")
-                ).strip()
-                print(f"[ALBUM] vision resposta={text_out!r}", flush=True)
-                m = re.search(r"([1-9][0-9]*)", text_out)
-                if not m:
-                    continue
-                n = int(m.group(1)) - 1
-                if 0 <= n < len(valid_pool):
-                    return valid_pool[n]
-            except Exception as e:
-                print(f"[ALBUM] vision err: {e}", flush=True)
-                continue
         return None
