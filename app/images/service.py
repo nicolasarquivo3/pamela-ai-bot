@@ -79,22 +79,73 @@ class ImageService:
         print(f"[IMAGE] generate seed={request.seed} scene={scene[:120]!r}", flush=True)
 
         # 0) ALBUM do canal Telegram (fotos reais suas)
+        # Baixa file_id -> face swap (rosto da Pamela) -> envia bytes
         if self.album_first and self.album_service:
             try:
                 if await self.album_service.available():
                     picked = await self.album_service.pick_best(scene)
                     if picked and picked.get("file_id"):
+                        fid = picked["file_id"]
                         print(
-                            f"[IMAGE] ALBUM hit file_id={str(picked['file_id'])[:24]}...",
+                            f"[IMAGE] ALBUM hit file_id={str(fid)[:24]}...",
                             flush=True,
                         )
-                        return ImageResult(
+                        raw = await self._download_telegram_file(fid)
+                        if not raw:
+                            print(
+                                "[IMAGE] ALBUM download falhou — "
+                                "reenvia file_id sem swap",
+                                flush=True,
+                            )
+                            return ImageResult(
+                                success=True,
+                                provider="album:telegram",
+                                telegram_file_id=fid,
+                            )
+
+                        result = ImageResult(
                             success=True,
                             provider="album:telegram",
-                            telegram_file_id=picked["file_id"],
-                            image_bytes=None,
-                            image_url=None,
+                            image_bytes=raw,
+                            telegram_file_id=None,
                         )
+
+                        if self.face_swap_service:
+                            print("[IMAGE] ALBUM -> face swap...", flush=True)
+                            result = await self.face_swap_service.apply(result)
+                            if not result.success:
+                                print(
+                                    f"[IMAGE] ALBUM face swap falhou: "
+                                    f"{result.error} — tenta proximo provider",
+                                    flush=True,
+                                )
+                                # nao devolve foto sem rosto se required
+                                if self._face_swap_required():
+                                    pass  # cai nos providers abaixo
+                                else:
+                                    # devolve original do album
+                                    return ImageResult(
+                                        success=True,
+                                        provider="album:telegram",
+                                        telegram_file_id=fid,
+                                    )
+                            else:
+                                result.provider = (
+                                    "album:telegram+faceswap"
+                                )
+                                print(
+                                    f"[IMAGE] ALBUM+swap ok "
+                                    f"bytes={len(result.image_bytes or b'')}",
+                                    flush=True,
+                                )
+                                return result
+                        else:
+                            # sem face swap configurado: manda original
+                            return ImageResult(
+                                success=True,
+                                provider="album:telegram",
+                                telegram_file_id=fid,
+                            )
             except Exception as e:
                 print(f"[IMAGE] album error: {e}", flush=True)
 
