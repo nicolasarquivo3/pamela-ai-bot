@@ -41,6 +41,13 @@ from app.brain.memory_extractor import MemoryExtractor
 from app.brain.deduplicator import Deduplicator
 from app.brain.memory_manager import MemoryManager
 from app.brain.semantic_memory import SemanticMemoryManager
+try:
+    from app.brain.event_memory import EventMemoryService
+except Exception:
+    try:
+        from app.images.event_memory import EventMemoryService
+    except Exception:
+        EventMemoryService = None  # type: ignore
 from app.brain.context_manager import ContextManager
 from app.brain.emotion_engine import EmotionEngine
 from app.brain.relationship_engine import RelationshipEngine
@@ -66,6 +73,11 @@ def make_brain_components(session):
         emotion_engine,
         relationship_engine,
         semantic_manager,
+        event_memory_service=None,
+        max_messages=40,
+        max_memories=16,
+        max_semantic_memories=10,
+        max_event_memories=8,
     )
     return (
         memory_manager,
@@ -358,6 +370,43 @@ async def main():
         context_manager,
     ) = make_brain_components(session)
 
+    # Event memory (noites / balada / momentos)
+    event_memory_service = None
+    try:
+        if EventMemoryService is not None and bool(
+            getattr(settings, "event_memory_enabled", True)
+        ):
+            event_memory_service = EventMemoryService(
+                session,
+                llm=None,  # liga depois do LLM
+                max_events_in_context=int(
+                    getattr(settings, "memory_max_events", 8) or 8
+                ),
+            )
+            # re-cria context manager com mais historico + eventos
+            context_manager = ContextManager(
+                session,
+                memory_manager,
+                emotion_engine,
+                relationship_engine,
+                semantic_manager,
+                event_memory_service=event_memory_service,
+                max_messages=int(getattr(settings, "memory_max_messages", 40) or 40),
+                max_memories=int(getattr(settings, "memory_max_facts", 16) or 16),
+                max_semantic_memories=int(
+                    getattr(settings, "memory_max_semantic", 10) or 10
+                ),
+                max_event_memories=int(getattr(settings, "memory_max_events", 8) or 8),
+            )
+            print(
+                f"[EVENT-MEM] on messages={getattr(settings,'memory_max_messages',40)}",
+                flush=True,
+            )
+    except Exception as _em:
+        print(f"[EVENT-MEM] init fail: {_em}", flush=True)
+        event_memory_service = None
+
+
     # LLM: Gemini -> se bloquear/falhar -> OpenRouter Venice
     gemini = GeminiLLM(
         api_key=getattr(settings, "gemini_api_key", None),
@@ -379,6 +428,9 @@ async def main():
         ),
     )
     llm = LLMRouter(primary=gemini, fallback=openrouter)
+    if event_memory_service is not None:
+        event_memory_service.set_llm(llm)
+        print("[EVENT-MEM] llm ligado", flush=True)
     print(
         f"[LLM] Router: primary=Gemini(keys={len(getattr(gemini, 'keys', []) or [])}) "
         f"fallback=OpenRouter "
@@ -396,6 +448,9 @@ async def main():
         semantic_manager,
         llm,
     )
+    if event_memory_service is not None:
+        agent.event_memory_service = event_memory_service
+
 
     # liga LLM no album (match opcional)
     if album_service is not None:
@@ -447,10 +502,16 @@ async def main():
             and drive_album_service is not None
             and _auto
         ):
+            _tag = int(
+                getattr(settings, "drive_tag_batch", None)
+                or os.getenv("DRIVE_TAG_BATCH")
+                or 15
+            )
             drive_loop = DriveSyncLoop(
                 drive_album_service,
                 interval_seconds=_iv,
                 batch=_batch,
+                tag_batch=_tag,
                 enabled=True,
             )
             await drive_loop.start()
