@@ -122,6 +122,8 @@ class AgentBrain:
         self.llm = llm
         self.autonomy_service = None
         self.event_memory_service = None
+        # user_id -> quantas vezes Gemini SAFETY seguidas
+        self._gemini_safety_strikes: dict = {}
 
     async def receive_message(self, telegram_id, text):
         user = await self.user_repository.get_or_create(telegram_id)
@@ -199,7 +201,7 @@ class AgentBrain:
             query=text,
         )
 
-        reply = await self._generate_reply(context)
+        reply = await self._generate_reply(context, user_id=getattr(user, 'id', None))
 
         # LLM as vezes escreve "[foto] ..." — nunca manda isso como texto
         reply, force_photo = self._sanitize_reply(reply)
@@ -378,25 +380,92 @@ class AgentBrain:
             "text": reply,
         }
 
-    async def _generate_reply(self, context):
-        if self.llm and await self.llm.available():
-            generated = await self.llm.generate(
-                self._system_prompt(context),
-                context["messages"],
+    async def _generate_reply(self, context, user_id=None):
+        """
+        Gemini 1a SAFETY -> so: "Só um pouquinho amor, já respondo!"
+        Gemini 2a SAFETY (msg seguinte) -> NSFW free -> OpenRouter free
+        Outros erros Gemini (503 etc) -> fallbacks na hora
+        """
+        uid = user_id
+        if uid is None:
+            uid = context.get("user_id") or context.get("user", {}).get("id")
+        try:
+            uid = int(uid) if uid is not None else 0
+        except Exception:
+            uid = 0
+
+        system = self._system_prompt(context)
+        messages = context.get("messages") or []
+
+        router = self.llm
+        if not router or not await router.available():
+            return self._fallback_reply(context)
+
+        # --- so PRIMARY (Gemini) ---
+        primary_text = None
+        kind = "empty"
+        if hasattr(router, "generate_primary"):
+            primary_text = await router.generate_primary(system, messages)
+            kind = getattr(router, "last_primary_kind", None) or "empty"
+        else:
+            primary_text = await router.generate(system, messages)
+            if primary_text:
+                self._gemini_safety_strikes[uid] = 0
+                return primary_text
+            kind = "empty"
+
+        if primary_text:
+            if self._looks_like_meta_reply(primary_text):
+                print(f"[Agent] PRIMARY meta descartado", flush=True)
+            else:
+                self._gemini_safety_strikes[uid] = 0
+                return primary_text
+
+        is_safety = kind in ("safety", "refusal")
+        # tambem se Gemini marcou
+        if hasattr(router, "primary") and router.primary is not None:
+            if getattr(router.primary, "last_error_kind", None) == "safety":
+                is_safety = True
+                kind = "safety"
+
+        if is_safety:
+            strikes = int(self._gemini_safety_strikes.get(uid, 0)) + 1
+            self._gemini_safety_strikes[uid] = strikes
+            print(
+                f"[Agent] Gemini SAFETY/recusa strike={strikes} user={uid}",
+                flush=True,
             )
+            if strikes <= 1:
+                # 1a vez: NAO chama fallback — so a frase
+                return "Só um pouquinho amor, já respondo!"
 
-            if generated:
-                g = generated.strip()
-                if self._looks_like_meta_reply(g):
-                    print(
-                        f"[Agent] descartou CoT/meta do LLM chars={len(g)} "
-                        f"trecho={g[:80]!r}",
-                        flush=True,
-                    )
-                else:
-                    return g
+            # 2a+ vez: NSFW tier depois free
+            if hasattr(router, "generate_nsfw"):
+                t = await router.generate_nsfw(system, messages)
+                if t and not self._looks_like_meta_reply(t):
+                    # reset strikes apos sucesso
+                    self._gemini_safety_strikes[uid] = 0
+                    return t
+            if hasattr(router, "generate_free"):
+                t = await router.generate_free(system, messages)
+                if t and not self._looks_like_meta_reply(t):
+                    self._gemini_safety_strikes[uid] = 0
+                    return t
+            # falhou tudo
+            return self._fallback_reply(context)
 
+        # Nao foi SAFETY (timeout, 503, vazio): tenta fallbacks na hora
+        print(f"[Agent] Gemini falhou kind={kind} -> fallbacks imediatos", flush=True)
+        if hasattr(router, "generate_nsfw"):
+            t = await router.generate_nsfw(system, messages)
+            if t and not self._looks_like_meta_reply(t):
+                return t
+        if hasattr(router, "generate_free"):
+            t = await router.generate_free(system, messages)
+            if t and not self._looks_like_meta_reply(t):
+                return t
         return self._fallback_reply(context)
+
 
     def _system_prompt(self, context):
         character = context.get("character", {})
@@ -421,6 +490,9 @@ class AgentBrain:
         event_memories_block = context.get(
             "event_memories_text",
         ) or "(nenhum evento marcado ainda)"
+        # nao inundar Gemini com resumos sensuais (dispara SAFETY)
+        if len(event_memories_block) > 1800:
+            event_memories_block = event_memories_block[:1800] + '\n(...)'
         recent_conversation = context.get(
             "recent_conversation",
             "",
