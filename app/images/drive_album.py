@@ -26,19 +26,56 @@ from typing import Any
 
 from sqlalchemy import text
 
-# reusa tokenize/sinonimos do album se disponivel
+def _shrink_image_bytes(data: bytes, max_side: int = 1280, quality: int = 82) -> bytes:
+    """Reduz foto grande na memoria (celular 12MP+ derruba Render free)."""
+    if not data or len(data) < 500:
+        return data
+    if len(data) < 350_000:
+        return data
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        im = im.convert("RGB")
+        w, h = im.size
+        m = max(w, h)
+        if m > max_side:
+            scale = max_side / float(m)
+            im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=quality, optimize=True)
+        small = out.getvalue()
+        if small and len(small) < len(data):
+            return small
+        return data
+    except Exception as e:
+        print(f"[DRIVE] shrink fail: {e}", flush=True)
+        return data
+
+
+def _tokenize(s: str) -> set:
+    s = (s or "").lower()
+    return {p for p in re.split(r"[\s\-_/,|]+", s) if len(p) > 2}
+
+
+def _pedido_from_scene(scene: str) -> str:
+    return scene or ""
+
+
+def _outfit_from_scene(scene: str) -> str:
+    return ""
+
+
 try:
-    from app.images.album_service import _tokenize, _pedido_from_scene, _outfit_from_scene
+    from app.images.album_service import (
+        _tokenize as _album_tok,
+        _pedido_from_scene as _album_ped,
+        _outfit_from_scene as _album_out,
+    )
+    _tokenize = _album_tok  # type: ignore
+    _pedido_from_scene = _album_ped  # type: ignore
+    _outfit_from_scene = _album_out  # type: ignore
 except Exception:
-    def _tokenize(s: str) -> set:
-        s = (s or "").lower()
-        return {p for p in re.split(r"[\s\-_/,|]+", s) if len(p) > 2}
-
-    def _pedido_from_scene(scene: str) -> str:
-        return scene or ""
-
-    def _outfit_from_scene(scene: str) -> str:
-        return ""
+    pass
 
 
 class DriveAlbumService:
@@ -138,6 +175,49 @@ class DriveAlbumService:
         r = await self.session.execute(text("SELECT COUNT(*) FROM album_drive_photos"))
         return int(r.scalar() or 0)
 
+    async def stats(self) -> dict:
+        """total / com tag / sem tag."""
+        await self.ensure_table()
+        own = self._own_session() if hasattr(self, "_own_session") else None
+
+        async def _run(session):
+            r = await session.execute(
+                text(
+                    """
+                    SELECT
+                      COUNT(*)::int AS total,
+                      COUNT(*) FILTER (
+                        WHERE caption IS NOT NULL AND TRIM(caption) <> ''
+                      )::int AS tagged,
+                      COUNT(*) FILTER (
+                        WHERE caption IS NULL OR TRIM(COALESCE(caption,'')) = ''
+                      )::int AS untagged
+                    FROM album_drive_photos
+                    """
+                )
+            )
+            row = r.mappings().first() or {}
+            total = int(row.get("total") or 0)
+            tagged = int(row.get("tagged") or 0)
+            untagged = int(row.get("untagged") or 0)
+            return {
+                "total": total,
+                "tagged": tagged,
+                "untagged": untagged,
+                "pct": round(100.0 * tagged / total, 1) if total else 0.0,
+            }
+
+        if own is not None:
+            async with own as session:
+                old = self.session
+                self.session = session
+                try:
+                    return await _run(session)
+                finally:
+                    self.session = old
+        return await _run(self.session)
+
+
     async def sync(self, limit: int = 200, caption_new: bool = True) -> dict:
         """Lista pasta Drive e indexa ate `limit` arquivos novos/alterados."""
         if not self.enabled:
@@ -170,7 +250,8 @@ class DriveAlbumService:
                 _, done = downloader.next_chunk()
             data = buf.getvalue()
             if data and len(data) > 100:
-                return data
+                # sempre encolhe pra caption/swap nao estourar RAM
+                return _shrink_image_bytes(data, max_side=1280)
             return None
         except Exception as e:
             print(f"[DRIVE] download fail {file_id[:12]}: {e}", flush=True)
@@ -524,7 +605,7 @@ class DriveAlbumService:
                 LIMIT :lim
                 """
             ),
-            {"lim": max(1, min(int(limit), 50))},
+            {"lim": max(1, min(int(limit), 20))},
         )
         rows = list(r.fetchall())
         done = 0
@@ -540,6 +621,10 @@ class DriveAlbumService:
                     print(f"[DRIVE] backfill skip no bytes {name[:40]!r}", flush=True)
                     continue
                 cap = await self._caption_fn(raw) or ""
+                try:
+                    del raw
+                except Exception:
+                    pass
                 if not cap.strip():
                     continue
                 tags = " ".join(sorted(_tokenize(f"{name} {cap}"))[:32])
