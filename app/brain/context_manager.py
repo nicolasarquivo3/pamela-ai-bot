@@ -1,6 +1,7 @@
 from sqlalchemy import select
 from app.database.models import Character, ConversationMessage
 
+
 class ContextManager:
     def __init__(
         self,
@@ -9,23 +10,30 @@ class ContextManager:
         emotion_engine=None,
         relationship_engine=None,
         semantic_memory_manager=None,
-        max_messages=20,
-        max_memories=12,
-        max_semantic_memories=6,
+        event_memory_service=None,
+        max_messages=40,
+        max_memories=16,
+        max_semantic_memories=10,
+        max_event_memories=8,
     ):
         self.session = session
         self.memory_manager = memory_manager
         self.emotion_engine = emotion_engine
         self.relationship_engine = relationship_engine
         self.semantic_memory_manager = semantic_memory_manager
+        self.event_memory_service = event_memory_service
         self.max_messages = max_messages
         self.max_memories = max_memories
         self.max_semantic_memories = max_semantic_memories
+        self.max_event_memories = max_event_memories
 
     async def record(self, user_id, character_id, role, content, metadata=None):
         row = ConversationMessage(
-            user_id=user_id, character_id=character_id, role=role,
-            content=content, metadata_json=metadata or {}
+            user_id=user_id,
+            character_id=character_id,
+            role=role,
+            content=content,
+            metadata_json=metadata or {},
         )
         self.session.add(row)
         await self.session.flush()
@@ -51,11 +59,31 @@ class ContextManager:
             semantic_query = query or (
                 messages[-1].content if messages else ""
             )
-            semantic_rows = await semantic.search(
-                user_id, character_id, semantic_query, limit=self.max_semantic_memories
-            ) if semantic_query else []
+            semantic_rows = (
+                await semantic.search(
+                    user_id,
+                    character_id,
+                    semantic_query,
+                    limit=self.max_semantic_memories,
+                )
+                if semantic_query
+                else []
+            )
         else:
             semantic_rows = []
+
+        event_rows = []
+        if self.event_memory_service is not None:
+            try:
+                event_rows = await self.event_memory_service.recall_for_context(
+                    user_id,
+                    character_id,
+                    query=query
+                    or (messages[-1].content if messages else ""),
+                    limit=self.max_event_memories,
+                )
+            except Exception as e:
+                print(f"[EVENT-MEM] recall fail: {e}", flush=True)
 
         char_result = await self.session.execute(
             select(Character).where(Character.id == character_id)
@@ -66,38 +94,47 @@ class ContextManager:
         relationship = None
         if self.emotion_engine:
             state = await self.emotion_engine.get(user_id, character_id)
-            emotion = {
-                "valence": round(state.valence, 2),
-                "arousal": round(state.arousal, 2),
-                "affection": round(state.affection, 2),
-                "trust": round(state.trust, 2),
-                "loneliness": round(state.loneliness, 2),
-                "frustration": round(state.frustration, 2),
-                "curiosity": round(state.curiosity, 2),
-                "style": self.emotion_engine.style(state),
-            }
+            emotion = state
         if self.relationship_engine:
-            rel = await self.relationship_engine.get(user_id, character_id)
-            relationship = self.relationship_engine.guidance(rel)
+            relationship = await self.relationship_engine.get(user_id, character_id)
 
-        raw_name = (character.name if character else "") or ""
-        if not raw_name.strip() or raw_name.strip().lower() in {"lia", "li a"}:
-            display_name = "Pâmela"
-        else:
-            display_name = raw_name.strip()
+        recent_conversation = "\n".join(
+            f"{m.role}: {m.content}" for m in messages[-self.max_messages :]
+        )
 
         return {
             "character": {
-                "name": display_name,
-                "image_identity": character.image_identity if character else {},
-                "personality": character.personality_profile if character else {},
+                "id": getattr(character, "id", character_id),
+                "name": getattr(character, "name", "Pâmela") if character else "Pâmela",
+                "personality_profile": getattr(character, "personality_profile", None)
+                or getattr(character, "personality", {})
+                if character
+                else {},
+                "image_identity": getattr(character, "image_identity", {})
+                if character
+                else {},
+            }
+            if character
+            else {
+                "id": character_id,
+                "name": "Pâmela",
+                "personality_profile": {},
+                "image_identity": {},
             },
-            "memories": self.memory_manager.format_for_context(memories),
-            "semantic_memories": semantic.format_for_context(semantic_rows) if semantic else [],
             "emotion": emotion,
             "relationship": relationship,
+            "memories": self.memory_manager.format_for_context(memories),
+            "semantic_memories": (
+                semantic.format_for_context(semantic_rows) if semantic else []
+            ),
+            "event_memories": event_rows,
+            "event_memories_text": (
+                self.event_memory_service.format_for_prompt(event_rows)
+                if self.event_memory_service
+                else ""
+            ),
+            "recent_conversation": recent_conversation,
             "messages": [
-                {"role": m.role, "content": m.content, "created_at": m.created_at.isoformat()}
-                for m in messages
+                {"role": m.role, "content": m.content} for m in messages
             ],
         }
