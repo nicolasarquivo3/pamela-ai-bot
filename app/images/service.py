@@ -1,4 +1,6 @@
 """
+Busca web por outfit/contexto da conversa + face swap no final.
+
 Ordem:
   1) AI (Flux) + seed + face swap
   2) Fallback: DDG → Bing → Reddit → Pixabay → Gelbooru → Pexels + face swap
@@ -55,7 +57,39 @@ class ImageService:
         self.album_first = bool(album_first)
         self.prompt_builder = PromptBuilder()
 
+    def _web_search_query(self, scene: str) -> str:
+        """Query internet a partir da roupa/cena da conversa."""
+        try:
+            from app.images.web_search_images import build_web_query
+            return build_web_query(scene)
+        except Exception:
+            pass
+        s = (scene or "").lower()
+        parts = ["sexy young woman"]
+        if "black" in s or "preto" in s:
+            parts.append("black")
+        if "mini" in s or "curt" in s:
+            parts.append("mini dress")
+        if "dress" in s or "vestido" in s:
+            parts.append("dress")
+        if "heel" in s or "salto" in s:
+            parts.append("high heels")
+        if "arrum" in s or "ready" in s or "mirror" in s or "espelho" in s:
+            parts.append("getting ready mirror home")
+        if "club" in s or "balada" in s or "party" in s:
+            parts.append("going out night")
+        if "outfit:" in s:
+            try:
+                o = s.split("outfit:")[1].split("|")[0].strip()
+                parts.append(o[:80])
+            except Exception:
+                pass
+        q = " ".join(parts)
+        print(f"[IMAGE] web query from scene: {q[:100]!r}", flush=True)
+        return q[:120]
+
     def _fresh_seed(self) -> int:
+
         return (int(time.time() * 1000) + random.randint(0, 1_000_000)) % 2_147_483_647
 
     def _face_swap_required(self) -> bool:

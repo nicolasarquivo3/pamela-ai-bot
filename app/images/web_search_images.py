@@ -1,5 +1,38 @@
-"""DuckDuckGo â€” queries variadas + anti-repeat forte."""
 from __future__ import annotations
+
+def build_web_query(scene: str, extra: str = "") -> str:
+    """Busca web a partir da roupa/cena da conversa."""
+    import re as _re
+    s = (scene or "")
+    low = s.lower()
+    bits = []
+    m = _re.search(r"outfit:\s*([^|]+)", low, _re.I)
+    if m:
+        bits.append(m.group(1).strip())
+    rules = [
+        (r"vestido\s+preto\s*(curto|curtinho|mini)?|black\s+mini\s+dress", "black mini dress"),
+        (r"vestido\s*(curto|curtinho|mini)|mini\s+dress", "mini dress"),
+        (r"vestido\s+preto|black\s+dress", "black dress"),
+        (r"saia\s+preta|black\s+skirt", "black mini skirt"),
+        (r"arrumand|getting ready|espelho|mirror", "getting ready mirror"),
+        (r"balada|festa|club|party", "night out party"),
+        (r"casa|quarto|home|bedroom", "at home"),
+        (r"salto|heels", "high heels"),
+        (r"selfie", "selfie"),
+    ]
+    for pat, eng in rules:
+        if _re.search(pat, low):
+            if eng not in " ".join(bits):
+                bits.append(eng)
+    core = " ".join(x for x in bits if x).strip() or "sexy fashion outfit"
+    if "woman" not in core:
+        core = "sexy young woman " + core
+    if extra:
+        core = f"{core} {extra}"
+    q = _re.sub(r"\s+", " ", core).strip()[:120]
+    print(f"[WEB] build_web_query={q!r}", flush=True)
+    return q
+
 
 import asyncio
 import random
@@ -84,7 +117,7 @@ class WebImageSearchService:
             parts = [base, style, pose]
             if loc:
                 parts.append(loc)
-            # Ã s vezes remove "fashion portrait photo" se veio do builder antigo
+            # às vezes remove "fashion portrait photo" se veio do builder antigo
             q = " ".join(parts)
             q = " ".join(q.split())
             if q not in queries:

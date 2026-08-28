@@ -15,11 +15,11 @@ CLOTHING_PATTERNS: list[tuple[str, str]] = [
     (r"\bvestido\s+azul\b", "blue micro mini dress"),
     (r"\bvestido\s+rosa\b", "pink mini dress"),
     (r"\bvestido\s+de\s+renda\b", "lace micro mini dress"),
-    (r"\bvestido\s+de\s+paet[eÃª]\b", "sequin micro mini dress"),
+    (r"\bvestido\s+de\s+paet[eê]\b", "sequin micro mini dress"),
     (r"\bvestido\s+justo\b", "tight bodycon mini dress"),
     (r"\bvestido\s+bodycon\b", "bodycon mini dress"),
     (r"\bvestido\s+de\s+festa\b", "party sequin mini dress"),
-    (r"\bpaet[eÃª]\b", "sequin"),
+    (r"\bpaet[eê]\b", "sequin"),
     (r"\bvestido\b", "micro mini dress"),
     (r"\bminissaia\s+jeans\b", "denim micro mini skirt"),
     (r"\bminissaia\s+preta\b", "black micro mini skirt"),
@@ -40,22 +40,32 @@ CLOTHING_PATTERNS: list[tuple[str, str]] = [
     (r"\blingerie\b", "sexy lingerie"),
     (r"\blina\b", "sexy lingerie"),
     (r"\bcalcinha\b", "lingerie"),
-    (r"\bsuti[aÃ£]n?\b", "lingerie bra"),
-    (r"\bbiqu[iÃ­]ni\b", "bikini"),
-    (r"\bmai[oÃ´]\b", "swimsuit"),
+    (r"\bsuti[aã]n?\b", "lingerie bra"),
+
+    (r"\bvestido\s+preto\s+(curto|curtinho|mini)\b", "black mini dress"),
+    (r"\bvestido\s+(curto|curtinho|mini)\s+preto\b", "black mini dress"),
+    (r"\bvestidinho\s+preto\b", "black mini dress"),
+    (r"\bvestido\s+preto\b", "black dress"),
+    (r"\bvestido\s+(curto|curtinho|mini)\b", "mini dress short dress"),
+    (r"\bvestidinho\b", "mini dress"),
+    (r"\bsaia\s+preta\s+(curta|curtinha|mini)\b", "black mini skirt"),
+    (r"\bsaia\s+(curta|curtinha|mini)\b", "mini skirt"),
+    (r"\bse\s+arrumando\b|\barrumando\b|\barrumar\b", ""),  # location handled below
+    (r"\bbiqu[ií]ni\b", "bikini"),
+    (r"\bmai[oô]\b", "swimsuit"),
     (r"\bshorts\b", "short shorts"),
-    (r"\bcal[cÃ§]a\s+jeans\b", "jeans"),
-    (r"\bcal[cÃ§]a\b", "pants"),
-    (r"\bmacac[aÃ£]o\b", "jumpsuit"),
+    (r"\bcal[cç]a\s+jeans\b", "jeans"),
+    (r"\bcal[cç]a\b", "pants"),
+    (r"\bmacac[aã]o\b", "jumpsuit"),
     (r"\bbody\b", "bodysuit"),
-    (r"\bmeia[\-\s]?cal[cÃ§]a\b", "pantyhose stockings"),
-    (r"\bmeia\s+arrast[aÃ£]o\b", "fishnet stockings"),
+    (r"\bmeia[\-\s]?cal[cç]a\b", "pantyhose stockings"),
+    (r"\bmeia\s+arrast[aã]o\b", "fishnet stockings"),
     (r"\bsalto\s+alto\b", "high heels"),
     (r"\bsalto\b", "high heels"),
     (r"\bscarpin\b", "high heel pumps"),
     (r"\bbota\s+over\b", "thigh high boots"),
     (r"\bbota\b", "boots"),
-    (r"\bt[eÃª]nis\b", "sneakers"),
+    (r"\bt[eê]nis\b", "sneakers"),
     (r"\bpreto\b|\bpreta\b", "black"),
     (r"\bbranco\b|\bbranca\b", "white"),
     (r"\bvermelh[oa]\b", "red"),
@@ -76,6 +86,8 @@ LOCATION_PATTERNS: list[tuple[str, str]] = [
     (r"\bruas?\b|\brua\b|\bstreet\b", "street style outdoor"),
     (r"\bbanheiro\b|\bbanho\b", "bathroom mirror selfie"),
     (r"\bcasa\b|\bsofa\b|\bsala\b", "home living room"),
+    (r"\bse\s+arrumando\b|\barrumando\s+pra\b|\barrumar\b", "getting ready mirror bedroom home"),
+    (r"\bespelho\b", "mirror selfie getting ready"),
     (r"\bbar\b", "bar night lights"),
 ]
 
@@ -139,7 +151,7 @@ def extract_outfit_bits(text: str) -> list[str]:
             return [core]
 
     for bad in (
-        "Criar uma fotografia", "fotografia espontÃ¢nea", "personagem PÃ¢mela",
+        "Criar uma fotografia", "fotografia espontânea", "personagem Pâmela",
         "personagem Pamela", "mulher adulta", "identidade visual",
         "Interpretar o pedido", "Preservar os detalhes",
         "me manda uma foto", "manda uma foto", "tira uma foto", "selfie",
@@ -213,7 +225,7 @@ def resolve_outfit(user_text: str, user_id: Any = None, character_id: Any = None
         return q, "user"
 
     if re.search(
-        r"mesma\s+roupa|roupa\s+que\s+(voc[eÃª]|vc)\s+est|como\s+est[aÃ¡]\s+vest|"
+        r"mesma\s+roupa|roupa\s+que\s+(voc[eê]|vc)\s+est|como\s+est[aá]\s+vest|"
         r"ainda\s+com\s+(a\s+)?roupa|nessa\s+roupa|com\s+essa\s+roupa",
         user_text or "",
         re.I,
