@@ -409,9 +409,20 @@ async def main():
                 drive_album_service.use_vision_caption = True
                 print("[DRIVE] caption_fn ensure wired", flush=True)
         else:
-            print("[DRIVE] caption_fn OK", flush=True)
+            print("[DRIVE] caption_fn OK (Gemini Vision tags ON)", flush=True)
     elif drive_album_service is not None:
-        print("[DRIVE] WARN: sem album_service — tag auto sem vision", flush=True)
+        print("[DRIVE] WARN: sem album_service", flush=True)
+        # cria caption_fn minima se album nao existe
+        try:
+            from app.images.album_service import AlbumService as _AS
+            _tmp = _AS(session, enabled=False)
+            if hasattr(_tmp, "_auto_caption_vision"):
+                drive_album_service._caption_fn = _tmp._auto_caption_vision
+                drive_album_service.use_vision_caption = True
+                print("[DRIVE] caption_fn via AlbumService stub", flush=True)
+        except Exception as _ce:
+            print(f"[DRIVE] caption stub fail: {_ce}", flush=True)
+
 
     image_service = ImageService(
 
@@ -579,7 +590,30 @@ async def main():
     )
 
     # ---------- Agent ----------
+    # TAGUEAMENTO AUTO CHECK
+    if drive_album_service is not None:
+        cfn = getattr(drive_album_service, "_caption_fn", None)
+        print(
+            f"[DRIVE] TAG check: caption_fn={'SIM' if cfn else 'NAO'} "
+            f"vision={getattr(drive_album_service, 'use_vision_caption', None)}",
+            flush=True,
+        )
+        if not cfn:
+            # ultima tentativa
+            try:
+                if album_service is not None and hasattr(album_service, "_auto_caption_vision"):
+                    drive_album_service._caption_fn = album_service._auto_caption_vision
+                    print("[DRIVE] TAG check: re-wired caption_fn", flush=True)
+                else:
+                    from app.images.album_service import AlbumService as _AS2
+                    _tmp2 = _AS2(session, enabled=False)
+                    drive_album_service._caption_fn = _tmp2._auto_caption_vision
+                    print("[DRIVE] TAG check: stub caption_fn", flush=True)
+            except Exception as _e:
+                print(f"[DRIVE] TAG check FAIL: {_e}", flush=True)
+
     agent = AgentBrain(
+
         image_service=image_service,
         user_repository=users,
         context_manager=context_manager,
