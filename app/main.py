@@ -99,7 +99,7 @@ def make_brain_components(session):
                 min_days_between_advance=int(
                     getattr(settings, "story_min_days", None)
                     or _os.getenv("STORY_MIN_DAYS")
-                    or 14
+                    or 30
                 ),
             )
         except Exception as e:
