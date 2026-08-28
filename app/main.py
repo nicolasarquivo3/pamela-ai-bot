@@ -75,6 +75,10 @@ from app.llm.gemini import GeminiLLM
 from app.llm.openrouter import OpenRouterLLM
 from app.llm.llm_router import LLMRouter
 from app.web import create_web_app
+try:
+    from app.web import set_drive_service
+except Exception:
+    set_drive_service = None  # type: ignore
 
 
 def make_brain_components(session):
@@ -702,6 +706,23 @@ async def main():
                 enabled=True,
             )
             await drive_loop.start()
+            # boot: tagueia ja algumas (nao espera 12h)
+            try:
+                if hasattr(drive_album_service, "_ensure_caption_fn"):
+                    drive_album_service._ensure_caption_fn()
+                nboot = int(__import__("os").getenv("DRIVE_TAG_ON_BOOT", "3") or 5)
+                if nboot > 0:
+                    print(f"[DRIVE] boot tag {nboot} (background)...", flush=True)
+                    async def _boot_tag():
+                        try:
+                            nb = await drive_album_service.backfill_captions(limit=nboot)
+                            print(f"[DRIVE] boot tagged={nb}", flush=True)
+                        except Exception as __e:
+                            print(f"[DRIVE] boot tag fail: {__e}", flush=True)
+                    import asyncio as _aio
+                    _aio.create_task(_boot_tag())
+            except Exception as _bt:
+                print(f"[DRIVE] boot tag fail: {_bt}", flush=True)
         except Exception as e:
             print(f"[DriveSync] start fail: {e}", flush=True)
 
@@ -773,6 +794,13 @@ async def main():
             except Exception as e:
                 print(f"[WEB] inline webhook error: {e}", flush=True)
             return {"ok": True}
+
+    if set_drive_service and drive_album_service is not None:
+        try:
+            set_drive_service(drive_album_service)
+            print("[DRIVE] cron /cron/drive_tag pronto", flush=True)
+        except Exception as _sd:
+            print(f"[DRIVE] set_drive_service: {_sd}", flush=True)
 
     port = int(os.getenv("PORT") or "10000")
     print(f"[WEB] Starting server on 0.0.0.0:{port}", flush=True)
