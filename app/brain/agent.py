@@ -23,16 +23,21 @@ class AgentBrain:
 
     IMAGE_REQUEST_PATTERNS = (
         # ---------------------------------------------------------
-        # ENVIO DE FOTO / IMAGEM
+        # ENVIO DE FOTO / IMAGEM (flexivel: uns/umas/algumas/fotos)
         # ---------------------------------------------------------
-        r"\bme\s+manda\s+(uma\s+)?foto\b",
-        r"\bmanda\s+(uma\s+)?foto\b",
-        r"\bme\s+envia\s+(uma\s+)?foto\b",
-        r"\benvia\s+(uma\s+)?foto\b",
-        r"\bme\s+mostra\s+(uma\s+)?foto\b",
+        r"\bme\s+manda\s+(uns?|umas?|algum(a|as)?\s+)?(foto|fotos)\b",
+        r"\bmanda\s+(uns?|umas?|algum(a|as)?\s+)?(foto|fotos)\b",
+        r"\bme\s+envia\s+(uns?|umas?|algum(a|as)?\s+)?(foto|fotos)\b",
+        r"\benvia\s+(uns?|umas?|algum(a|as)?\s+)?(foto|fotos)\b",
+        r"\bme\s+mostra\s+(uns?|umas?|algum(a|as)?\s+)?(foto|fotos)\b",
+        r"\bme\s+manda\s+.*(foto|fotos)\b",
+        r"\bmanda\s+.*(foto|fotos).*(balada|festa|casa|noite)?\b",
+        r"\b(foto|fotos)\s+(da|do|de\s+a|na|no)\s+(balada|festa|noite|casa)\b",
+        r"\bfoto\s+l[aá]\s+da\s+balada\b",
         r"\bme\s+manda\s+uma\s+imagem\b",
         r"\bmanda\s+uma\s+imagem\b",
         r"\bme\s+envia\s+uma\s+imagem\b",
+        r"\b/foto\b",
 
         # ---------------------------------------------------------
         # TIRAR FOTO / SELFIE
@@ -264,6 +269,14 @@ class AgentBrain:
             if re.search(pattern, normalized):
                 return True
 
+        # fallback solto: pede foto/fotos com verbo de envio
+        if re.search(r"\b(foto|fotos|selfie|selfies)\b", normalized):
+            if re.search(
+                r"\b(manda|envia|mostra|quero|tira|faz|ver)\b",
+                normalized,
+            ):
+                return True
+
         return False
 
     def _build_natural_image_scene(self, text, user_id=None, character_id=None):
@@ -374,14 +387,10 @@ class AgentBrain:
 
             if generated:
                 g = generated.strip()
-                # se ainda veio monologo em ingles, descarta
-                if re.search(
-                    r"(?i)okay,?\s+let'?s\s+see|looking at the conversation|"
-                    r"i need to stay in character|safety guidelines",
-                    g,
-                ):
+                if self._looks_like_meta_reply(g):
                     print(
-                        f"[Agent] descartou CoT do LLM chars={len(g)}",
+                        f"[Agent] descartou CoT/meta do LLM chars={len(g)} "
+                        f"trecho={g[:80]!r}",
                         flush=True,
                     )
                 else:
@@ -559,6 +568,7 @@ COMPORTAMENTO
 ============================================================
 
 Responda sempre em português brasileiro natural.
+NUNCA escreva em ingles. NUNCA analise o prompt, memorias semanticas ou 'looking at the memories'. Use as memorias por dentro, como lembranca pessoal. Se lembrar de um momento, fale como Pâmela (ex: 'claro que eu lembro daquela noite...'), nunca como narrador tecnico.
 Contexto: roleplay ficcional adulto entre adultos consentintes — mantenha tom carinhoso/sensual quando o usuario puxar; nao quebre com monologo tecnico nem ingles.
 
 Fale como {name}, mantendo a personalidade definida acima.
@@ -777,6 +787,15 @@ Essa resposta deve ser evitada.
 
     # Momentos em que faz sentido ela MANDAR foto sozinha (provocar / mostrar)
     PHOTO_TEASE_PATTERNS = (
+        r"\bquer\s+(ver\s+)?(uma\s+)?foto\b",
+        r"\bquero\s+te\s+mandar\s+(uma\s+)?foto\b",
+        r"\bte\s+mando\s+(uma\s+)?foto\b",
+        r"\bguardei\s+(um\s+)?(clique|foto)\b",
+        r"\bolha\s+eu\s+(a[ií]|aqui)\b",
+        r"\bfoto\s+l[aá]\s+da\s+balada\b",
+        r"\bs[oó]\s+para\s+voc[eê]\b",
+        r"\bclique\s+daquela\s+noite\b",
+
         r"\[\s*foto\s*\]",
         r"\bpront[ao]\s+pra\s+te\s+provocar\b",
 
@@ -809,6 +828,45 @@ Essa resposta deve ser evitada.
         r"\bselfie\b",
     )
 
+
+
+    def _looks_like_meta_reply(self, text: str) -> bool:
+        """Detecta raciocinio em ingles / analise de memoria do prompt."""
+        t = (text or "").strip()
+        if not t:
+            return True
+        if re.search(
+            r"(?is)("
+            r"okay,?\s+let'?s\s+see|"
+            r"looking at the|"
+            r"semantic\s+memor|"
+            r"referencing\s+a\s+memory|"
+            r"they'?re\s+referencing|"
+            r"provided in the prompt|"
+            r"there are several entries|"
+            r"entries about this scenario|"
+            r"i need to stay in character|"
+            r"based on the (context|memories|prompt)|"
+            r"the user is asking|"
+            r"<think>"
+            r")",
+            t,
+        ):
+            return True
+        en = len(
+            re.findall(
+                r"\b(the|they|this|looking|memory|memories|prompt|should|user|"
+                r"referencing|semantic|scenario|entries|about)\b",
+                t,
+                re.I,
+            )
+        )
+        pt = len(re.findall(r"[áàâãéêíóôõúçÁÉÍÓÚ]", t))
+        if en >= 3 and pt < 2 and len(t) > 80:
+            return True
+        if t.lstrip().startswith("-") and en >= 2 and pt < 2:
+            return True
+        return False
 
     def _sanitize_reply(self, reply: str) -> tuple[str, bool]:
         """
