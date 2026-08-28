@@ -226,6 +226,21 @@ class AgentBrain:
             query=text,
         )
 
+        if self._wants_multi_message(text):
+            # forca o LLM a gerar varias falas
+            msgs = list(context.get("messages") or [])
+            msgs.append({
+                "role": "user",
+                "content": (
+                    "(Pedido especial: responda em 2 a 4 mensagens CURTAS de namorada, "
+                    "separadas EXATAMENTE por ||| — estou ouvindo, vai me falando os detalhes. "
+                    "Nao junte tudo numa mensagem so.)"
+                ),
+            })
+            context = dict(context)
+            context["messages"] = msgs
+            print("[MULTI] forcou hint ||| no contexto", flush=True)
+
         reply = await self._generate_reply(context, user_id=getattr(user, 'id', None))
 
         # LLM as vezes escreve "[foto] ..." — nunca manda isso como texto
@@ -1029,8 +1044,17 @@ Essa resposta deve ser evitada.
     # Respostas curtas a "quer ver?" / "quer foto?"
     MULTI_MSG_USER_PATTERNS = (
         r"\bvai\s+me\s+falando\b",
+        r"\bvai\s+falando\b",
+        r"\bpode\s+ir\s+falando\b",
+        r"\bir\s+falando\b",
+        r"\bir\s+contando\b",
+        r"\bvai\s+contando\b",
+        r"\bconta\s+pra\s+mim\b",
+        r"\bconta\s+mais\b",
         r"\best[oou]\s+ouvindo\b",
         r"\bt[oô]\s+ouvindo\b",
+        r"\bfico\s+ouvindo\b",
+        r"\bt[oô]\s+aqui\s+ouvindo\b",
         r"\bme\s+conte\s+tudo\b",
         r"\bconta\s+tudo\b",
         r"\bquero\s+detalhes\b",
@@ -1038,13 +1062,16 @@ Essa resposta deve ser evitada.
         r"\bme\s+conta\s+mais\b",
         r"\bcontinua\b",
         r"\bn[aã]o\s+para\b",
+        r"\bn[aã]o\s+para\s+de\s+falar\b",
         r"\bpode\s+continuar\b",
         r"\bfala\s+mais\b",
+        r"\bfala\s+tudo\b",
         r"\bme\s+explica\s+tudo\b",
         r"\bquero\s+saber\s+tudo\b",
         r"\bdetalha\b",
         r"\bconta\s+direito\b",
-        r"\bvai\s+contando\b",
+        r"\bdesenrola\b",
+        r"\bmanda\s+ver\b",
         r"\bkeep\s+going\b",
         r"\btell\s+me\s+more\b",
     )
@@ -1094,12 +1121,11 @@ Essa resposta deve ser evitada.
             parts = [p.strip() for p in text.split(sep) if p.strip()]
             return parts[:5]
         if force_multi:
-            # quebra por paragrafo duplo ou frases longas
             parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
             if len(parts) >= 2:
                 return parts[:5]
-            # split por . ! ? se texto longo
-            if len(text) > 220:
+            # multi: quebra mais cedo (textos > 100)
+            if len(text) > 100:
                 sents = re.split(r"(?<=[.!?…])\s+", text)
                 sents = [s.strip() for s in sents if s.strip()]
                 if len(sents) >= 2:
