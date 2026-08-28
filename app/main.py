@@ -454,5 +454,231 @@ async def main():
     except Exception as _em:
         print(f"[EVENT-MEM] setup fail: {_em}", flush=True)
 
+
+    # ---------- LLM (Gemini + NSFW free + OpenRouter free) ----------
+    gemini_keys = (
+        getattr(settings, "gemini_api_keys", None)
+        or os.getenv("GEMINI_API_KEYS")
+        or ""
+    )
+    gemini_key = (
+        getattr(settings, "gemini_api_key", None)
+        or os.getenv("GEMINI_API_KEY")
+        or ""
+    )
+    gemini_model = (
+        getattr(settings, "gemini_model", None)
+        or os.getenv("GEMINI_MODEL")
+        or "gemini-3.5-flash-lite"
+    )
+    gemini = GeminiLLM(
+        api_key=gemini_key or None,
+        api_keys=gemini_keys or None,
+        model=gemini_model,
+        timeout=int(getattr(settings, "llm_timeout_seconds", 90) or 90),
+        max_output_tokens=int(getattr(settings, "llm_max_output_tokens", 1000) or 1000),
+    )
+
+    try:
+        from app.providers.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
+    except Exception:
+        try:
+            from app.llm.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
+        except Exception:
+            try:
+                from app.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
+            except Exception:
+                NSFW_FREE_MODELS = [
+                    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+                    "meta-llama/llama-3.3-70b-instruct:free",
+                    "google/gemma-3-27b-it:free",
+                ]
+                DEFAULT_FREE_MODELS = [
+                    "openrouter/free",
+                    "liquid/lfm-2.5-2.6b:free",
+                ]
+
+    _or_key = (
+        getattr(settings, "openrouter_api_key", None)
+        or os.getenv("OPENROUTER_API_KEY")
+    )
+    _or_timeout = int(getattr(settings, "llm_timeout_seconds", 90) or 90)
+    _or_max = int(getattr(settings, "llm_max_output_tokens", 1000) or 1000)
+
+    def _make_openrouter(model_list, label):
+        import inspect as _ins
+        kwargs = {
+            "api_key": _or_key,
+            "timeout": _or_timeout,
+            "max_output_tokens": _or_max,
+        }
+        try:
+            params = _ins.signature(OpenRouterLLM.__init__).parameters
+        except Exception:
+            params = {}
+        ml = list(model_list or [])
+        if "models" in params:
+            kwargs["models"] = ml
+        else:
+            kwargs["model"] = ml[0] if ml else "openrouter/free"
+            if "extra_models" in params:
+                kwargs["extra_models"] = ml[1:] if len(ml) > 1 else []
+        if "label" in params:
+            kwargs["label"] = label
+        return OpenRouterLLM(**kwargs)
+
+    openrouter_nsfw = _make_openrouter(NSFW_FREE_MODELS, "OpenRouter-NSFW")
+    openrouter = _make_openrouter(DEFAULT_FREE_MODELS, "OpenRouter-FREE")
+
+    try:
+        import inspect as _ins2
+        rp = _ins2.signature(LLMRouter.__init__).parameters
+    except Exception:
+        rp = {}
+    if "nsfw_fallback" in rp:
+        llm = LLMRouter(
+            primary=gemini,
+            nsfw_fallback=openrouter_nsfw,
+            free_fallback=openrouter,
+        )
+    else:
+        llm = LLMRouter(primary=gemini, fallback=openrouter_nsfw)
+        print("[LLM] LLMRouter sem nsfw_fallback — use llm_router.py novo", flush=True)
+
+    n_keys = len(getattr(gemini, "keys", []) or [])
+    print(
+        f"[LLM] Router: primary=Gemini(keys={n_keys}) "
+        f"fallback=OpenRouter (key={'sim' if _or_key else 'nao'})",
+        flush=True,
+    )
+
+    # ---------- Agent ----------
+    agent = AgentBrain(
+        image_service=image_service,
+        user_repository=users,
+        context_manager=context_manager,
+        memory_manager=memory_manager,
+        emotion_engine=emotion_engine,
+        relationship_engine=relationship_engine,
+        semantic_memory_manager=semantic_manager,
+        llm=llm,
+    )
+    if event_memory_service is not None:
+        agent.event_memory_service = event_memory_service
+        # LLM opcional no event memory
+        try:
+            event_memory_service.llm = llm
+        except Exception:
+            pass
+    if story_phase_service is not None:
+        agent.story_phase_service = story_phase_service
+    if long_term_memory_service is not None:
+        agent.long_term_memory_service = long_term_memory_service
+
+    # ---------- Telegram ----------
+    telegram_app = TelegramApp(
+        agent,
+        album_service=album_service,
+        drive_album_service=drive_album_service,
+    )
+
+    # ---------- Autonomy ----------
+    try:
+        autonomy = AutonomyService(
+            session_factory=SessionLocal,
+            telegram_bot=telegram_app.bot,
+            llm=llm,
+            memory_manager_factory=lambda s: MemoryManager(
+                s, MemoryExtractor(), Deduplicator()
+            ),
+            image_service=image_service,
+            min_interval_minutes=int(
+                getattr(settings, "autonomy_interval_minutes", None)
+                or os.getenv("AUTONOMY_INTERVAL_MINUTES")
+                or 30
+            ),
+            max_daily_messages=int(
+                getattr(settings, "autonomy_max_daily", None)
+                or os.getenv("AUTONOMY_MAX_DAILY")
+                or 12
+            ),
+        )
+        agent.autonomy_service = autonomy
+    except Exception as e:
+        print(f"[Autonomy] init fail: {e}", flush=True)
+        autonomy = None
+
+    # ---------- Drive auto sync (background, low priority) ----------
+    if (
+        DriveSyncLoop is not None
+        and drive_album_service is not None
+        and bool(
+            getattr(settings, "drive_auto_sync", None)
+            if getattr(settings, "drive_auto_sync", None) is not None
+            else (os.getenv("DRIVE_AUTO_SYNC", "true").lower() in ("1", "true", "yes"))
+        )
+    ):
+        try:
+            _iv = int(
+                getattr(settings, "drive_sync_interval_seconds", None)
+                or os.getenv("DRIVE_SYNC_INTERVAL_SECONDS")
+                or 1200
+            )
+            _batch = int(
+                getattr(settings, "drive_sync_batch", None)
+                or os.getenv("DRIVE_SYNC_BATCH")
+                or 25
+            )
+            _tag = int(
+                getattr(settings, "drive_tag_batch", None)
+                or os.getenv("DRIVE_TAG_BATCH")
+                or 2
+            )
+            drive_loop = DriveSyncLoop(
+                drive_album_service,
+                interval_seconds=_iv,
+                batch=_batch,
+                tag_batch=_tag,
+                enabled=True,
+            )
+            await drive_loop.start()
+        except Exception as e:
+            print(f"[DriveSync] start fail: {e}", flush=True)
+
+    # ---------- Autonomy loop ----------
+    try:
+        if autonomy is not None:
+            start_autonomy_loop(
+                agent,
+                interval_seconds=int(
+                    getattr(settings, "autonomy_loop_seconds", None)
+                    or os.getenv("AUTONOMY_LOOP_SECONDS")
+                    or 600
+                ),
+            )
+            print("[Autonomy] loop a cada 600s", flush=True)
+    except Exception as e:
+        print(f"[Autonomy] loop fail: {e}", flush=True)
+
+    # ---------- Webhook + web server ----------
+    try:
+        await telegram_app.set_webhook()
+    except Exception as e:
+        print(f"[TelegramApp] set_webhook fail: {e}", flush=True)
+
+    app = create_web_app(telegram_app)
+    port = int(os.getenv("PORT") or getattr(settings, "port", None) or 10000)
+    print(f"[WEB] Starting server on port {port}", flush=True)
+
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
 if __name__ == "__main__":
     asyncio.run(main())
