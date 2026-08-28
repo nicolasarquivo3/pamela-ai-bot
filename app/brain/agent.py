@@ -116,6 +116,7 @@ class AgentBrain:
         self.semantic_memory_manager = semantic_memory_manager
         self.llm = llm
         self.autonomy_service = None
+        self.event_memory_service = None
 
     async def receive_message(self, telegram_id, text):
         user = await self.user_repository.get_or_create(telegram_id)
@@ -197,6 +198,25 @@ class AgentBrain:
 
         # LLM as vezes escreve "[foto] ..." — nunca manda isso como texto
         reply, force_photo = self._sanitize_reply(reply)
+
+        # Memoria de evento (balada/noite/momento nao trivial)
+        try:
+            if self.event_memory_service is not None:
+                recent_lines = []
+                for m in (context.get("messages") or [])[-12:]:
+                    recent_lines.append(
+                        f"{m.get('role')}: {m.get('content')}"
+                    )
+                await self.event_memory_service.maybe_capture(
+                    user_id=user.id,
+                    character_id=character_id,
+                    user_text=text,
+                    reply_text=reply,
+                    recent_lines=recent_lines,
+                )
+        except Exception as _e:
+            print(f"[EVENT-MEM] agent capture: {_e}", flush=True)
+
 
         await self.context_manager.record(
             user.id,
@@ -389,6 +409,13 @@ class AgentBrain:
             "image_identity",
             {},
         )
+        event_memories_block = context.get(
+            "event_memories_text",
+        ) or "(nenhum evento marcado ainda)"
+        recent_conversation = context.get(
+            "recent_conversation",
+            "",
+        )
 
         memory_lines = []
 
@@ -512,6 +539,14 @@ Estado emocional:
 
 Estado do relacionamento:
 {context.get("relationship")}
+
+============================================================
+EVENTOS MEMORAVEIS (noites, baladas, momentos intensos)
+============================================================
+
+Use estes resumos como MEMORIA REAL compartilhada. Se o usuario perguntar se voce lembra, CONFIRME com base neles (clima, lugar, o que rolou) — nao peca para 'refrescar a memoria' se o evento estiver listado. Detalhes sensuais: fique no clima romantico/sensual ficcional, sem monologo tecnico.
+
+{event_memories_block}
 
 ============================================================
 CONVERSA RECENTE
