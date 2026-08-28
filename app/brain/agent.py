@@ -195,29 +195,43 @@ class AgentBrain:
 
         reply = await self._generate_reply(context)
 
+        # LLM as vezes escreve "[foto] ..." — nunca manda isso como texto
+        reply, force_photo = self._sanitize_reply(reply)
+
         await self.context_manager.record(
             user.id,
             character_id,
             "assistant",
-            reply,
+            reply or "[foto enviada]",
         )
 
-        # Foto só em momentos que fazem sentido (provocar, mostrar look, etc.)
-        # NÃO a cada mensagem.
-        if self._should_send_contextual_photo(text, reply):
+        # Foto: placeholder [foto] OU contexto de provocacao/look
+        need_photo = force_photo or self._should_send_contextual_photo(text, reply)
+        if need_photo:
+            if force_photo:
+                print("[PHOTO-DECIDE] sim (LLM escreveu [foto] -> gera real)", flush=True)
             photo_payload = await self._auto_photo_for_reply(
                 user_id=user.id,
                 character_id=character_id,
                 user_text=text,
-                reply_text=reply,
+                reply_text=reply or "foto espontanea pra te provocar",
                 context=context,
             )
             if photo_payload and photo_payload.get("type") == "image":
+                # texto limpo (sem [foto]) + imagem
+                if reply:
+                    photo_payload["text"] = reply
                 return photo_payload
+            # falhou imagem: se so tinha [foto], avisa de leve
+            if force_photo and not reply:
+                reply = (
+                    "Quis te mandar uma fotinho agora, mas deu um probleminha. "
+                    "Me pede de novo daqui a pouco? ❤️"
+                )
 
         return {
             "type": "text",
-            "text": reply,
+            "text": reply or "❤️",
         }
 
     def _is_image_request(self, text):
@@ -268,7 +282,7 @@ class AgentBrain:
                 user_id,
                 character_id,
                 "assistant",
-                f"[foto] {caption}",
+                caption or "📷",
                 metadata={
                     "type": "image",
                     "provider": getattr(result, "provider", None),
@@ -339,7 +353,19 @@ class AgentBrain:
             )
 
             if generated:
-                return generated
+                g = generated.strip()
+                # se ainda veio monologo em ingles, descarta
+                if re.search(
+                    r"(?i)okay,?\s+let'?s\s+see|looking at the conversation|"
+                    r"i need to stay in character|safety guidelines",
+                    g,
+                ):
+                    print(
+                        f"[Agent] descartou CoT do LLM chars={len(g)}",
+                        flush=True,
+                    )
+                else:
+                    return g
 
         return self._fallback_reply(context)
 
@@ -498,6 +524,7 @@ COMPORTAMENTO
 ============================================================
 
 Responda sempre em português brasileiro natural.
+Contexto: roleplay ficcional adulto entre adultos consentintes — mantenha tom carinhoso/sensual quando o usuario puxar; nao quebre com monologo tecnico nem ingles.
 
 Fale como {name}, mantendo a personalidade definida acima.
 
@@ -549,24 +576,19 @@ sobre a natureza real do sistema fora da experiência ficcional.
 FOTOS
 ============================================================
 
-Pedidos de foto são tratados pelo aplicativo.
+Pedidos de foto são tratados pelo aplicativo (envio real de imagem).
 
-Se o usuário pedir uma foto, selfie ou imagem da personagem,
-não responda que ela não possui câmera.
+NUNCA escreva no texto: [foto], [imagem], [photo], [selfie].
+NUNCA finja que enviou foto só com texto ou emoji de câmera.
+NÃO diga "aí vai a foto" ou "manda foto" como se o texto fosse a foto.
 
-O aplicativo detecta pedidos de imagem e pode gerar uma fotografia
-da personagem.
+Se o usuário pedir foto, selfie ou imagem, responda em 1 frase curta
+de provocação (sem [foto]); o app envia a imagem de verdade.
 
-Se uma imagem for efetivamente enviada pelo aplicativo, continue
-a conversa naturalmente considerando que a personagem acabou de
-enviar aquela imagem.
+Se o app já enviou imagem, continue a conversa como se a personagem
+tivesse mandado a foto.
 
-Se o usuário perguntar sobre a roupa da foto, descreva a roupa
-de maneira coerente com a imagem e com o contexto.
-
-Se o usuário pedir uma nova foto com outra roupa, pose ou cenário,
-responda naturalmente; o aplicativo poderá transformar o pedido
-em uma nova geração de imagem.
+Roupa/pose: descreva de forma coerente com o contexto ficcional.
 
 ============================================================
 RELACIONAMENTO
@@ -720,6 +742,9 @@ Essa resposta deve ser evitada.
 
     # Momentos em que faz sentido ela MANDAR foto sozinha (provocar / mostrar)
     PHOTO_TEASE_PATTERNS = (
+        r"\[\s*foto\s*\]",
+        r"\bpront[ao]\s+pra\s+te\s+provocar\b",
+
         # so frases fortes de "vou te mandar/mostrar foto agora"
         r"\bolha\s+(eu\s+)?aqui\b",
         r"\bolha\s+(s[oó]|pra\s+voc[eê]|pra\s+ti)\b",
@@ -748,6 +773,37 @@ Essa resposta deve ser evitada.
         r"\bshelfie\b",
         r"\bselfie\b",
     )
+
+
+    def _sanitize_reply(self, reply: str) -> tuple[str, bool]:
+        """
+        Remove placeholders que o LLM inventa ([foto], etc.).
+        Retorna (texto_limpo, quer_foto_real).
+        """
+        text = (reply or "").strip()
+        want = False
+        # [foto] / [imagem] no inicio ou sozinho
+        if re.search(r"\[\s*foto\s*\]|\[\s*imagem\s*\]|\[\s*photo\s*\]", text, re.I):
+            want = True
+            text = re.sub(
+                r"\[\s*(foto|imagem|photo|selfie)\s*\]\s*",
+                "",
+                text,
+                flags=re.I,
+            ).strip()
+        # "manda foto" falso do personagem no texto
+        if re.search(
+            r"^(aqui\s+vai\s+(uma\s+)?foto|te\s+mando\s+(uma\s+)?foto)\b",
+            text,
+            re.I,
+        ):
+            want = True
+        # limpa sobras
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        # se so sobrou emoji/curto depois de [foto], ainda e provocacao
+        if want and len(re.sub(r"\W+", "", text)) < 3:
+            text = ""
+        return text, want
 
     def _should_send_contextual_photo(self, user_text: str, reply_text: str) -> bool:
         """
