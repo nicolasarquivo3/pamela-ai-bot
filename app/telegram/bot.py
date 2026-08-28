@@ -53,8 +53,40 @@ class TelegramApp:
             self._mark_message(msg_key)
 
             lock = self._user_locks.setdefault(user_id, asyncio.Lock())
-            async with lock:
-                await self._handle_one(message)
+            # prioridade chat: sinaliza DriveSync pra pausar tag
+            try:
+                from app.runtime_flags import telegram_enter, telegram_leave
+            except Exception:
+                try:
+                    from app.brain.runtime_flags import telegram_enter, telegram_leave
+                except Exception:
+                    telegram_enter = telegram_leave = None  # type: ignore
+
+            if telegram_enter:
+                await telegram_enter()
+            try:
+                # nao fica preso pra sempre se algo travar
+                try:
+                    await asyncio.wait_for(lock.acquire(), timeout=45.0)
+                except asyncio.TimeoutError:
+                    print(
+                        f"[TelegramApp] lock timeout user={user_id} "
+                        f"— processa mesmo assim",
+                        flush=True,
+                    )
+                    try:
+                        await self._handle_one(message)
+                    finally:
+                        if telegram_leave:
+                            await telegram_leave()
+                    return
+                try:
+                    await self._handle_one(message)
+                finally:
+                    lock.release()
+            finally:
+                if telegram_leave:
+                    await telegram_leave()
 
     async def _send_text_bubbles(self, message, result: dict):
         """Envia 1..N mensagens de texto com pequena pausa."""
@@ -331,6 +363,14 @@ class TelegramApp:
                 f"msg={message.message_id} text={text[:80]!r}",
                 flush=True,
             )
+
+            # feedback imediato: "digitando..."
+            try:
+                await message.bot.send_chat_action(
+                    chat_id=message.chat.id, action="typing"
+                )
+            except Exception:
+                pass
 
             result = await self.agent.receive_message(
                 message.from_user.id,
