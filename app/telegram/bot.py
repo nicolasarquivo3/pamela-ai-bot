@@ -37,7 +37,7 @@ class TelegramApp:
             await self._handle_channel_post(message)
 
         @self.dp.message()
-        async def handler(message: Message):
+        async def on_message(message: Message):
             if not message.from_user:
                 return
 
@@ -55,6 +55,35 @@ class TelegramApp:
             lock = self._user_locks.setdefault(user_id, asyncio.Lock())
             async with lock:
                 await self._handle_one(message)
+
+    async def _send_text_bubbles(self, message, result: dict):
+        """Envia 1..N mensagens de texto com pequena pausa."""
+        texts = result.get("texts")
+        if isinstance(texts, list) and len([t for t in texts if (t or "").strip()]) > 1:
+            clean = []
+            for part in texts[:5]:
+                part = (part or "").strip().replace("|||", " ").strip()
+                if part:
+                    clean.append(part)
+            for i, part in enumerate(clean):
+                await message.answer(part)
+                if i < len(clean) - 1:
+                    await asyncio.sleep(1.15)
+            return True
+
+        reply = (result.get("text") or result.get("reply") or "").strip()
+        if "|||" in reply:
+            parts = [p.strip() for p in reply.split("|||") if p.strip()]
+            if len(parts) > 1:
+                for i, part in enumerate(parts[:5]):
+                    await message.answer(part)
+                    if i < len(parts) - 1:
+                        await asyncio.sleep(1.15)
+                return True
+        if reply:
+            await message.answer(reply)
+            return True
+        return False
 
     def _mark_message(self, key: str) -> None:
         if key in self._seen_message_set:
@@ -260,10 +289,6 @@ class TelegramApp:
             if not isinstance(result, dict):
                 return
 
-            reply = (result.get("text") or result.get("reply") or "").strip()
-            if reply:
-                await message.answer(reply)
-
             img = None
             if (
                 result.get("type") == "image"
@@ -300,12 +325,15 @@ class TelegramApp:
                         "caption": None,
                     }
 
+            # Foto primeiro (se houver), depois bolhas de texto com pausa
             if img and (
                 img.get("telegram_file_id")
                 or img.get("image_bytes")
                 or img.get("image_url")
             ):
                 await self._send_image_result(message, img)
+
+            await self._send_text_bubbles(message, result)
 
         except Exception as e:
             print(f"[TelegramApp] handle error: {e}", flush=True)
