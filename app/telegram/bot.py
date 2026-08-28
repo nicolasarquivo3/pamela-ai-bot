@@ -215,283 +215,241 @@ class TelegramApp:
                 return
 
 
-                if low in (
-                    "/reset",
-                    "/reset_memoria",
-                    "/reset_rp",
-                    "/recomecar",
-                    "/recomeçar",
-                ):
+            # --- RESET NARRATIVA / MEMORIA ---
+            if low.split()[0] in (
+                "/reset",
+                "/reset_memoria",
+                "/reset_rp",
+                "/recomecar",
+                "/recomeçar",
+            ) if text else False:
+                try:
                     try:
-                        from sqlalchemy import text as sa_text
                         from app.brain.memory_reset import MemoryResetService
                     except Exception:
-                        try:
-                            from app.memory_reset import MemoryResetService
-                        except Exception:
-                            MemoryResetService = None  # type: ignore
+                        from app.memory_reset import MemoryResetService
+                except Exception:
+                    MemoryResetService = None  # type: ignore
 
-                    try:
-                        tg_id = int(message.from_user.id)
-                        user = await self.agent.user_repository.get_or_create(tg_id)
-                        uid = int(user.id)
-                        char_id = int(user.character_id or 1)
+                try:
+                    tg_id = int(message.from_user.id)
+                    user = await self.agent.user_repository.get_or_create(tg_id)
+                    uid = int(user.id)
+                    char_id = int(getattr(user, "character_id", None) or 1)
+                    parts = text.split()
+                    hard = any(
+                        p.lower() in ("hard", "tudo", "full") for p in parts[1:]
+                    )
 
-                        # hard? /reset_memoria hard
-                        hard = "hard" in low or (
-                            len(text.split()) > 1
-                            and text.split()[1].lower() in ("hard", "tudo", "full")
+                    await message.answer("Resetando memoria e cena... ⏳")
+
+                    stats = {}
+                    if MemoryResetService is not None:
+                        mrs = MemoryResetService(session)
+                        stats = await mrs.reset_user_narrative(
+                            uid, char_id, clear_long_term=hard
                         )
-
-                        stats = {}
-                        if MemoryResetService is not None:
-                            mrs = MemoryResetService(session)
-                            stats = await mrs.reset_user_narrative(
-                                uid,
-                                char_id,
-                                clear_long_term=hard,
-                            )
-                        else:
-                            # fallback SQL minimo
-                            for q in (
-                                "DELETE FROM event_memories WHERE user_id=:u AND character_id=:c",
-                                "DELETE FROM conversation_messages WHERE user_id=:u AND character_id=:c",
-                            ):
-                                try:
-                                    await session.execute(
-                                        __import__("sqlalchemy", fromlist=["text"]).text(q),
-                                        {"u": uid, "c": char_id},
-                                    )
-                                except Exception:
-                                    try:
-                                        await session.rollback()
-                                    except Exception:
-                                        pass
-                            try:
-                                await session.execute(
-                                    __import__("sqlalchemy", fromlist=["text"]).text(
-                                        """
-                                        INSERT INTO story_phase
-                                          (user_id, character_id, phase, intensity, notes, updated_at)
-                                        VALUES (:u,:c,'visual',0,'reset',NOW())
-                                        ON CONFLICT (user_id, character_id) DO UPDATE SET
-                                          phase='visual', intensity=0,
-                                          notes='reset', last_advance_at=NULL, updated_at=NOW()
-                                        """
-                                    ),
-                                    {"u": uid, "c": char_id},
-                                )
-                            except Exception as e:
-                                print(f"[RESET] story fallback: {e}", flush=True)
-
-                        # re-seed LTM core + cena balada
-                        ltm = getattr(self.agent, "long_term_memory_service", None)
-                        if ltm is not None:
-                            try:
-                                if hard or True:
-                                    await ltm.seed_defaults(uid, char_id)
-                                await ltm.set_current_scene(
-                                    uid,
-                                    char_id,
-                                    "NARRATIVA ATUAL (recomeço limpo): os dois estão se arrumando "
-                                    "para ir à balada. Ela se arruma bem gostosa; bebem e conversam "
-                                    "como namorados. Fase visual — ela com medo/receio, ousa pra "
-                                    "agradar ele; SEM sexo com outros como fato.",
-                                )
-                                await ltm.upsert(
-                                    uid,
-                                    char_id,
-                                    "Fase da noite: PREPARAÇÃO (arrumação + bebida + papo).",
-                                    kind="fact",
-                                    key="cena_atual_fase",
-                                    importance=9,
-                                )
-                            except Exception as e:
-                                print(f"[RESET] ltm seed: {e}", flush=True)
-
-                        story = getattr(self.agent, "story_phase_service", None)
-                        if story is not None:
-                            try:
-                                await story.get(uid, char_id)
-                            except Exception:
-                                pass
-
-                        # limpa safety strikes do agent
-                        try:
-                            if hasattr(self.agent, "_gemini_safety_strikes"):
-                                self.agent._gemini_safety_strikes.pop(uid, None)
-                        except Exception:
-                            pass
-
-                        await session.commit()
-                        await message.answer(
-                            "🔄 Reset feito.\n"
-                            f"• msgs/eventos limpos: {stats}\n"
-                            "• fase: visual (lenta)\n"
-                            "• cena: se arrumando pra balada\n\n"
-                            "Pode mandar a primeira mensagem, amor ❤️\n"
-                            "(Opcional: apague o histórico no Telegram também.)\n"
-                            "Hard: /reset_memoria hard"
-                        )
-                        print(
-                            f"[RESET] user={uid} tg={tg_id} hard={hard} stats={stats}",
-                            flush=True,
-                        )
-                    except Exception as e:
-                        print(f"[RESET] fail: {e}", flush=True)
-                        try:
-                            await session.rollback()
-                        except Exception:
-                            pass
-                        await message.answer(
-                            f"Não consegui resetar agora: {e}\nTenta de novo em 1 min ❤️"
-                        )
-                    return
-
-                if low in ("/cena_balada", "/reset_cena", "/preparar_balada"):
-                    try:
+                    else:
                         from sqlalchemy import text as sa_text
-                        ltm = getattr(self.agent, "long_term_memory_service", None)
-                        story = getattr(self.agent, "story_phase_service", None)
-                        user = await self.agent.user_repository.get_or_create(int(message.from_user.id))
-                        uid = int(user.id)
-                        char_id = int(user.character_id or 1)
-                        scene = (
-                            "NARRATIVA ATUAL (recomeço): os dois estão se arrumando para ir à balada. "
-                            "Ela se arruma bem gostosa; bebem e conversam como namorados sobre a balada. "
-                            "Ainda não chegaram na pista."
-                        )
-                        if ltm is not None:
-                            await ltm.set_current_scene(uid, char_id, scene)
-                            await ltm.upsert(
-                                uid,
-                                char_id,
-                                "Fase da noite: PREPARAÇÃO (arrumação + bebida + papo de namorados).",
-                                kind="fact",
-                                key="cena_atual_fase",
-                                importance=9,
-                            )
-                        if story is not None:
-                            await story.get(uid, char_id)
+                        for q in (
+                            "DELETE FROM event_memories WHERE user_id=:u AND character_id=:c",
+                            "DELETE FROM conversation_messages WHERE user_id=:u AND character_id=:c",
+                        ):
                             try:
-                                await story._session.execute(
-                                    sa_text(
-                                        "UPDATE story_phase SET notes=:n, phase='visual', "
-                                        "updated_at=NOW() WHERE user_id=:u AND character_id=:c"
-                                    ),
-                                    {
-                                        "n": "cena: preparacao_balada",
-                                        "u": uid,
-                                        "c": char_id,
-                                    },
-                                )
-                                await story._session.commit()
-                            except Exception as e2:
-                                print(f"[CENA] story notes: {e2}", flush=True)
+                                await session.execute(sa_text(q), {"u": uid, "c": char_id})
+                            except Exception as e:
+                                print(f"[RESET] sql {e}", flush=True)
                                 try:
-                                    await story._session.rollback()
+                                    await session.rollback()
                                 except Exception:
                                     pass
-                        await message.answer(
-                            "Cena: se arrumando pra balada, bebendo e conversando "
-                            "como namorados. Manda a primeira mensagem ❤️"
-                        )
-                    except Exception as e:
-                        print(f"[CENA] reset fail: {e}", flush=True)
-                        await message.answer("Não consegui resetar a cena agora ❤️")
-                    await session.commit()
-                    return
+                        try:
+                            await session.execute(
+                                sa_text(
+                                    """
+                                    INSERT INTO story_phase
+                                      (user_id, character_id, phase, intensity, notes, updated_at)
+                                    VALUES (:u,:c,'visual',0,'reset',NOW())
+                                    ON CONFLICT (user_id, character_id) DO UPDATE SET
+                                      phase='visual', intensity=0, notes='reset',
+                                      last_advance_at=NULL, updated_at=NOW()
+                                    """
+                                ),
+                                {"u": uid, "c": char_id},
+                            )
+                        except Exception as e:
+                            print(f"[RESET] story: {e}", flush=True)
 
-                if low.startswith("/album_drive") or low.startswith("/drive"):
-                    if not self.drive_album_service:
-                        await message.answer(
-                            "Drive desligado.\n"
-                            "Configure:\n"
-                            "DRIVE_ALBUM_ENABLED=true\n"
-                            "GOOGLE_DRIVE_FOLDER_ID=...\n"
-                            "GOOGLE_SERVICE_ACCOUNT_JSON={...}"
-                        )
-                        await session.commit()
-                        return
-                    parts = text.strip().split()
-                    if low in (
-                        "/album_drive",
-                        "/drive",
-                        "/album_drive_stats",
-                        "/drive_stats",
-                    ):
-                        st = None
-                        if hasattr(self.drive_album_service, "stats"):
-                            try:
-                                st = await self.drive_album_service.stats()
-                            except Exception as e:
-                                print(f"[DRIVE] stats fail: {e}", flush=True)
-                        if st:
-                            await message.answer(
-                                "📁 Drive album\n"
-                                f"• Indexadas: {st.get('total', 0)}\n"
-                                f"• Com tag (IA): {st.get('tagged', 0)} "
-                                f"({st.get('pct', 0)}%)\n"
-                                f"• Sem tag ainda: {st.get('untagged', 0)}\n\n"
-                                "Tags sobem sozinhas (~15/ciclo). "
-                                "Ou force: /album_drive_tag 30"
+                    ltm = getattr(self.agent, "long_term_memory_service", None)
+                    if ltm is not None:
+                        try:
+                            await ltm.seed_defaults(uid, char_id)
+                            await ltm.set_current_scene(
+                                uid,
+                                char_id,
+                                "NARRATIVA ATUAL (recomeço limpo): se arrumando para a balada, "
+                                "bebendo e conversando como namorados. Fase visual — medo/receio, "
+                                "ousa pra agradar; SEM sexo com outros como fato.",
                             )
-                        else:
-                            n = await self.drive_album_service.count()
-                            await message.answer(
-                                f"Drive album: {n} foto(s) indexada(s)."
-                            )
-                        await session.commit()
-                        return
-                    if "sync" in low:
-                        lim = 100
-                        caption_new = True
-                        for p in parts[1:]:
-                            pl = p.lower()
-                            if p.isdigit():
-                                lim = min(int(p), 500)
-                            if pl in ("fast", "rapido", "rápido", "nocap", "no_caption"):
-                                caption_new = False
-                        mode = (
-                            "com tag IA"
-                            if caption_new
-                            else "RAPIDO sem tag (so indexa)"
-                        )
-                        await message.answer(
-                            f"Sincronizando ate {lim} fotos NOVAS do Drive ({mode})..."
-                        )
-                        res = await self.drive_album_service.sync(
-                            limit=lim, caption_new=caption_new
-                        )
-                        await message.answer(
-                            f"Drive sync ok\n"
-                            f"added={res.get('added')} skipped={res.get('skipped')}\n"
-                            f"captioned={res.get('captioned')}\n"
-                            f"total={res.get('total')}"
-                        )
-                        await session.commit()
-                        return
-                    if "tag" in low:
-                        lim = 20
-                        for p in parts[1:]:
-                            if p.isdigit():
-                                lim = min(int(p), 50)
-                        await message.answer(f"Tagueando ate {lim} fotos do Drive...")
-                        n = await self.drive_album_service.backfill_captions(limit=lim)
-                        await message.answer(f"Drive tags: {n} foto(s).")
-                        await session.commit()
-                        return
+                        except Exception as e:
+                            print(f"[RESET] ltm: {e}", flush=True)
+
+                    story = getattr(self.agent, "story_phase_service", None)
+                    if story is not None:
+                        try:
+                            await story.get(uid, char_id)
+                        except Exception:
+                            pass
+
+                    try:
+                        if hasattr(self.agent, "_gemini_safety_strikes"):
+                            self.agent._gemini_safety_strikes.pop(uid, None)
+                    except Exception:
+                        pass
+
+                    await session.commit()
                     await message.answer(
-                        "Comandos Drive:\n"
-                        "/album_drive — total indexado\n"
-                        "/album_drive_sync 100 — indexa ate 100 NOVAS + tag IA\n"
-                        "/album_drive_sync 300 fast — indexa ate 300 NOVAS SEM tag\n"
-                        "/album_drive_tag 30 — gera captions nas que faltam\n"
-                        "Repita o sync ate total = fotos da pasta.\n"
-                        "(Auto ~15 min: indexa NOVAS; depois tagueia aos poucos)"
+                        "🔄 Reset concluído.\n"
+                        f"Detalhes: {stats}\n"
+                        "• Fase: visual (lenta)\n"
+                        "• Cena: se arrumando pra balada\n\n"
+                        "Manda a primeira mensagem ❤️\n"
+                        "Hard: /reset_memoria hard"
+                    )
+                    print(
+                        f"[RESET] ok user={uid} tg={tg_id} hard={hard} {stats}",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(f"[RESET] fail: {e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
+                    await message.answer(f"Reset falhou: {e}")
+                return
+
+            if low in ("/cena_balada", "/reset_cena", "/preparar_balada"):
+                try:
+                    tg_id = int(message.from_user.id)
+                    user = await self.agent.user_repository.get_or_create(tg_id)
+                    uid = int(user.id)
+                    char_id = int(getattr(user, "character_id", None) or 1)
+                    ltm = getattr(self.agent, "long_term_memory_service", None)
+                    story = getattr(self.agent, "story_phase_service", None)
+                    scene = (
+                        "NARRATIVA ATUAL: se arrumando para a balada, bebendo e "
+                        "conversando como namorados. Ainda não na pista."
+                    )
+                    if ltm is not None:
+                        await ltm.set_current_scene(uid, char_id, scene)
+                        await ltm.upsert(
+                            uid,
+                            char_id,
+                            "Fase da noite: PREPARAÇÃO.",
+                            kind="fact",
+                            key="cena_atual_fase",
+                            importance=9,
+                        )
+                    if story is not None:
+                        from sqlalchemy import text as sa_text
+                        try:
+                            await story.get(uid, char_id)
+                            await session.execute(
+                                sa_text(
+                                    "UPDATE story_phase SET phase='visual', intensity=0, "
+                                    "notes=:n, updated_at=NOW() "
+                                    "WHERE user_id=:u AND character_id=:c"
+                                ),
+                                {"n": "cena: preparacao_balada", "u": uid, "c": char_id},
+                            )
+                        except Exception as e:
+                            print(f"[CENA] story: {e}", flush=True)
+                    await session.commit()
+                    await message.answer(
+                        "Cena: se arrumando pra balada ❤️ Manda a primeira msg."
+                    )
+                except Exception as e:
+                    print(f"[CENA] fail: {e}", flush=True)
+                    await message.answer(f"Cena falhou: {e}")
+                return
+
+
+            if low.startswith("/album_drive") or low.startswith("/drive"):
+                if not self.drive_album_service:
+                    await message.answer(
+                        "Drive desligado.\n"
+                        "Configure DRIVE_ALBUM_ENABLED + folder + service account."
                     )
                     await session.commit()
                     return
+                parts = text.strip().split()
+                if low in (
+                    "/album_drive",
+                    "/drive",
+                    "/album_drive_stats",
+                    "/drive_stats",
+                ):
+                    st = None
+                    if hasattr(self.drive_album_service, "stats"):
+                        try:
+                            st = await self.drive_album_service.stats()
+                        except Exception as e:
+                            print(f"[DRIVE] stats: {e}", flush=True)
+                    if st:
+                        await message.answer(
+                            "📁 Drive album\n"
+                            f"• Indexadas: {st.get('total', 0)}\n"
+                            f"• Com tag: {st.get('tagged', 0)} ({st.get('pct', 0)}%)\n"
+                            f"• Sem tag: {st.get('untagged', 0)}"
+                        )
+                    else:
+                        n = await self.drive_album_service.count()
+                        await message.answer(f"Drive album: {n} foto(s).")
+                    await session.commit()
+                    return
+                if "sync" in low:
+                    lim = 100
+                    caption_new = True
+                    for p in parts[1:]:
+                        pl = p.lower()
+                        if p.isdigit():
+                            lim = min(int(p), 500)
+                        if pl in ("fast", "rapido", "rápido", "nocap"):
+                            caption_new = False
+                    await message.answer(
+                        f"Sincronizando ate {lim} fotos "
+                        f"({'tag' if caption_new else 'fast'})..."
+                    )
+                    res = await self.drive_album_service.sync(
+                        limit=lim, caption_new=caption_new
+                    )
+                    await message.answer(
+                        f"Drive sync: added={res.get('added')} "
+                        f"total={res.get('total')} captioned={res.get('captioned')}"
+                    )
+                    await session.commit()
+                    return
+                if "tag" in low:
+                    lim = 20
+                    for p in parts[1:]:
+                        if p.isdigit():
+                            lim = min(int(p), 50)
+                    await message.answer(f"Tagueando {lim}...")
+                    n = await self.drive_album_service.backfill_captions(limit=lim)
+                    await message.answer(f"Drive tags: {n}")
+                    await session.commit()
+                    return
+                await message.answer(
+                    "Comandos: /album_drive | /album_drive_sync 100 | "
+                    "/album_drive_sync 300 fast | /album_drive_tag 30\n"
+                    "Reset RP: /reset_memoria"
+                )
+                await session.commit()
+                return
+
 
             print(
                 f"[TelegramApp] handle user={message.from_user.id} "
