@@ -520,6 +520,8 @@ class TelegramApp:
 
             await self._send_text_bubbles(message, result)
 
+
+
         except Exception as e:
             print(f"[TelegramApp] handle error: {e}", flush=True)
             try:
