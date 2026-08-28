@@ -660,44 +660,69 @@ async def main():
     except Exception as e:
         print(f"[Autonomy] loop fail: {e}", flush=True)
 
-    # ---------- Webhook + web server ----------
+
+    # ---------- Webhook + HTTP (OBRIGATORIO para Render detectar porta) ----------
     try:
         await telegram_app.set_webhook()
     except Exception as e:
         print(f"[TelegramApp] set_webhook fail: {e}", flush=True)
 
-    # create_web_app: aceita (telegram_app) ou keyword
+    app = None
     try:
-        import inspect as _ins_web
-        _sig = _ins_web.signature(create_web_app)
-        _params = list(_sig.parameters.keys())
-    except Exception:
-        _params = []
-    try:
-        if _params and _params[0] in ("telegram_app", "bot_app", "tg"):
-            app = create_web_app(telegram_app)
-        elif "telegram_app" in _params:
-            app = create_web_app(telegram_app=telegram_app)
-        elif len(_params) >= 2:
-            # assinatura antiga (algo, telegram_app)
-            app = create_web_app(None, telegram_app)
-        else:
-            app = create_web_app(telegram_app)
-    except TypeError as _te:
-        print(f"[WEB] create_web_app retry: {_te}", flush=True)
+        app = create_web_app(telegram_app)
+    except TypeError as e1:
+        print(f"[WEB] create_web_app(telegram_app) fail: {e1}", flush=True)
         try:
             app = create_web_app(telegram_app=telegram_app)
-        except TypeError:
-            app = create_web_app(None, telegram_app)
+        except TypeError as e2:
+            print(f"[WEB] create_web_app(telegram_app=) fail: {e2}", flush=True)
+            try:
+                app = create_web_app(None, telegram_app)
+            except TypeError as e3:
+                print(f"[WEB] create_web_app(None, tg) fail: {e3}", flush=True)
+                app = None
 
-    port = int(os.getenv("PORT") or getattr(settings, "port", None) or 10000)
-    print(f"[WEB] Starting server on port {port}", flush=True)
+    if app is None:
+        # fallback total: FastAPI minimo inline (nao depende de web.py do repo)
+        print("[WEB] usando FastAPI inline (fallback)", flush=True)
+        from fastapi import FastAPI, Request, Header, HTTPException
+        from fastapi.responses import PlainTextResponse, JSONResponse
+
+        app = FastAPI(title="pamela-ai")
+
+        @app.get("/")
+        async def _root():
+            return PlainTextResponse("pamela-ai ok")
+
+        @app.get("/health")
+        async def _health():
+            return {"ok": True}
+
+        @app.post("/telegram/webhook")
+        async def _wh(
+            request: Request,
+            x_telegram_bot_api_secret_token: str | None = Header(default=None),
+        ):
+            secret = (getattr(settings, "webhook_secret", None) or "").strip()
+            if secret and secret not in ("change-me", "changeme", ""):
+                if (x_telegram_bot_api_secret_token or "") != secret:
+                    raise HTTPException(403, "bad secret")
+            data = await request.json()
+            try:
+                await telegram_app.feed_webhook_update(data)
+            except Exception as e:
+                print(f"[WEB] inline webhook error: {e}", flush=True)
+            return {"ok": True}
+
+    port = int(os.getenv("PORT") or "10000")
+    print(f"[WEB] Starting server on 0.0.0.0:{port}", flush=True)
 
     config = uvicorn.Config(
         app,
         host="0.0.0.0",
         port=port,
         log_level="info",
+        timeout_keep_alive=30,
     )
     server = uvicorn.Server(config)
     await server.serve()

@@ -1,38 +1,47 @@
 """
-FastAPI app + webhook Telegram.
+FastAPI + webhook Telegram.
+Assinatura flexivel — NUNCA exige 2 args obrigatorios confusos.
 """
 from __future__ import annotations
 
 from fastapi import FastAPI, Header, Request, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from app.config import settings
+try:
+    from app.config import settings
+except Exception:
+    settings = None  # type: ignore
 
 
-def create_web_app(telegram_app=None, *args, **kwargs):
+def create_web_app(*args, **kwargs):
     """
-    Compat:
+    Aceita:
       create_web_app(telegram_app)
-      create_web_app(app, telegram_app)  # se algum codigo antigo passar 2 args
-      create_web_app(telegram_app=...)
+      create_web_app(telegram_app=tg)
+      create_web_app(None, telegram_app)
+      create_web_app(bot=..., telegram_app=...)
     """
-    # se passaram 2 args posicionais (algo, telegram_app)
-    if args and telegram_app is not None and not hasattr(telegram_app, "feed_webhook_update"):
-        # primeiro era lixo/app, segundo real
-        if hasattr(args[0], "feed_webhook_update"):
-            telegram_app = args[0]
+    telegram_app = kwargs.get("telegram_app")
     if telegram_app is None:
-        telegram_app = kwargs.get("telegram_app")
+        telegram_app = kwargs.get("tg")
+    if telegram_app is None:
+        telegram_app = kwargs.get("bot_app")
     if telegram_app is None and args:
+        # pega o primeiro objeto que tenha feed_webhook_update
         for a in args:
-            if hasattr(a, "feed_webhook_update"):
+            if a is not None and hasattr(a, "feed_webhook_update"):
                 telegram_app = a
                 break
+        # se so passou 1 arg e e o telegram
+        if telegram_app is None and len(args) == 1 and args[0] is not None:
+            telegram_app = args[0]
+        if telegram_app is None and len(args) >= 2:
+            telegram_app = args[1]
 
     if telegram_app is None:
         raise TypeError(
-            "create_web_app() missing required telegram_app "
-            "(passe o TelegramApp)"
+            "create_web_app: passe telegram_app "
+            "(ex: create_web_app(telegram_app) ou create_web_app(telegram_app=...))"
         )
 
     app = FastAPI(title="pamela-ai")
@@ -43,15 +52,17 @@ def create_web_app(telegram_app=None, *args, **kwargs):
 
     @app.get("/health")
     async def health():
-        return {"ok": True}
+        return {"ok": True, "service": "pamela-ai"}
 
     @app.post("/telegram/webhook")
     async def telegram_webhook(
         request: Request,
         x_telegram_bot_api_secret_token: str | None = Header(default=None),
     ):
-        secret = (getattr(settings, "webhook_secret", None) or "").strip()
-        if secret and secret != "change-me":
+        secret = ""
+        if settings is not None:
+            secret = (getattr(settings, "webhook_secret", None) or "").strip()
+        if secret and secret not in ("change-me", "changeme", ""):
             if (x_telegram_bot_api_secret_token or "") != secret:
                 raise HTTPException(status_code=403, detail="bad secret")
 
@@ -63,8 +74,7 @@ def create_web_app(telegram_app=None, *args, **kwargs):
         try:
             await telegram_app.feed_webhook_update(data)
         except Exception as e:
-            print(f"[WEB] webhook handler error: {e}", flush=True)
-            # Telegram reenvia se 5xx; respondemos 200 pra nao flood
+            print(f"[WEB] webhook error: {e}", flush=True)
             return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=200)
 
         return {"ok": True}
