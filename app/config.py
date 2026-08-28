@@ -112,6 +112,13 @@ class Settings(BaseSettings):
 
 
 
+    # MEMORIA
+    memory_max_messages: int = 40  # historico recente no contexto (antes ~20)
+    memory_max_facts: int = 16
+    memory_max_semantic: int = 10
+    memory_max_events: int = 8
+    event_memory_enabled: bool = True
+
     timezone: str = "America/Sao_Paulo"
 
     model_config = SettingsConfigDict(
