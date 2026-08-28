@@ -424,14 +424,14 @@ class AlbumService:
             pass
         # nomes atuais (2026) + legados
         for m in (
-            "gemini-2.5-flash-lite",
-            "gemini-2.5-flash",
-            "gemini-3.7-flash",
-            "gemini-3.5-flash",
+            "gemini-flash-lite-latest",
             "gemini-3.5-flash-lite",
-            "gemini-3-flash-preview",
-            "gemini-2.0-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
             "gemini-flash-latest",
+            "gemini-3.7-flash",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
         ):
             if m not in models:
                 models.append(m)
@@ -500,8 +500,11 @@ class AlbumService:
                         usable.append(n)
                     preferred = []
                     for needle in (
-                        "2.5-flash-lite",
                         "flash-lite-latest",
+                        "3.5-flash-lite",
+                        "3.6-flash",
+                        "3.5-flash",
+                        "2.5-flash-lite",
                         "2.5-flash",
                         "flash-latest",
                         "3.5-flash",
@@ -548,10 +551,17 @@ class AlbumService:
             print(f"[ALBUM] discover skip: {e}", flush=True)
 
         prompt = (
-            "Descreva esta foto de mulher adulta em UMA linha curta em portugues, "
-            "so fatos visuais: tipo de roupa, cor, acessorios, local. "
-            "Exemplo: vestido branco curto salto alto espelho. "
-            "Sem nome. Sem emoji. Maximo 12 palavras."
+            "Voce tagueia fotos para um buscador de roupa. "
+            "Descreva a mulher adulta em UMA linha em portugues, OBRIGATORIO incluir: "
+            "1) PECA (saia/vestido/shorts/lingerie/blusa/calca) "
+            "2) COR da peca principal (preto/branco/vermelho/azul/rosa/nude...) "
+            "3) CAIMENTO se der pra ver (colada/justa/soltinha/curta/longa/mini) "
+            "4) SAPATO se visivel (salto/tenis/bota) "
+            "5) LOCAL/cena (espelho/casa/balada/rua/quarto). "
+            "Exemplo bom: saia preta colada curta salto alto espelho em casa. "
+            "Exemplo bom: vestido vermelho mini justo balada luz neon. "
+            "PROIBIDO: nome, emoji, historia, 'bonita', 'mulher loira' sozinho sem roupa. "
+            "Maximo 18 palavras. So fatos visuais."
         )
 
         # dois formatos de part (snake e camel) — APIs variam
@@ -568,7 +578,7 @@ class AlbumService:
             return {
                 "contents": [{"role": "user", "parts": parts}],
                 "generationConfig": {
-                    "maxOutputTokens": 40,
+                    "maxOutputTokens": 80,
                     "temperature": 0.2,
                 },
             }
