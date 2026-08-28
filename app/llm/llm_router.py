@@ -1,8 +1,5 @@
 """
-Roteador de LLMs:
-  1) Gemini (varias keys)
-  2) Se SAFETY / vazio / 503 / recusa -> OpenRouter free
-  3) Filtra CoT em ingles e recusas
+Roteador: Gemini -> OpenRouter free; filtra recusa e CoT/meta em ingles.
 """
 from __future__ import annotations
 
@@ -17,31 +14,26 @@ _REFUSAL_RE = re.compile(
     r"contra\s+(as\s+)?(minhas\s+)?pol[ií]ticas|"
     r"i\s+can'?t\s+(help|assist|generate)|"
     r"i\s+cannot\s+(help|assist|generate)|"
-    r"i'?m\s+not\s+able\s+to|"
-    r"content\s+policy|"
-    r"safety\s+guidelines|"
-    r"violat(e|es|ing)\s+(the\s+)?(policy|policies)|"
+    r"content\s+policy|safety\s+guidelines|"
     r"n[aã]o\s+vou\s+(gerar|escrever|continuar)|"
-    r"prefiro\s+n[aã]o\s+(falar|continuar)|"
-    r"isso\s+vai\s+contra"
+    r"prefiro\s+n[aã]o\s+(falar|continuar)"
     r")",
     re.I,
 )
 
 _COT_RE = re.compile(
-    r"(?is)(okay,?\s+let'?s\s+see|looking at the conversation|"
-    r"i need to stay in character|according to the safety|"
-    r"the user is asking|my previous response|<think>)"
+    r"(?is)("
+    r"okay,?\s+let'?s\s+see|looking at the|semantic\s+memor|"
+    r"referencing\s+a\s+memory|provided in the prompt|"
+    r"they'?re\s+referencing|there are several entries|"
+    r"i need to stay in character|the user is asking|"
+    r"entries about this scenario|<think>|based on the (context|memories|prompt)"
+    r")"
 )
 
 
 class LLMRouter:
-    def __init__(
-        self,
-        primary: Any,
-        fallback: Any | None = None,
-        name: str = "llm_router",
-    ):
+    def __init__(self, primary: Any, fallback: Any | None = None, name: str = "llm_router"):
         self.primary = primary
         self.fallback = fallback
         self.name = name
@@ -71,9 +63,8 @@ class LLMRouter:
         t = text.strip()
         if len(t) < 8:
             return False
-        if _REFUSAL_RE.search(t):
-            if len(t) < 400 or _REFUSAL_RE.search(t[:180]):
-                return True
+        if _REFUSAL_RE.search(t) and (len(t) < 400 or _REFUSAL_RE.search(t[:180])):
+            return True
         return False
 
     def _looks_like_cot(self, text: str | None) -> bool:
@@ -82,10 +73,18 @@ class LLMRouter:
         t = text.strip()
         if _COT_RE.search(t):
             return True
-        # monologo longo em ingles sem acento PT
-        if len(t) > 500 and re.search(r"\b(the user|I should|guidelines)\b", t):
-            if not re.search(r"[áàâãéêíóôõúç]", t[:300], re.I):
-                return True
+        en = len(
+            re.findall(
+                r"\b(the|they|this|looking|memory|memories|prompt|should|user|referencing|semantic|scenario|entries)\b",
+                t,
+                re.I,
+            )
+        )
+        pt = len(re.findall(r"[áàâãéêíóôõúçÁÉÍÓÚ]", t))
+        if en >= 3 and pt < 2 and len(t) > 80:
+            return True
+        if t.lstrip().startswith("- ") and en >= 2:
+            return True
         return False
 
     async def generate(self, system_instruction, messages):
@@ -106,23 +105,15 @@ class LLMRouter:
                 print("[LLMRouter] usando PRIMARY (Gemini)", flush=True)
                 return primary_text
 
-            if primary_text and self._looks_like_refusal(primary_text):
-                print(
-                    f"[LLMRouter] PRIMARY recusou -> FALLBACK. "
-                    f"trecho={primary_text[:100]!r}",
-                    flush=True,
-                )
-            elif primary_text and self._looks_like_cot(primary_text):
-                print("[LLMRouter] PRIMARY parece CoT -> FALLBACK", flush=True)
+            if primary_text and self._looks_like_cot(primary_text):
+                print("[LLMRouter] PRIMARY CoT/meta -> FALLBACK", flush=True)
+            elif primary_text and self._looks_like_refusal(primary_text):
+                print("[LLMRouter] PRIMARY recusou -> FALLBACK", flush=True)
             else:
-                print(
-                    "[LLMRouter] PRIMARY vazio/erro/safety -> FALLBACK",
-                    flush=True,
-                )
+                print("[LLMRouter] PRIMARY vazio/erro/safety -> FALLBACK", flush=True)
 
         if self.fallback and await self._avail(self.fallback):
             try:
-                # system reforcado no openrouter; aqui so passa
                 fb = await self.fallback.generate(system_instruction, messages)
             except Exception as e:
                 print(f"[LLMRouter] fallback exception: {e}", flush=True)
@@ -136,6 +127,6 @@ class LLMRouter:
             ):
                 print("[LLMRouter] usando FALLBACK (OpenRouter)", flush=True)
                 return fb
-            print("[LLMRouter] FALLBACK tambem falhou ou CoT", flush=True)
+            print("[LLMRouter] FALLBACK falhou ou CoT", flush=True)
 
         return None
