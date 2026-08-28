@@ -1,5 +1,11 @@
 """
-Roteador: Gemini -> OpenRouter free; filtra recusa e CoT/meta em ingles.
+LLM em cascata:
+  1) Gemini
+  2) (so apos 2o SAFETY) modelos free menos filtrados (Venice/Dolphin etc.)
+  3) OpenRouter free generico
+
+O controle "1a vez SAFETY = so espera" fica no Agent.
+Este router expoe primary / nsfw / free separados.
 """
 from __future__ import annotations
 
@@ -33,16 +39,26 @@ _COT_RE = re.compile(
 
 
 class LLMRouter:
-    def __init__(self, primary: Any, fallback: Any | None = None, name: str = "llm_router"):
+    def __init__(
+        self,
+        primary: Any,
+        nsfw_fallback: Any | None = None,
+        free_fallback: Any | None = None,
+        fallback: Any | None = None,  # compat: vira free_fallback
+        name: str = "llm_router",
+    ):
         self.primary = primary
-        self.fallback = fallback
+        self.nsfw_fallback = nsfw_fallback
+        self.free_fallback = free_fallback or fallback
+        self.fallback = self.free_fallback  # alias antigo
         self.name = name
+        self.last_stage: str | None = None
+        self.last_primary_kind: str | None = None
 
     async def available(self) -> bool:
-        if self.primary and await self._avail(self.primary):
-            return True
-        if self.fallback and await self._avail(self.fallback):
-            return True
+        for llm in (self.primary, self.nsfw_fallback, self.free_fallback):
+            if llm and await self._avail(llm):
+                return True
         return False
 
     async def _avail(self, llm) -> bool:
@@ -75,7 +91,8 @@ class LLMRouter:
             return True
         en = len(
             re.findall(
-                r"\b(the|they|this|looking|memory|memories|prompt|should|user|referencing|semantic|scenario|entries)\b",
+                r"\b(the|they|this|looking|memory|memories|prompt|should|user|"
+                r"referencing|semantic|scenario|entries)\b",
                 t,
                 re.I,
             )
@@ -87,46 +104,91 @@ class LLMRouter:
             return True
         return False
 
-    async def generate(self, system_instruction, messages):
-        if self.primary and await self._avail(self.primary):
-            try:
-                primary_text = await self.primary.generate(
-                    system_instruction, messages
-                )
-            except Exception as e:
-                print(f"[LLMRouter] primary exception: {e}", flush=True)
-                primary_text = None
+    def _ok(self, text: str | None) -> bool:
+        return bool(
+            text
+            and str(text).strip()
+            and not self._looks_like_refusal(text)
+            and not self._looks_like_cot(text)
+        )
 
-            if (
-                primary_text
-                and not self._looks_like_refusal(primary_text)
-                and not self._looks_like_cot(primary_text)
-            ):
-                print("[LLMRouter] usando PRIMARY (Gemini)", flush=True)
-                return primary_text
+    def _primary_kind(self) -> str:
+        k = getattr(self.primary, "last_error_kind", None) if self.primary else None
+        return k or "empty"
 
-            if primary_text and self._looks_like_cot(primary_text):
-                print("[LLMRouter] PRIMARY CoT/meta -> FALLBACK", flush=True)
-            elif primary_text and self._looks_like_refusal(primary_text):
-                print("[LLMRouter] PRIMARY recusou -> FALLBACK", flush=True)
+    async def generate_primary(self, system_instruction, messages) -> str | None:
+        self.last_stage = "primary"
+        self.last_primary_kind = None
+        if not self.primary or not await self._avail(self.primary):
+            self.last_primary_kind = "unavailable"
+            return None
+        try:
+            text = await self.primary.generate(system_instruction, messages)
+        except Exception as e:
+            print(f"[LLMRouter] primary exception: {e}", flush=True)
+            self.last_primary_kind = "exception"
+            return None
+        self.last_primary_kind = self._primary_kind()
+        if self._ok(text):
+            print("[LLMRouter] PRIMARY ok (Gemini)", flush=True)
+            return text.strip()
+        if text and self._looks_like_cot(text):
+            self.last_primary_kind = "cot"
+        elif text and self._looks_like_refusal(text):
+            self.last_primary_kind = "refusal"
+        elif not self.last_primary_kind or self.last_primary_kind == "empty":
+            # se Gemini marcou safety
+            if getattr(self.primary, "last_error_kind", None) == "safety":
+                self.last_primary_kind = "safety"
             else:
-                print("[LLMRouter] PRIMARY vazio/erro/safety -> FALLBACK", flush=True)
-
-        if self.fallback and await self._avail(self.fallback):
-            try:
-                fb = await self.fallback.generate(system_instruction, messages)
-            except Exception as e:
-                print(f"[LLMRouter] fallback exception: {e}", flush=True)
-                fb = None
-
-            if (
-                fb
-                and fb.strip()
-                and not self._looks_like_refusal(fb)
-                and not self._looks_like_cot(fb)
-            ):
-                print("[LLMRouter] usando FALLBACK (OpenRouter)", flush=True)
-                return fb
-            print("[LLMRouter] FALLBACK falhou ou CoT", flush=True)
-
+                self.last_primary_kind = self.last_primary_kind or "empty"
+        print(
+            f"[LLMRouter] PRIMARY falhou kind={self.last_primary_kind}",
+            flush=True,
+        )
         return None
+
+    async def generate_nsfw(self, system_instruction, messages) -> str | None:
+        self.last_stage = "nsfw"
+        if not self.nsfw_fallback or not await self._avail(self.nsfw_fallback):
+            print("[LLMRouter] NSFW tier indisponivel", flush=True)
+            return None
+        try:
+            text = await self.nsfw_fallback.generate(system_instruction, messages)
+        except Exception as e:
+            print(f"[LLMRouter] nsfw exception: {e}", flush=True)
+            return None
+        if self._ok(text):
+            print("[LLMRouter] usando NSFW tier (menos filtro)", flush=True)
+            return text.strip()
+        print("[LLMRouter] NSFW tier falhou/CoT", flush=True)
+        return None
+
+    async def generate_free(self, system_instruction, messages) -> str | None:
+        self.last_stage = "free"
+        if not self.free_fallback or not await self._avail(self.free_fallback):
+            print("[LLMRouter] FREE tier indisponivel", flush=True)
+            return None
+        try:
+            text = await self.free_fallback.generate(system_instruction, messages)
+        except Exception as e:
+            print(f"[LLMRouter] free exception: {e}", flush=True)
+            return None
+        if self._ok(text):
+            print("[LLMRouter] usando FREE OpenRouter", flush=True)
+            return text.strip()
+        print("[LLMRouter] FREE falhou/CoT", flush=True)
+        return None
+
+    async def generate(self, system_instruction, messages):
+        """
+        Compat: tenta primary; se falhar (qualquer motivo) nsfw depois free.
+        Agent usa generate_primary + strikes para o fluxo especial SAFETY.
+        """
+        t = await self.generate_primary(system_instruction, messages)
+        if t:
+            return t
+        t = await self.generate_nsfw(system_instruction, messages)
+        if t:
+            return t
+        return await self.generate_free(system_instruction, messages)
