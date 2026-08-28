@@ -51,8 +51,10 @@ class DriveAlbumService:
         use_vision_caption: bool = True,
         caption_fn=None,  # async (bytes) -> str  (do AlbumService)
         download_caption_from_album=None,
+        session_factory=None,  # SessionLocal — evita conflito async com outros loops
     ):
         self.session = session
+        self.session_factory = session_factory
         self.folder_id = (folder_id or "").strip() or None
         self.sa_json = (sa_json or "").strip() or None
         self.enabled = bool(enabled) and bool(self.folder_id) and bool(self.sa_json)
@@ -64,6 +66,13 @@ class DriveAlbumService:
 
     async def available(self) -> bool:
         return self.enabled
+
+    def _own_session(self):
+        """Sessao propria se session_factory existir (safe p/ background)."""
+        if self.session_factory is not None:
+            return self.session_factory()
+        return None
+
 
     def _build_service(self):
         if self._service is not None:
@@ -112,6 +121,19 @@ class DriveAlbumService:
     async def count(self) -> int:
         if not self.enabled:
             return 0
+        own = self._own_session()
+        if own is not None:
+            async with own as session:
+                old = self.session
+                self.session = session
+                try:
+                    await self.ensure_table()
+                    r = await self.session.execute(
+                        text("SELECT COUNT(*) FROM album_drive_photos")
+                    )
+                    return int(r.scalar() or 0)
+                finally:
+                    self.session = old
         await self.ensure_table()
         r = await self.session.execute(text("SELECT COUNT(*) FROM album_drive_photos"))
         return int(r.scalar() or 0)
@@ -120,6 +142,19 @@ class DriveAlbumService:
         """Lista pasta Drive e indexa ate `limit` arquivos novos/alterados."""
         if not self.enabled:
             return {"ok": False, "error": "drive_disabled"}
+        # sessao dedicada no background (nao reusa a do request)
+        own = self._own_session()
+        if own is not None:
+            async with own as session:
+                old = self.session
+                self.session = session
+                try:
+                    return await self._sync_body(limit, caption_new)
+                finally:
+                    self.session = old
+        return await self._sync_body(limit, caption_new)
+
+    async def _sync_body(self, limit: int = 200, caption_new: bool = True) -> dict:
         await self.ensure_table()
         try:
             svc = self._build_service()
@@ -296,6 +331,18 @@ class DriveAlbumService:
     async def pick_best(self, scene: str) -> dict | None:
         if not self.enabled:
             return None
+        own = self._own_session()
+        if own is not None:
+            async with own as session:
+                old = self.session
+                self.session = session
+                try:
+                    return await self._pick_best_body(scene)
+                finally:
+                    self.session = old
+        return await self._pick_best_body(scene)
+
+    async def _pick_best_body(self, scene: str) -> dict | None:
         await self.ensure_table()
         r = await self.session.execute(
             text(
@@ -357,9 +404,21 @@ class DriveAlbumService:
         }
 
     async def backfill_captions(self, limit: int = 20) -> int:
-        await self.ensure_table()
         if not self._caption_fn:
             return 0
+        own = self._own_session()
+        if own is not None:
+            async with own as session:
+                old = self.session
+                self.session = session
+                try:
+                    return await self._backfill_body(limit)
+                finally:
+                    self.session = old
+        return await self._backfill_body(limit)
+
+    async def _backfill_body(self, limit: int = 20) -> int:
+        await self.ensure_table()
         r = await self.session.execute(
             text(
                 """
