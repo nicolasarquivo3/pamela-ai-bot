@@ -415,19 +415,44 @@ async def main():
         timeout=int(getattr(settings, "llm_timeout_seconds", 60) or 60),
         max_output_tokens=int(getattr(settings, "llm_max_output_tokens", 1000) or 1000),
     )
-    openrouter = OpenRouterLLM(
-        api_key=getattr(settings, "openrouter_api_key", None),
-        model=getattr(
-            settings,
-            "openrouter_model",
-            "openrouter/free",
-        ),
-        timeout=int(getattr(settings, "llm_timeout_seconds", 90) or 90),
-        max_output_tokens=int(
-            getattr(settings, "llm_max_output_tokens", 1000) or 1000
-        ),
+    # OpenRouter: tier NSFW (menos filtro) + tier free generico
+    try:
+        from app.providers.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
+    except Exception:
+        try:
+            from app.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
+        except Exception:
+            NSFW_FREE_MODELS = [
+                "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "google/gemma-3-27b-it:free",
+            ]
+            DEFAULT_FREE_MODELS = ["openrouter/free", "liquid/lfm-2.5-2.6b:free"]
+
+    _or_key = getattr(settings, "openrouter_api_key", None)
+    _or_timeout = int(getattr(settings, "llm_timeout_seconds", 90) or 90)
+    _or_max = int(getattr(settings, "llm_max_output_tokens", 1000) or 1000)
+
+    openrouter_nsfw = OpenRouterLLM(
+        api_key=_or_key,
+        models=list(NSFW_FREE_MODELS),
+        label="OpenRouter-NSFW",
+        timeout=_or_timeout,
+        max_output_tokens=_or_max,
     )
-    llm = LLMRouter(primary=gemini, fallback=openrouter)
+    openrouter = OpenRouterLLM(
+        api_key=_or_key,
+        models=list(DEFAULT_FREE_MODELS),
+        model=getattr(settings, "openrouter_model", None) or "openrouter/free",
+        label="OpenRouter-FREE",
+        timeout=_or_timeout,
+        max_output_tokens=_or_max,
+    )
+    llm = LLMRouter(
+        primary=gemini,
+        nsfw_fallback=openrouter_nsfw,
+        free_fallback=openrouter,
+    )
     if event_memory_service is not None:
         event_memory_service.set_llm(llm)
         print("[EVENT-MEM] llm ligado", flush=True)
