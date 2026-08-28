@@ -409,9 +409,21 @@ async def main():
         pass
 
     try:
-        telegram = TelegramApp(agent, album_service=album_service)
+        telegram = TelegramApp(
+            agent,
+            album_service=album_service,
+            drive_album_service=drive_album_service,
+        )
     except TypeError:
-        telegram = TelegramApp(agent)
+        try:
+            telegram = TelegramApp(agent, album_service=album_service)
+        except TypeError:
+            telegram = TelegramApp(agent)
+    print(
+        f"[TelegramApp] album={album_service is not None} "
+        f"drive={drive_album_service is not None}",
+        flush=True,
+    )
 
     await telegram.set_webhook()
 
