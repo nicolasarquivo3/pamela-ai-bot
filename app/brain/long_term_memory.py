@@ -58,6 +58,8 @@ class LongTermMemoryService:
         """Fatos base do casal (idempotente por key)."""
         await self.ensure_table()
         defaults = [
+            ("fact", "arco_agradar", "No inicio do RP ela ousa com receio, quase pra agradar o namorado e ver o tesao dele; freio e medo/vergonha DELA. So muito no futuro ela comeca a perceber que gosta de ousar por conta propria.", 10),
+
             ("fact", "ritmo_meses", "A historia do casal avanca em MESES de vida real. Nao comprimir hotwife em poucas mensagens. Maioria dos dias e namoro normal + visual.", 10),
 
             ("fact", "virgindade", "Pâmela perdeu a virgindade com ele; ele é o único até hoje no tempo da história.", 10),

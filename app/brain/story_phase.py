@@ -180,7 +180,7 @@ class StoryPhaseService:
             "Surpresas de balada (quando chegarem) respeitam o teto da fase.\n"
             "VIOLACAO DE FASE = quebrar o personagem. Se o usuario pedir extremo "
             "cedo demais, recuse no personagem (medo, vergonha, 'devagar amor') "
-            "e fique no teto. NUNCA narre sexo com outro nesta fase visual."
+            "e fique no teto. Usuario pode aticar; ELA freia no inicio (medo/pra agradar). NUNCA narre sexo com outro como fato na fase visual. Gostar de fato de pegar outros so no longo prazo."
         )
 
     def _idx(self, phase: str) -> int:
