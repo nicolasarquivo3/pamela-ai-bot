@@ -11,6 +11,8 @@ class ContextManager:
         relationship_engine=None,
         semantic_memory_manager=None,
         event_memory_service=None,
+        story_phase_service=None,
+        long_term_memory_service=None,
         max_messages=40,
         max_memories=16,
         max_semantic_memories=10,
@@ -22,6 +24,8 @@ class ContextManager:
         self.relationship_engine = relationship_engine
         self.semantic_memory_manager = semantic_memory_manager
         self.event_memory_service = event_memory_service
+        self.story_phase_service = story_phase_service
+        self.long_term_memory_service = long_term_memory_service
         self.max_messages = max_messages
         self.max_memories = max_memories
         self.max_semantic_memories = max_semantic_memories
@@ -85,6 +89,29 @@ class ContextManager:
             except Exception as e:
                 print(f"[EVENT-MEM] recall fail: {e}", flush=True)
 
+
+        story_phase = None
+        story_phase_text = ""
+        if self.story_phase_service is not None:
+            try:
+                story_phase = await self.story_phase_service.get(user_id, character_id)
+                story_phase_text = self.story_phase_service.format_for_prompt(story_phase)
+            except Exception as e:
+                print(f"[STORY] recall fail: {e}", flush=True)
+
+        long_term_rows = []
+        long_term_text = ""
+        if self.long_term_memory_service is not None:
+            try:
+                long_term_rows = await self.long_term_memory_service.recall(
+                    user_id, character_id, query=query, limit=18
+                )
+                long_term_text = self.long_term_memory_service.format_for_prompt(
+                    long_term_rows
+                )
+            except Exception as e:
+                print(f"[LTM] recall fail: {e}", flush=True)
+
         char_result = await self.session.execute(
             select(Character).where(Character.id == character_id)
         )
@@ -137,4 +164,8 @@ class ContextManager:
             "messages": [
                 {"role": m.role, "content": m.content} for m in messages
             ],
+                    "story_phase": story_phase,
+            "story_phase_text": story_phase_text,
+            "long_term_memories": long_term_rows,
+            "long_term_memories_text": long_term_text,
         }
