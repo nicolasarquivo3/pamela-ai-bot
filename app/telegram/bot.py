@@ -182,97 +182,149 @@ class TelegramApp:
                 await session.commit()
                 return
 
-            if low.startswith("/album_drive") or low.startswith("/drive"):
-                if not self.drive_album_service:
-                    await message.answer(
-                        "Drive desligado.\n"
-                        "Configure:\n"
-                        "DRIVE_ALBUM_ENABLED=true\n"
-                        "GOOGLE_DRIVE_FOLDER_ID=...\n"
-                        "GOOGLE_SERVICE_ACCOUNT_JSON={...}"
-                    )
-                    await session.commit()
-                    return
-                parts = text.strip().split()
-                if low in (
-                    "/album_drive",
-                    "/drive",
-                    "/album_drive_stats",
-                    "/drive_stats",
-                ):
-                    st = None
-                    if hasattr(self.drive_album_service, "stats"):
-                        st = await self.drive_album_service.stats()
-                    if st:
-                        await message.answer(
-                            "📁 Drive album\n"
-                            f"• Indexadas: {st.get('total', 0)}\n"
-                            f"• Com tag (IA): {st.get('tagged', 0)} "
-                            f"({st.get('pct', 0)}%)\n"
-                            f"• Sem tag ainda: {st.get('untagged', 0)}\n"
-                            "\n"
-                            "Tags sobem sozinhas (~15/ciclo). "
-                            "Ou force: /album_drive_tag 30"
+                if low in ("/cena_balada", "/reset_cena", "/preparar_balada"):
+                    try:
+                        from sqlalchemy import text as sa_text
+                        ltm = getattr(self.agent, "long_term_memory_service", None)
+                        story = getattr(self.agent, "story_phase_service", None)
+                        uid = int(message.from_user.id)
+                        char_id = 1
+                        scene = (
+                            "NARRATIVA ATUAL (recomeço): os dois estão se arrumando para ir à balada. "
+                            "Ela se arruma bem gostosa; bebem e conversam como namorados sobre a balada. "
+                            "Ainda não chegaram na pista."
                         )
-                    else:
-                        n = await self.drive_album_service.count()
+                        if ltm is not None:
+                            await ltm.set_current_scene(uid, char_id, scene)
+                            await ltm.upsert(
+                                uid,
+                                char_id,
+                                "Fase da noite: PREPARAÇÃO (arrumação + bebida + papo de namorados).",
+                                kind="fact",
+                                key="cena_atual_fase",
+                                importance=9,
+                            )
+                        if story is not None:
+                            await story.get(uid, char_id)
+                            try:
+                                await story._session.execute(
+                                    sa_text(
+                                        "UPDATE story_phase SET notes=:n, phase='visual', "
+                                        "updated_at=NOW() WHERE user_id=:u AND character_id=:c"
+                                    ),
+                                    {
+                                        "n": "cena: preparacao_balada",
+                                        "u": uid,
+                                        "c": char_id,
+                                    },
+                                )
+                                await story._session.commit()
+                            except Exception as e2:
+                                print(f"[CENA] story notes: {e2}", flush=True)
+                                try:
+                                    await story._session.rollback()
+                                except Exception:
+                                    pass
                         await message.answer(
-                            f"Drive album: {n} foto(s) indexada(s)."
+                            "Cena: se arrumando pra balada, bebendo e conversando "
+                            "como namorados. Manda a primeira mensagem ❤️"
                         )
+                    except Exception as e:
+                        print(f"[CENA] reset fail: {e}", flush=True)
+                        await message.answer("Não consegui resetar a cena agora ❤️")
                     await session.commit()
                     return
-                if "sync" in low:
-                    lim = 100
-                    caption_new = True
-                    # /album_drive_sync 200 fast  = indexa sem Gemini (rapido)
-                    # /album_drive_sync 50 = com tag IA (mais lento, cota)
-                    for p in parts[1:]:
-                        pl = p.lower()
-                        if p.isdigit():
-                            lim = min(int(p), 500)
-                        if pl in ("fast", "rapido", "rápido", "nocap", "no_caption"):
-                            caption_new = False
-                    mode = "com tag IA" if caption_new else "RAPIDO sem tag (so indexa)"
+
+                if low.startswith("/album_drive") or low.startswith("/drive"):
+                    if not self.drive_album_service:
+                        await message.answer(
+                            "Drive desligado.\n"
+                            "Configure:\n"
+                            "DRIVE_ALBUM_ENABLED=true\n"
+                            "GOOGLE_DRIVE_FOLDER_ID=...\n"
+                            "GOOGLE_SERVICE_ACCOUNT_JSON={...}"
+                        )
+                        await session.commit()
+                        return
+                    parts = text.strip().split()
+                    if low in (
+                        "/album_drive",
+                        "/drive",
+                        "/album_drive_stats",
+                        "/drive_stats",
+                    ):
+                        st = None
+                        if hasattr(self.drive_album_service, "stats"):
+                            try:
+                                st = await self.drive_album_service.stats()
+                            except Exception as e:
+                                print(f"[DRIVE] stats fail: {e}", flush=True)
+                        if st:
+                            await message.answer(
+                                "📁 Drive album\n"
+                                f"• Indexadas: {st.get('total', 0)}\n"
+                                f"• Com tag (IA): {st.get('tagged', 0)} "
+                                f"({st.get('pct', 0)}%)\n"
+                                f"• Sem tag ainda: {st.get('untagged', 0)}\n\n"
+                                "Tags sobem sozinhas (~15/ciclo). "
+                                "Ou force: /album_drive_tag 30"
+                            )
+                        else:
+                            n = await self.drive_album_service.count()
+                            await message.answer(
+                                f"Drive album: {n} foto(s) indexada(s)."
+                            )
+                        await session.commit()
+                        return
+                    if "sync" in low:
+                        lim = 100
+                        caption_new = True
+                        for p in parts[1:]:
+                            pl = p.lower()
+                            if p.isdigit():
+                                lim = min(int(p), 500)
+                            if pl in ("fast", "rapido", "rápido", "nocap", "no_caption"):
+                                caption_new = False
+                        mode = (
+                            "com tag IA"
+                            if caption_new
+                            else "RAPIDO sem tag (so indexa)"
+                        )
+                        await message.answer(
+                            f"Sincronizando ate {lim} fotos NOVAS do Drive ({mode})..."
+                        )
+                        res = await self.drive_album_service.sync(
+                            limit=lim, caption_new=caption_new
+                        )
+                        await message.answer(
+                            f"Drive sync ok\n"
+                            f"added={res.get('added')} skipped={res.get('skipped')}\n"
+                            f"captioned={res.get('captioned')}\n"
+                            f"total={res.get('total')}"
+                        )
+                        await session.commit()
+                        return
+                    if "tag" in low:
+                        lim = 20
+                        for p in parts[1:]:
+                            if p.isdigit():
+                                lim = min(int(p), 50)
+                        await message.answer(f"Tagueando ate {lim} fotos do Drive...")
+                        n = await self.drive_album_service.backfill_captions(limit=lim)
+                        await message.answer(f"Drive tags: {n} foto(s).")
+                        await session.commit()
+                        return
                     await message.answer(
-                        f"Sincronizando ate {lim} fotos NOVAS do Drive ({mode})... "
-                        f"Fotos ja indexadas sao puladas. Aguarde."
-                    )
-                    res = await self.drive_album_service.sync(
-                        limit=lim, caption_new=caption_new
-                    )
-                    await message.answer(
-                        f"Drive sync: ok={res.get('ok')}\n"
-                        f"listadas={res.get('listed') or res.get('scanned')}\n"
-                        f"novas={res.get('added')}\n"
-                        f"puladas(ja no banco)={res.get('skipped')}\n"
-                        f"captioned={res.get('captioned')}\n"
-                        f"total no banco={res.get('total')}\n"
-                        f"paginas={res.get('pages')}\n"
-                        f"err={res.get('error')}"
+                        "Comandos Drive:\n"
+                        "/album_drive — total indexado\n"
+                        "/album_drive_sync 100 — indexa ate 100 NOVAS + tag IA\n"
+                        "/album_drive_sync 300 fast — indexa ate 300 NOVAS SEM tag\n"
+                        "/album_drive_tag 30 — gera captions nas que faltam\n"
+                        "Repita o sync ate total = fotos da pasta.\n"
+                        "(Auto ~15 min: indexa NOVAS; depois tagueia aos poucos)"
                     )
                     await session.commit()
                     return
-                if "tag" in low:
-                    lim = 20
-                    for p in parts[1:]:
-                        if p.isdigit():
-                            lim = min(int(p), 50)
-                    await message.answer(f"Tagueando ate {lim} fotos do Drive...")
-                    n = await self.drive_album_service.backfill_captions(limit=lim)
-                    await message.answer(f"Drive tags: {n} foto(s).")
-                    await session.commit()
-                    return
-                await message.answer(
-                    "Comandos Drive:\n"
-                    "/album_drive — total indexado\n"
-                    "/album_drive_sync 100 — indexa ate 100 NOVAS + tag IA\n"
-                    "/album_drive_sync 300 fast — indexa ate 300 NOVAS SEM tag (rapido)\n"
-                    "/album_drive_tag 30 — gera captions nas que faltam\n"
-                    "Repita o sync ate total = fotos da pasta.\n"
-                    "(Auto a cada ~15 min: batch de NOVAS)"
-                )
-                await session.commit()
-                return
 
             print(
                 f"[TelegramApp] handle user={message.from_user.id} "
