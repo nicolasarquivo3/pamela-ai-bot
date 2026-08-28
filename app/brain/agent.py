@@ -195,6 +195,25 @@ class AgentBrain:
                 scene,
             )
 
+        # "Quero"/"Sim" apos ela oferecer ver/foto -> trata como pedido de imagem
+        try:
+            _ctx_peek = await self.context_manager.build(
+                user.id, character_id, query=text
+            )
+        except Exception:
+            _ctx_peek = None
+        if _ctx_peek and self._user_wants_offered_photo(text, _ctx_peek):
+            scene = build_image_scene(
+                "foto no momento da conversa; usuario confirmou que quer ver",
+                user_id=user.id,
+                character_id=character_id,
+            )
+            return await self._handle_image_request(
+                user.id,
+                character_id,
+                scene,
+            )
+
         context = await self.context_manager.build(
             user.id,
             character_id,
@@ -233,7 +252,7 @@ class AgentBrain:
         )
 
         # Foto: placeholder [foto] OU contexto de provocacao/look
-        need_photo = force_photo or self._should_send_contextual_photo(text, reply)
+        need_photo = force_photo or self._should_send_contextual_photo(text, reply, context)
         if need_photo:
             if force_photo:
                 print("[PHOTO-DECIDE] sim (LLM escreveu [foto] -> gera real)", flush=True)
@@ -859,6 +878,18 @@ Essa resposta deve ser evitada.
 
     # Momentos em que faz sentido ela MANDAR foto sozinha (provocar / mostrar)
     PHOTO_TEASE_PATTERNS = (
+        r"\bolha\s+bem\b",
+        r"\bolha\s+(s[oó]\s+)?pra\s+(isso|c[aá]mera|mim)\b",
+        r"\bt[aá]\s+gostando\s+do\s+que\s+v[eê]\b",
+        r"\bdo\s+que\s+v[eê]\b",
+        r"\bo\s+que\s+v[eê]\b",
+        r"\bquer\s+ver\b",
+        r"\bquer\s+(que\s+)?eu\s+(te\s+)?mostre\b",
+        r"\bvou\s+te\s+mostrar\b",
+        r"\bte\s+mostro\b",
+        r"\bmando\s+(a\s+)?foto\b",
+        r"\bfoto\s+(pra|para)\s+voc[eê]\b",
+
         r"\bquer\s+(ver\s+)?(uma\s+)?foto\b",
         r"\bquero\s+te\s+mandar\s+(uma\s+)?foto\b",
         r"\bte\s+mando\s+(uma\s+)?foto\b",
@@ -893,11 +924,36 @@ Essa resposta deve ser evitada.
         r"\bme\s+manda\s+(uma\s+)?(foto|selfie|essas\s+fotos?)\b",
         r"\bmanda\s+(uma\s+)?(foto|selfie)\b",
         r"\bme\s+envia\s+(uma\s+)?(foto|selfie)\b",
-        r"\bquero\s+ver\s+(voc[eê]|uma\s+foto|seu\s+look)\b",
+        r"\bquero\s+ver\s+(voc[eê]|uma\s+foto|seu\s+look|sim)?\b",
         r"\bme\s+mostra\s+(voc[eê]|uma\s+foto|o\s+look)\b",
         r"\bfoto\s+(sua|agora|ai|a[ií])\b",
         r"\bshelfie\b",
         r"\bselfie\b",
+        r"\bquero\s+ver\b",
+        r"\bquero\s+sim\b",
+        r"\bme\s+mostra\b",
+        r"\bmostra\s+ai\b",
+        r"\bmanda\s+ai\b",
+        r"\bmanda\s+ent[aã]o\b",
+    )
+
+    # Respostas curtas a "quer ver?" / "quer foto?"
+    USER_AFFIRM_PHOTO = re.compile(
+        r"(?i)^\s*("
+        r"sim|quero|quero\s+sim|quero\s+ver|pode|manda|mostra|"
+        r"claro|obvio|óbvio|uhum|ahm|go|yes|s+|ss+|sss+"
+        r")\s*[!?.❤️🔥😈]*\s*$"
+    )
+
+    ASSISTANT_PHOTO_OFFER = re.compile(
+        r"(?is)("
+        r"quer\s+(ver|uma\s+foto|que\s+eu\s+mostre)|"
+        r"quer\s+que\s+eu\s+te\s+(mostre|mande)|"
+        r"posso\s+te\s+(mostrar|mandar)|"
+        r"vou\s+te\s+(mostrar|mandar)|"
+        r"te\s+mostro|te\s+mando\s+(uma\s+)?foto|"
+        r"quer\s+ver\s+(eu|isso|aqui)"
+        r")"
     )
 
 
@@ -947,6 +1003,11 @@ Essa resposta deve ser evitada.
         """
         text = (reply or "").strip()
         want = False
+        # se a fala ja "mostra" algo visual, gera foto
+        for pat in getattr(self, "PHOTO_TEASE_PATTERNS", ()):
+            if re.search(pat, text, re.I):
+                want = True
+                break
         # [foto] / [imagem] no inicio ou sozinho
         if re.search(r"\[\s*foto\s*\]|\[\s*imagem\s*\]|\[\s*photo\s*\]", text, re.I):
             want = True
@@ -970,7 +1031,48 @@ Essa resposta deve ser evitada.
             text = ""
         return text, want
 
-    def _should_send_contextual_photo(self, user_text: str, reply_text: str) -> bool:
+
+    def _user_wants_offered_photo(self, user_text: str, context: dict | None) -> bool:
+        """Sim/Quero curto depois dela oferecer foto/mostrar."""
+        ut = (user_text or "").strip()
+        if not ut or not getattr(self, "USER_AFFIRM_PHOTO", None):
+            return False
+        if not self.USER_AFFIRM_PHOTO.match(ut):
+            return False
+        msgs = (context or {}).get("messages") or []
+        # ultimas falas da assistente
+        for m in reversed(msgs[-8:]):
+            if (m.get("role") or "") not in ("assistant", "model"):
+                continue
+            content = m.get("content") or ""
+            if self.ASSISTANT_PHOTO_OFFER.search(content):
+                print(
+                    f"[PHOTO-DECIDE] sim (usuario afirmou oferta de foto: {ut!r})",
+                    flush=True,
+                )
+                return True
+            break  # so a ultima fala dela
+        # se a ultima msg dela tem tease de foto
+        for m in reversed(msgs[-8:]):
+            if (m.get("role") or "") not in ("assistant", "model"):
+                continue
+            content = (m.get("content") or "").lower()
+            if re.search(
+                r"quer\s+ver|foto|mostrar|olha\s+(eu|aqui|bem)",
+                content,
+            ):
+                print(
+                    f"[PHOTO-DECIDE] sim (afirmacao apos tease: {ut!r})",
+                    flush=True,
+                )
+                return True
+            break
+        return False
+
+    def _should_send_contextual_photo(self, user_text: str, reply_text: str, context: dict | None = None) -> bool:
+        # "Quero"/"Sim" depois de "quer ver?"
+        if self._user_wants_offered_photo(user_text, context):
+            return True
         """
         Foto só quando faz sentido na cena:
         - ela provoca / descreve look / diz que vai mostrar
