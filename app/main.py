@@ -666,7 +666,30 @@ async def main():
     except Exception as e:
         print(f"[TelegramApp] set_webhook fail: {e}", flush=True)
 
-    app = create_web_app(telegram_app)
+    # create_web_app: aceita (telegram_app) ou keyword
+    try:
+        import inspect as _ins_web
+        _sig = _ins_web.signature(create_web_app)
+        _params = list(_sig.parameters.keys())
+    except Exception:
+        _params = []
+    try:
+        if _params and _params[0] in ("telegram_app", "bot_app", "tg"):
+            app = create_web_app(telegram_app)
+        elif "telegram_app" in _params:
+            app = create_web_app(telegram_app=telegram_app)
+        elif len(_params) >= 2:
+            # assinatura antiga (algo, telegram_app)
+            app = create_web_app(None, telegram_app)
+        else:
+            app = create_web_app(telegram_app)
+    except TypeError as _te:
+        print(f"[WEB] create_web_app retry: {_te}", flush=True)
+        try:
+            app = create_web_app(telegram_app=telegram_app)
+        except TypeError:
+            app = create_web_app(None, telegram_app)
+
     port = int(os.getenv("PORT") or getattr(settings, "port", None) or 10000)
     print(f"[WEB] Starting server on port {port}", flush=True)
 
