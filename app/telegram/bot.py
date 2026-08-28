@@ -176,22 +176,32 @@ class TelegramApp:
                     await session.commit()
                     return
                 if "sync" in low:
-                    lim = 50
+                    lim = 100
+                    caption_new = True
+                    # /album_drive_sync 200 fast  = indexa sem Gemini (rapido)
+                    # /album_drive_sync 50 = com tag IA (mais lento, cota)
                     for p in parts[1:]:
+                        pl = p.lower()
                         if p.isdigit():
-                            lim = min(int(p), 200)
+                            lim = min(int(p), 500)
+                        if pl in ("fast", "rapido", "rápido", "nocap", "no_caption"):
+                            caption_new = False
+                    mode = "com tag IA" if caption_new else "RAPIDO sem tag (so indexa)"
                     await message.answer(
-                        f"Sincronizando ate {lim} fotos do Drive (IA tag)... aguarde."
+                        f"Sincronizando ate {lim} fotos NOVAS do Drive ({mode})... "
+                        f"Fotos ja indexadas sao puladas. Aguarde."
                     )
                     res = await self.drive_album_service.sync(
-                        limit=lim, caption_new=True
+                        limit=lim, caption_new=caption_new
                     )
                     await message.answer(
-                        f"Drive sync: ok={res.get('ok')} "
-                        f"scanned={res.get('scanned')} "
-                        f"added={res.get('added')} "
-                        f"captioned={res.get('captioned')} "
-                        f"total={res.get('total')} "
+                        f"Drive sync: ok={res.get('ok')}\n"
+                        f"listadas={res.get('listed') or res.get('scanned')}\n"
+                        f"novas={res.get('added')}\n"
+                        f"puladas(ja no banco)={res.get('skipped')}\n"
+                        f"captioned={res.get('captioned')}\n"
+                        f"total no banco={res.get('total')}\n"
+                        f"paginas={res.get('pages')}\n"
                         f"err={res.get('error')}"
                     )
                     await session.commit()
@@ -208,10 +218,12 @@ class TelegramApp:
                     return
                 await message.answer(
                     "Comandos Drive:\n"
-                    "/album_drive — total\n"
-                    "/album_drive_sync 50 — forcar sync agora\n"
-                    "/album_drive_tag 20 — so captions\n"
-                    "(Auto: a cada ~15 min o bot pega fotos NOVAS do Drive e tagueia sozinho)"
+                    "/album_drive — total indexado\n"
+                    "/album_drive_sync 100 — indexa ate 100 NOVAS + tag IA\n"
+                    "/album_drive_sync 300 fast — indexa ate 300 NOVAS SEM tag (rapido)\n"
+                    "/album_drive_tag 30 — gera captions nas que faltam\n"
+                    "Repita o sync ate total = fotos da pasta.\n"
+                    "(Auto a cada ~15 min: batch de NOVAS)"
                 )
                 await session.commit()
                 return
