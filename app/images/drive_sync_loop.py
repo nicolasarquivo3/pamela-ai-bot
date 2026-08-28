@@ -1,8 +1,10 @@
 """
-Loop Drive: index + tag automatico.
+Drive index + auto-tag SOMENTE no ocio.
 
-- Chat tem prioridade, mas tag NAO fica eternamente adiada.
-- Tag roda mesmo com muitas fotos novas (senão nunca tagueia pastas grandes).
+- Enquanto o usuario conversa: NAO tagueia (nao atrasa resposta).
+- Quando quieto (sem msg ha IDLE_SECONDS): tagueia lote.
+- Render free dorme sem HTTP: use UptimeRobot em GET /cron/drive_tag
+  a cada 5-10 min (acorda o server e tagueia no ocio).
 """
 from __future__ import annotations
 
@@ -15,19 +17,19 @@ class DriveSyncLoop:
     def __init__(
         self,
         drive_album_service,
-        interval_seconds: int = 600,
+        interval_seconds: int = 300,
         batch: int = 40,
-        tag_batch: int = 8,
+        tag_batch: int = 12,
         enabled: bool = True,
+        idle_seconds: int = 90,
     ):
         self.drive = drive_album_service
-        self.interval = max(120, int(interval_seconds))
+        self.interval = max(90, int(interval_seconds))
         self.batch = max(1, min(int(batch), 100))
-        self.tag_batch = max(0, min(int(tag_batch), 20))
+        self.tag_batch = max(0, min(int(tag_batch), 30))
         self.enabled = bool(enabled) and drive_album_service is not None
+        self.idle_seconds = max(45, int(idle_seconds))
         self._task = None
-        self._last_tag_at = 0.0
-        self._skip_busy_streak = 0
 
     async def start(self):
         if not self.enabled:
@@ -35,16 +37,21 @@ class DriveSyncLoop:
             return
         if self._task and not self._task.done():
             return
+        if hasattr(self.drive, "_ensure_caption_fn"):
+            try:
+                self.drive._ensure_caption_fn()
+            except Exception as e:
+                print(f"[DriveSync] ensure caption: {e}", flush=True)
         self._task = asyncio.create_task(self._run(), name="drive-sync")
         print(
-            f"[DriveSync] iniciado interval={self.interval}s "
-            f"index_batch={self.batch} tag_batch={self.tag_batch} "
-            f"(tag sempre tenta se houver untagged)",
+            f"[DriveSync] ocio-only interval={self.interval}s "
+            f"idle>={self.idle_seconds}s tag_batch={self.tag_batch} "
+            f"(NAO tagueia durante conversa)",
             flush=True,
         )
 
     async def _run(self):
-        await asyncio.sleep(45)
+        await asyncio.sleep(30)
         while True:
             try:
                 await self._one_cycle()
@@ -56,129 +63,107 @@ class DriveSyncLoop:
                 gc.collect()
             except Exception:
                 pass
+            # dorme em fatias: se usuario falar, so espera
             left = self.interval
             while left > 0:
-                await asyncio.sleep(min(20, left))
-                left -= 20
+                await asyncio.sleep(min(15, left))
+                left -= 15
+                if await self._user_active():
+                    # conversa rolando — espera ficar quieto
+                    await self._wait_until_idle()
 
-    async def _chat_busy_strict(self) -> bool:
-        """So bloqueia se mensagem AGORA em processamento."""
+    async def _user_active(self) -> bool:
         try:
-            from app.runtime_flags import telegram_busy
-            return bool(telegram_busy())
+            from app.runtime_flags import telegram_busy, recently_active
+            if telegram_busy():
+                return True
+            # quieto so se nao falou ha idle_seconds
+            return recently_active(float(self.idle_seconds))
         except Exception:
             return False
 
-    async def _chat_recent(self) -> bool:
-        try:
-            from app.runtime_flags import recently_active
-            return bool(recently_active(25))  # 25s so — nao 90
-        except Exception:
-            return False
+    async def _wait_until_idle(self):
+        print("[DriveSync] usuario ativo — pausa tag; esperando ocio...", flush=True)
+        for _ in range(120):  # ate ~30 min
+            await asyncio.sleep(15)
+            if not await self._user_active():
+                print("[DriveSync] ocio detectado — pode taguear", flush=True)
+                return
+        print("[DriveSync] ainda ativo apos espera — segue ciclo leve", flush=True)
 
     async def _one_cycle(self):
         if not self.drive or not await self.drive.available():
             print("[DriveSync] drive indisponivel", flush=True)
             return
 
-        # caption_fn?
+        # NUNCA tagueia se usuario em conversa
+        if await self._user_active():
+            print(
+                f"[DriveSync] skip tag (usuario falou ha <{self.idle_seconds}s)",
+                flush=True,
+            )
+            # index metadata e leve e pode rodar? melhor nao competir
+            return
+
+        if hasattr(self.drive, "_ensure_caption_fn"):
+            self.drive._ensure_caption_fn()
+
         cfn = getattr(self.drive, "_caption_fn", None)
         print(
-            f"[DriveSync] ciclo start caption_fn={'sim' if cfn else 'NAO'} "
-            f"vision={getattr(self.drive, 'use_vision_caption', None)}",
+            f"[DriveSync] OCIO ciclo tag caption_fn={'SIM' if cfn else 'NAO'}",
             flush=True,
         )
 
-        # 1) index (pode rodar mesmo com chat recente; so pausa se inflight)
-        if await self._chat_busy_strict():
-            self._skip_busy_streak += 1
-            print(
-                f"[DriveSync] index adiado (msg em andamento) "
-                f"streak={self._skip_busy_streak}",
-                flush=True,
-            )
-            # se stuck > 10 ciclos, ignora flag (bug leave)
-            if self._skip_busy_streak < 10:
-                # ainda tenta so tag se quieto? skip all
-                return
-            print("[DriveSync] streak alto — força ciclo (possível lock stuck)", flush=True)
-            try:
-                from app import runtime_flags as rf
-                rf.telegram_inflight = 0
-            except Exception:
-                pass
-        else:
-            self._skip_busy_streak = 0
-
-        res = await self.drive.sync(limit=self.batch, caption_new=False)
-        added = int(res.get("added") or 0)
-        total = res.get("total")
-        print(
-            f"[DriveSync] index novas={added} skipped={res.get('skipped')} total={total}",
-            flush=True,
-        )
-        await asyncio.sleep(0.5)
-        gc.collect()
-
-        if self.tag_batch <= 0:
-            print("[DriveSync] tag_batch=0 — tag desligado", flush=True)
-            return
-
-        if not cfn and not getattr(self.drive, "use_vision_caption", False):
-            print(
-                "[DriveSync] SEM caption_fn — tag impossivel. "
-                "Wire album_service._auto_caption_vision no main.",
-                flush=True,
-            )
-            return
-
-        if not cfn:
-            print(
-                "[DriveSync] caption_fn=None — tentando backfill mesmo assim "
-                "(pode falhar se service exigir fn)",
-                flush=True,
-            )
-
-        # 2) TAG — nao pular por "muitas novas"
-        if await self._chat_busy_strict():
-            print("[DriveSync] tag adiada: msg em andamento", flush=True)
-            return
-
-        # stats untagged
-        untagged = None
+        # 1) index sem caption (leve)
         try:
-            st = await self.drive.stats()
-            untagged = st.get("untagged")
+            res = await self.drive.sync(limit=self.batch, caption_new=False)
             print(
-                f"[DriveSync] stats total={st.get('total')} "
-                f"tagged={st.get('tagged')} untagged={untagged}",
+                f"[DriveSync] index added={res.get('added')} total={res.get('total')}",
                 flush=True,
             )
         except Exception as e:
-            print(f"[DriveSync] stats fail: {e}", flush=True)
+            print(f"[DriveSync] index err: {e}", flush=True)
 
-        if untagged is not None and int(untagged) <= 0:
-            print("[DriveSync] nada pra taguear", flush=True)
+        # re-check idle (index pode ter demorado)
+        if await self._user_active():
+            print("[DriveSync] usuario voltou — aborta tag", flush=True)
             return
 
+        if self.tag_batch <= 0:
+            return
+        if not cfn:
+            print("[DriveSync] SEM caption_fn / GEMINI keys", flush=True)
+            return
+
+        try:
+            st = await self.drive.stats()
+            untagged = int(st.get("untagged") or 0)
+            print(
+                f"[DriveSync] stats tagged={st.get('tagged')} untagged={untagged}",
+                flush=True,
+            )
+            if untagged <= 0:
+                print("[DriveSync] nada pra taguear", flush=True)
+                return
+        except Exception as e:
+            print(f"[DriveSync] stats: {e}", flush=True)
+
+        # tag em fatias de 3, checando ocio entre elas
         done = 0
         target = self.tag_batch
-        for i in range(target):
-            if await self._chat_busy_strict():
-                print(f"[DriveSync] tag interrompida apos {done} (chat)", flush=True)
+        while done < target:
+            if await self._user_active():
+                print(f"[DriveSync] tag interrompida (usuario) done={done}", flush=True)
                 break
             try:
-                n = await self.drive.backfill_captions(limit=1)
+                n = await self.drive.backfill_captions(limit=3)
             except Exception as e:
-                print(f"[DriveSync] backfill erro: {e}", flush=True)
+                print(f"[DriveSync] backfill err: {e}", flush=True)
                 break
             n = int(n or 0)
             done += n
             if n <= 0:
-                print(f"[DriveSync] backfill retornou 0 (fim ou sem fn)", flush=True)
                 break
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             gc.collect()
-
-        self._last_tag_at = time.time()
-        print(f"[DriveSync] auto-tag done={done}/{target}", flush=True)
+        print(f"[DriveSync] auto-tag ocio done={done}/{target}", flush=True)
