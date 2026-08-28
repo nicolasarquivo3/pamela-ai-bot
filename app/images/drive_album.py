@@ -498,9 +498,11 @@ class DriveAlbumService:
         }
 
     async def backfill_captions(self, limit: int = 20) -> int:
+        """Gera caption IA so para fotos que ainda nao tem legenda."""
         if not self._caption_fn:
+            print("[DRIVE] backfill: sem caption_fn", flush=True)
             return 0
-        own = self._own_session()
+        own = self._own_session() if hasattr(self, "_own_session") else None
         if own is not None:
             async with own as session:
                 old = self.session
@@ -516,30 +518,48 @@ class DriveAlbumService:
         r = await self.session.execute(
             text(
                 """
-                SELECT id, drive_file_id FROM album_drive_photos
-                WHERE caption IS NULL OR caption = ''
-                ORDER BY id DESC LIMIT :lim
+                SELECT id, drive_file_id, name FROM album_drive_photos
+                WHERE caption IS NULL OR TRIM(COALESCE(caption, '')) = ''
+                ORDER BY id ASC
+                LIMIT :lim
                 """
             ),
-            {"lim": int(limit)},
+            {"lim": max(1, min(int(limit), 50))},
         )
-        rows = list(r.mappings().all())
+        rows = list(r.fetchall())
         done = 0
         for row in rows:
-            raw = await self.download(row["drive_file_id"])
-            if not raw:
-                continue
-            cap = await self._caption_fn(raw)
-            if not cap:
-                continue
-            tags = " ".join(sorted(_tokenize(cap))[:32])
-            await self.session.execute(
-                text(
-                    "UPDATE album_drive_photos SET caption=:c, tags=:t WHERE id=:id"
-                ),
-                {"c": cap, "t": tags, "id": row["id"]},
-            )
+            pid, fid, name = row[0], row[1], (row[2] or "")
+            try:
+                raw = None
+                if hasattr(self, "download_bytes"):
+                    raw = await self.download_bytes(fid)
+                if not raw and hasattr(self, "download"):
+                    raw = await self.download(fid)
+                if not raw:
+                    print(f"[DRIVE] backfill skip no bytes {name[:40]!r}", flush=True)
+                    continue
+                cap = await self._caption_fn(raw) or ""
+                if not cap.strip():
+                    continue
+                tags = " ".join(sorted(_tokenize(f"{name} {cap}"))[:32])
+                await self.session.execute(
+                    text(
+                        "UPDATE album_drive_photos SET caption=:c, tags=:t, "
+                        "synced_at=NOW() WHERE id=:id"
+                    ),
+                    {"c": cap[:2000], "t": tags[:1000], "id": pid},
+                )
+                done += 1
+                print(
+                    f"[DRIVE] backfill {done}/{limit} {name[:40]!r} -> {cap[:50]!r}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(f"[DRIVE] backfill fail id={pid}: {e}", flush=True)
+        try:
             await self.session.commit()
-            done += 1
-            print(f"[DRIVE] backfill id={row['id']} cap={cap[:50]!r}", flush=True)
+        except Exception:
+            await self.session.rollback()
         return done
+
