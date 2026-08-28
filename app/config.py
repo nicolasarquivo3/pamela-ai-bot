@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     google_service_account_json: str | None = Field(default=None, validation_alias=AliasChoices("GOOGLE_SERVICE_ACCOUNT_JSON", "google_service_account_json"))
     drive_auto_sync: bool = True  # tag automatica de fotos novas no Drive
     drive_sync_interval_seconds: int = 900  # 15 min
-    drive_sync_batch: int = 30  # fotos por ciclo (cota Gemini)
+    drive_sync_batch: int = 50  # fotos por ciclo (cota Gemini)
 
 
 
