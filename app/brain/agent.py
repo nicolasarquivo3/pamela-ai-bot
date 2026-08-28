@@ -69,9 +69,30 @@ class AgentBrain:
         r"\bquero\s+ver\s+(como\s+você\s+está|como\s+voce\s+esta)\b",
         r"\bquero\s+ver\s+você\s+agora\b",
         r"\bquero\s+ver\s+voce\s+agora\b",
+
         r"\bquero\s+te\s+ver\b",
         r"\bquero\s+ver\s+você\b",
         r"\bquero\s+ver\s+voce\b",
+
+        # DEIXA EU TE VER / VER A NAMORADA
+        r"\bdeixa\s+eu\s+te\s+ver\b",
+        r"\bdeixe\s+eu\s+te\s+ver\b",
+        r"\bdeixa\s+eu\s+ver\s+(você|voce|vc)\b",
+        r"\bdeixa\s+eu\s+ver\b",
+        r"\bme\s+deixa\s+te\s+ver\b",
+        r"\bme\s+deixa\s+ver\s+(você|voce|vc)?\b",
+        r"\bposso\s+te\s+ver\b",
+        r"\bposso\s+ver\s+(você|voce|vc)\b",
+        r"\bdeixa\s+eu\s+olhar\b",
+        r"\bdeixa\s+eu\s+ver\s+(a[ií]|agora|como\s+(você|voce)\s+est[aá])\b",
+        r"\bmostra\s+(você|voce|vc)\s+(pra\s+mim|agora|a[ií])\b",
+        r"\bmostra\s+pra\s+mim\b",
+        r"\bme\s+mostra\s+(você|voce|vc)\b",
+        r"\bquero\s+te\s+ver\s+(agora|a[ií])\b",
+        r"\bte\s+ver\s+(agora|a[ií])\b",
+        r"\bver\s+você\s+(agora|a[ií])\b",
+        r"\bver\s+voce\s+(agora|a[ií])\b",
+        r"\bolha\s+(pra\s+mim|aqui)\b",
 
         # ---------------------------------------------------------
         # MOSTRAR A PERSONAGEM
@@ -357,6 +378,7 @@ class AgentBrain:
         return out
 
     def _is_image_request(self, text):
+        # pedido explicito de ver/foto
         normalized = text.lower().strip()
 
         if not normalized:
@@ -1034,6 +1056,13 @@ Essa resposta deve ser evitada.
     )
 
     USER_PHOTO_CUE_PATTERNS = (
+        r"\bdeixa\s+eu\s+te\s+ver\b",
+        r"\bdeixa\s+eu\s+ver\b",
+        r"\bme\s+deixa\s+(te\s+)?ver\b",
+        r"\bposso\s+te\s+ver\b",
+        r"\bmostra\s+pra\s+mim\b",
+        r"\bquero\s+te\s+ver\b",
+
         r"\bme\s+manda\s+(uma\s+)?(foto|selfie|essas\s+fotos?)\b",
         r"\bmanda\s+(uma\s+)?(foto|selfie)\b",
         r"\bme\s+envia\s+(uma\s+)?(foto|selfie)\b",
@@ -1315,12 +1344,9 @@ Essa resposta deve ser evitada.
 
         for pat in self.USER_PHOTO_CUE_PATTERNS:
             if re.search(pat, u, re.IGNORECASE):
-                # usuário puxou visual → ~55% de chance de ela mandar
-                if random.random() < 0.35:
-                    print(f"[PHOTO-DECIDE] sim (user cue {pat!r})", flush=True)
-                    return True
-                print(f"[PHOTO-DECIDE] nao (user cue mas sorteou nao)", flush=True)
-                return False
+                # pedido visual claro → SEMPRE foto (sem sorteio)
+                print(f"[PHOTO-DECIDE] sim (user cue {pat!r})", flush=True)
+                return True
 
         # Surpresa rara (provocação espontânea)
         if surprise > 0 and random.random() < surprise:
