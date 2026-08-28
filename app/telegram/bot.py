@@ -214,13 +214,148 @@ class TelegramApp:
                 await session.commit()
                 return
 
+
+                if low in (
+                    "/reset",
+                    "/reset_memoria",
+                    "/reset_rp",
+                    "/recomecar",
+                    "/recomeçar",
+                ):
+                    try:
+                        from sqlalchemy import text as sa_text
+                        from app.brain.memory_reset import MemoryResetService
+                    except Exception:
+                        try:
+                            from app.memory_reset import MemoryResetService
+                        except Exception:
+                            MemoryResetService = None  # type: ignore
+
+                    try:
+                        tg_id = int(message.from_user.id)
+                        user = await self.agent.user_repository.get_or_create(tg_id)
+                        uid = int(user.id)
+                        char_id = int(user.character_id or 1)
+
+                        # hard? /reset_memoria hard
+                        hard = "hard" in low or (
+                            len(text.split()) > 1
+                            and text.split()[1].lower() in ("hard", "tudo", "full")
+                        )
+
+                        stats = {}
+                        if MemoryResetService is not None:
+                            mrs = MemoryResetService(session)
+                            stats = await mrs.reset_user_narrative(
+                                uid,
+                                char_id,
+                                clear_long_term=hard,
+                            )
+                        else:
+                            # fallback SQL minimo
+                            for q in (
+                                "DELETE FROM event_memories WHERE user_id=:u AND character_id=:c",
+                                "DELETE FROM conversation_messages WHERE user_id=:u AND character_id=:c",
+                            ):
+                                try:
+                                    await session.execute(
+                                        __import__("sqlalchemy", fromlist=["text"]).text(q),
+                                        {"u": uid, "c": char_id},
+                                    )
+                                except Exception:
+                                    try:
+                                        await session.rollback()
+                                    except Exception:
+                                        pass
+                            try:
+                                await session.execute(
+                                    __import__("sqlalchemy", fromlist=["text"]).text(
+                                        """
+                                        INSERT INTO story_phase
+                                          (user_id, character_id, phase, intensity, notes, updated_at)
+                                        VALUES (:u,:c,'visual',0,'reset',NOW())
+                                        ON CONFLICT (user_id, character_id) DO UPDATE SET
+                                          phase='visual', intensity=0,
+                                          notes='reset', last_advance_at=NULL, updated_at=NOW()
+                                        """
+                                    ),
+                                    {"u": uid, "c": char_id},
+                                )
+                            except Exception as e:
+                                print(f"[RESET] story fallback: {e}", flush=True)
+
+                        # re-seed LTM core + cena balada
+                        ltm = getattr(self.agent, "long_term_memory_service", None)
+                        if ltm is not None:
+                            try:
+                                if hard or True:
+                                    await ltm.seed_defaults(uid, char_id)
+                                await ltm.set_current_scene(
+                                    uid,
+                                    char_id,
+                                    "NARRATIVA ATUAL (recomeço limpo): os dois estão se arrumando "
+                                    "para ir à balada. Ela se arruma bem gostosa; bebem e conversam "
+                                    "como namorados. Fase visual — ela com medo/receio, ousa pra "
+                                    "agradar ele; SEM sexo com outros como fato.",
+                                )
+                                await ltm.upsert(
+                                    uid,
+                                    char_id,
+                                    "Fase da noite: PREPARAÇÃO (arrumação + bebida + papo).",
+                                    kind="fact",
+                                    key="cena_atual_fase",
+                                    importance=9,
+                                )
+                            except Exception as e:
+                                print(f"[RESET] ltm seed: {e}", flush=True)
+
+                        story = getattr(self.agent, "story_phase_service", None)
+                        if story is not None:
+                            try:
+                                await story.get(uid, char_id)
+                            except Exception:
+                                pass
+
+                        # limpa safety strikes do agent
+                        try:
+                            if hasattr(self.agent, "_gemini_safety_strikes"):
+                                self.agent._gemini_safety_strikes.pop(uid, None)
+                        except Exception:
+                            pass
+
+                        await session.commit()
+                        await message.answer(
+                            "🔄 Reset feito.\n"
+                            f"• msgs/eventos limpos: {stats}\n"
+                            "• fase: visual (lenta)\n"
+                            "• cena: se arrumando pra balada\n\n"
+                            "Pode mandar a primeira mensagem, amor ❤️\n"
+                            "(Opcional: apague o histórico no Telegram também.)\n"
+                            "Hard: /reset_memoria hard"
+                        )
+                        print(
+                            f"[RESET] user={uid} tg={tg_id} hard={hard} stats={stats}",
+                            flush=True,
+                        )
+                    except Exception as e:
+                        print(f"[RESET] fail: {e}", flush=True)
+                        try:
+                            await session.rollback()
+                        except Exception:
+                            pass
+                        await message.answer(
+                            f"Não consegui resetar agora: {e}\nTenta de novo em 1 min ❤️"
+                        )
+                    return
+
                 if low in ("/cena_balada", "/reset_cena", "/preparar_balada"):
                     try:
                         from sqlalchemy import text as sa_text
                         ltm = getattr(self.agent, "long_term_memory_service", None)
                         story = getattr(self.agent, "story_phase_service", None)
-                        uid = int(message.from_user.id)
-                        char_id = 1
+                        user = await self.agent.user_repository.get_or_create(int(message.from_user.id))
+                        uid = int(user.id)
+                        char_id = int(user.character_id or 1)
                         scene = (
                             "NARRATIVA ATUAL (recomeço): os dois estão se arrumando para ir à balada. "
                             "Ela se arruma bem gostosa; bebem e conversam como namorados sobre a balada. "
