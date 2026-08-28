@@ -171,8 +171,25 @@ class TelegramApp:
                     "/album_drive_stats",
                     "/drive_stats",
                 ):
-                    n = await self.drive_album_service.count()
-                    await message.answer(f"Drive album: {n} foto(s) indexada(s).")
+                    st = None
+                    if hasattr(self.drive_album_service, "stats"):
+                        st = await self.drive_album_service.stats()
+                    if st:
+                        await message.answer(
+                            "📁 Drive album\n"
+                            f"• Indexadas: {st.get('total', 0)}\n"
+                            f"• Com tag (IA): {st.get('tagged', 0)} "
+                            f"({st.get('pct', 0)}%)\n"
+                            f"• Sem tag ainda: {st.get('untagged', 0)}\n"
+                            "\n"
+                            "Tags sobem sozinhas (~15/ciclo). "
+                            "Ou force: /album_drive_tag 30"
+                        )
+                    else:
+                        n = await self.drive_album_service.count()
+                        await message.answer(
+                            f"Drive album: {n} foto(s) indexada(s)."
+                        )
                     await session.commit()
                     return
                 if "sync" in low:
