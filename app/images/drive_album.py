@@ -154,7 +154,34 @@ class DriveAlbumService:
                     self.session = old
         return await self._sync_body(limit, caption_new)
 
+
+    async def download_bytes(self, file_id: str) -> bytes | None:
+        """Baixa bytes de um arquivo do Drive (service account)."""
+        try:
+            import io
+            from googleapiclient.http import MediaIoBaseDownload
+
+            svc = self._build_service()
+            req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
+            buf = io.BytesIO()
+            downloader = MediaIoBaseDownload(buf, req)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            data = buf.getvalue()
+            if data and len(data) > 100:
+                return data
+            return None
+        except Exception as e:
+            print(f"[DRIVE] download fail {file_id[:12]}: {e}", flush=True)
+            return None
+
     async def _sync_body(self, limit: int = 200, caption_new: bool = True) -> dict:
+        """
+        Indexa ate `limit` fotos NOVAS (ainda nao no banco).
+        Fotos ja indexadas sao puladas e NAO consomem a cota do limit.
+        Assim pastas grandes (milhares) vao enchendo a cada /album_drive_sync.
+        """
         await self.ensure_table()
         try:
             svc = self._build_service()
@@ -169,35 +196,54 @@ class DriveAlbumService:
         added = 0
         updated = 0
         captioned = 0
+        skipped = 0
         page_token = None
-        scanned = 0
+        listed = 0
+        # safety: max pages to avoid infinite
+        max_pages = 50
+        pages = 0
 
-        while scanned < limit:
-            page_size = min(100, limit - scanned)
-            resp = (
-                svc.files()
-                .list(
-                    q=q,
-                    spaces="drive",
-                    fields="nextPageToken, files(id, name, mimeType, size, modifiedTime)",
-                    pageSize=page_size,
-                    pageToken=page_token,
-                    orderBy="modifiedTime desc",
-                    supportsAllDrives=True,
-                    includeItemsFromAllDrives=True,
+        while added < limit and pages < max_pages:
+            pages += 1
+            page_size = 100
+            try:
+                resp = (
+                    svc.files()
+                    .list(
+                        q=q,
+                        spaces="drive",
+                        fields="nextPageToken, files(id, name, mimeType, size, modifiedTime)",
+                        pageSize=page_size,
+                        pageToken=page_token,
+                        orderBy="modifiedTime desc",
+                        supportsAllDrives=True,
+                        includeItemsFromAllDrives=True,
+                    )
+                    .execute()
                 )
-                .execute()
-            )
+            except Exception as e:
+                print(f"[DRIVE] list fail: {e}", flush=True)
+                return {
+                    "ok": False,
+                    "error": f"list:{e}",
+                    "added": added,
+                    "updated": updated,
+                    "captioned": captioned,
+                    "skipped": skipped,
+                    "listed": listed,
+                }
+
             files = resp.get("files") or []
             if not files:
                 break
+
             for f in files:
-                scanned += 1
+                listed += 1
                 fid = f["id"]
                 name = f.get("name") or ""
                 mime = f.get("mimeType") or "image/jpeg"
                 size = int(f.get("size") or 0)
-                # ja existe?
+
                 r = await self.session.execute(
                     text(
                         "SELECT id, caption FROM album_drive_photos "
@@ -206,84 +252,132 @@ class DriveAlbumService:
                     {"fid": fid},
                 )
                 row = r.mappings().first()
-                caption = ""
-                tags = ""
-                if row and (row.get("caption") or "").strip():
-                    # so atualiza synced
-                    await self.session.execute(
-                        text(
-                            "UPDATE album_drive_photos SET synced_at=NOW(), "
-                            "name=:n, mime_type=:m, size_bytes=:s "
-                            "WHERE drive_file_id=:fid"
-                        ),
-                        {"n": name, "m": mime, "s": size, "fid": fid},
-                    )
-                    updated += 1
-                else:
-                    if caption_new and self.use_vision_caption and self._caption_fn:
-                        raw = self._download_bytes(svc, fid)
-                        if raw and self._caption_fn:
-                            try:
+
+                if row is not None:
+                    # ja indexada: so toca se faltar caption e caption_new
+                    if (
+                        caption_new
+                        and self.use_vision_caption
+                        and self._caption_fn
+                        and not (row.get("caption") or "").strip()
+                        and added < limit
+                    ):
+                        caption = ""
+                        try:
+                            raw = await self.download_bytes(fid)
+                            if raw:
                                 caption = await self._caption_fn(raw) or ""
                                 if caption:
                                     captioned += 1
+                                    await self.session.execute(
+                                        text(
+                                            "UPDATE album_drive_photos SET caption=:c, "
+                                            "tags=:t, synced_at=NOW() "
+                                            "WHERE drive_file_id=:fid"
+                                        ),
+                                        {
+                                            "c": caption[:2000],
+                                            "t": " ".join(
+                                                sorted(_tokenize(f"{name} {caption}"))[
+                                                    :32
+                                                ]
+                                            ),
+                                            "fid": fid,
+                                        },
+                                    )
+                                    added += 1  # conta como trabalho do batch
                                     print(
-                                        f"[DRIVE] caption {name[:40]!r} -> {caption[:50]!r}",
+                                        f"[DRIVE] backfill cap {name[:40]!r} -> {caption[:50]!r}",
                                         flush=True,
                                     )
-                            except Exception as e:
-                                print(f"[DRIVE] caption fail: {e}", flush=True)
-                    tags = " ".join(sorted(_tokenize(f"{name} {caption}"))[:32])
-                    await self.session.execute(
-                        text(
-                            """
-                            INSERT INTO album_drive_photos
-                              (drive_file_id, name, mime_type, caption, tags, size_bytes)
-                            VALUES
-                              (:fid, :n, :m, :c, :t, :s)
-                            ON CONFLICT (drive_file_id) DO UPDATE SET
-                              name=EXCLUDED.name,
-                              caption=CASE
-                                WHEN EXCLUDED.caption<>'' THEN EXCLUDED.caption
-                                ELSE album_drive_photos.caption
-                              END,
-                              tags=CASE
-                                WHEN EXCLUDED.tags<>'' THEN EXCLUDED.tags
-                                ELSE album_drive_photos.tags
-                              END,
-                              synced_at=NOW()
-                            """
-                        ),
-                        {
-                            "fid": fid,
-                            "n": name,
-                            "m": mime,
-                            "c": caption,
-                            "t": tags,
-                            "s": size,
-                        },
-                    )
-                    added += 1
-                await self.session.commit()
-                if scanned >= limit:
+                        except Exception as e:
+                            print(f"[DRIVE] caption fail: {e}", flush=True)
+                    else:
+                        skipped += 1
+                    continue
+
+                # NOVA — indexar
+                if added >= limit:
                     break
+
+                caption = ""
+                tags = " ".join(sorted(_tokenize(name))[:32])
+                if caption_new and self.use_vision_caption and self._caption_fn:
+                    try:
+                        raw = await self.download_bytes(fid)
+                        if raw and self._caption_fn:
+                            caption = await self._caption_fn(raw) or ""
+                            if caption:
+                                captioned += 1
+                                tags = " ".join(
+                                    sorted(_tokenize(f"{name} {caption}"))[:32]
+                                )
+                                print(
+                                    f"[DRIVE] caption {name[:40]!r} -> {caption[:50]!r}",
+                                    flush=True,
+                                )
+                    except Exception as e:
+                        print(f"[DRIVE] caption fail: {e}", flush=True)
+
+                await self.session.execute(
+                    text(
+                        """
+                        INSERT INTO album_drive_photos
+                        (drive_file_id, name, mime_type, size_bytes, caption, tags, synced_at)
+                        VALUES (:fid, :n, :m, :s, :c, :t, NOW())
+                        ON CONFLICT (drive_file_id) DO UPDATE SET
+                          name=EXCLUDED.name,
+                          mime_type=EXCLUDED.mime_type,
+                          size_bytes=EXCLUDED.size_bytes,
+                          caption=CASE
+                            WHEN EXCLUDED.caption <> '' THEN EXCLUDED.caption
+                            ELSE album_drive_photos.caption
+                          END,
+                          tags=CASE
+                            WHEN EXCLUDED.tags <> '' THEN EXCLUDED.tags
+                            ELSE album_drive_photos.tags
+                          END,
+                          synced_at=NOW()
+                        """
+                    ),
+                    {
+                        "fid": fid,
+                        "n": name[:500],
+                        "m": mime[:120],
+                        "s": size,
+                        "c": (caption or "")[:2000],
+                        "t": tags[:1000],
+                    },
+                )
+                added += 1
+                print(f"[DRIVE] +nova {added}/{limit} {name[:50]!r}", flush=True)
+
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
+            if added >= limit:
+                break
 
-        print(
-            f"[DRIVE] sync scanned={scanned} added={added} "
-            f"updated={updated} captioned={captioned}",
-            flush=True,
-        )
-        return {
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+
+        total = await self.count()
+        out = {
             "ok": True,
-            "scanned": scanned,
+            "scanned": listed,
+            "listed": listed,
             "added": added,
             "updated": updated,
             "captioned": captioned,
-            "total": await self.count(),
+            "skipped": skipped,
+            "total": total,
+            "pages": pages,
         }
+        print(f"[DRIVE] sync done {out}", flush=True)
+        return out
+
 
     def _download_bytes(self, svc, file_id: str) -> bytes | None:
         try:

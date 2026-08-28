@@ -23,7 +23,7 @@ class DriveSyncLoop:
     ):
         self.drive = drive_album_service
         self.interval = max(120, int(interval_seconds))
-        self.batch = max(1, min(int(batch), 100))
+        self.batch = max(1, min(int(batch), 200))
         self.enabled = bool(enabled) and drive_album_service is not None
         self._task = None
 
