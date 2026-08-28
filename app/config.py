@@ -1,3 +1,4 @@
+from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -102,9 +103,9 @@ class Settings(BaseSettings):
     # ALBUM Google Drive (fotos na nuvem — libera espaco do celular)
     drive_album_enabled: bool = False
     drive_album_first: bool = True  # Drive antes do canal Telegram
-    drive_folder_id: str | None = None  # ID da pasta compartilhada
+    drive_folder_id: str | None = Field(default=None, validation_alias=AliasChoices("GOOGLE_DRIVE_FOLDER_ID", "DRIVE_FOLDER_ID", "drive_folder_id"))
     # JSON da service account (uma linha). Alternativa: arquivo via secret.
-    google_service_account_json: str | None = None
+    google_service_account_json: str | None = Field(default=None, validation_alias=AliasChoices("GOOGLE_SERVICE_ACCOUNT_JSON", "google_service_account_json"))
     drive_auto_sync: bool = True  # tag automatica de fotos novas no Drive
     drive_sync_interval_seconds: int = 900  # 15 min
     drive_sync_batch: int = 30  # fotos por ciclo (cota Gemini)

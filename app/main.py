@@ -273,26 +273,57 @@ async def main():
     # Google Drive album
     drive_album_service = None
     try:
-        _df = getattr(settings, "drive_folder_id", None) or __import__("os").getenv("GOOGLE_DRIVE_FOLDER_ID")
-        _sj = getattr(settings, "google_service_account_json", None) or __import__("os").getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-        _de = bool(getattr(settings, "drive_album_enabled", False)) or (
-            str(__import__("os").getenv("DRIVE_ALBUM_ENABLED", "")).lower() in ("1", "true", "yes")
+        import os as _os
+        _df = (
+            getattr(settings, "drive_folder_id", None)
+            or _os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+            or _os.getenv("DRIVE_FOLDER_ID")
         )
-        if DriveAlbumService is not None and _de and _df and _sj:
-            drive_album_service = DriveAlbumService(
+        _sj = (
+            getattr(settings, "google_service_account_json", None)
+            or _os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+        )
+        _de_raw = _os.getenv("DRIVE_ALBUM_ENABLED", "")
+        _de = bool(getattr(settings, "drive_album_enabled", False)) or (
+            str(_de_raw).lower() in ("1", "true", "yes")
+        )
+        print(
+            f"[DRIVE] check enabled={_de} folder={bool(_df)} json={bool(_sj)} "
+            f"cls={DriveAlbumService is not None} "
+            f"folder_id={str(_df)[:24] if _df else None}...",
+            flush=True,
+        )
+        if DriveAlbumService is None:
+            print("[DRIVE] desligado: import DriveAlbumService falhou", flush=True)
+        elif not _de:
+            print("[DRIVE] desligado: DRIVE_ALBUM_ENABLED nao true", flush=True)
+        elif not _df:
+            print("[DRIVE] desligado: falta GOOGLE_DRIVE_FOLDER_ID", flush=True)
+        elif not _sj:
+            print("[DRIVE] desligado: falta GOOGLE_SERVICE_ACCOUNT_JSON", flush=True)
+        else:
+            _kw = dict(
                 session=session,
                 folder_id=str(_df).strip(),
-                sa_json=_sj,
+                sa_json=_sj if isinstance(_sj, str) else str(_sj),
                 enabled=True,
                 use_vision_caption=True,
-                caption_fn=None,  # ligado depois se album_service tiver vision
+                caption_fn=None,
             )
+            try:
+                import inspect as _ins
+                if "session_factory" in _ins.signature(DriveAlbumService.__init__).parameters:
+                    _kw["session_factory"] = SessionLocal
+            except Exception:
+                pass
+            drive_album_service = DriveAlbumService(**_kw)
             print(f"[DRIVE] enabled folder={str(_df)[:20]}...", flush=True)
-        else:
-            print("[DRIVE] desligado (sem folder/json ou DRIVE_ALBUM_ENABLED)", flush=True)
     except Exception as _e:
         print(f"[DRIVE] init fail: {_e}", flush=True)
+        import traceback
+        traceback.print_exc()
         drive_album_service = None
+
 
 
     image_service = ImageService(
