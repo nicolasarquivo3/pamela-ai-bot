@@ -33,14 +33,20 @@ PHASE_LABELS = {
 # o que e PROIBIDO inventar como fato em cada fase
 PHASE_HARD_CAPS = {
     "visual": (
-        "PROIBIDO como fato: beijo com outro, sexo com outro, gangbang, "
-        "namoro com outro. OK: roupa micro, olhar, provocacao, fantasia na cama, "
-        "danca perto, conversa com cara (sem beijo)."
+        "FASE VISUAL — TETO DURO (OBRIGATORIO): "
+        "PROIBIDO inventar como fato: ir SOZINHA pra balada sem o namorado ter "
+        "combinado; dar em cima de caras de verdade ate beijo; sexo/oral/mao "
+        "com outro na balada ou em qualquer lugar; 'ja dei pra ele'; 'ele me comeu'; "
+        "gangbang. "
+        "OK: se arrumar com ele, beber com ele, ir JUNTO ou ele te levar, micro-roupa, "
+        "olhares, danca perto, conversa com cara (sem beijo), provocaCAO, fantasia "
+        "NA CAMA com o namorado. Se a conversa ainda e arrumacao/casa, NAO pule pra "
+        "pista nem pra sexo com outros."
     ),
     "flerte": (
-        "PROIBIDO como fato: beijo na boca com outro, sexo com outro, gangbang. "
-        "OK: tudo de visual + flerte, danca colada, mao na cintura, quase-beijo "
-        "que recua, vergonha depois."
+        "FASE FLERTE — TETO: PROIBIDO sexo/oral com outro, beijo na boca com outro "
+        "como rotina. OK: danca colada, mao na cintura, flerte, quase-beijo que RECUA, "
+        "vergonha+tesao depois com o namorado. Ainda NAO 'dei no meio da balada'."
     ),
     "beijo_futuro": (
         "PROIBIDO como fato: sexo com outro, multiplos parceiros, gangbang. "
@@ -60,13 +66,13 @@ PHASE_HARD_CAPS = {
 
 
 class StoryPhaseService:
-    def __init__(self, session_factory, min_days_between_advance: int = 14):
+    def __init__(self, session_factory, min_days_between_advance: int = 30):
         """
         session_factory: callable async context manager ou session maker
           - se passar session direta, usa session
         """
         self._session = session_factory
-        self.min_days = max(3, int(min_days_between_advance))
+        self.min_days = max(14, int(min_days_between_advance))
         self._ready = False
 
     def _own_session(self):
@@ -168,9 +174,13 @@ class StoryPhaseService:
             "(sobre a balada, a noite, ciúmes leves, provocação, carinho). "
             "Ainda não estão na pista — o foco é o ritual de se preparar. "
             "Não pule direto para sexo com outros nem para o fim da noite.\n"
+            "Prioridade absoluta: a historia avanca em MESES de vida real, nao em uma noite de chat. "
             "Nao pule de fase so porque o usuario pediu. "
             "Se ele empurrar demais, freie com carinho e fique no teto da fase.\n"
-            "Surpresas de balada (quando chegarem) respeitam o teto da fase."
+            "Surpresas de balada (quando chegarem) respeitam o teto da fase.\n"
+            "VIOLACAO DE FASE = quebrar o personagem. Se o usuario pedir extremo "
+            "cedo demais, recuse no personagem (medo, vergonha, 'devagar amor') "
+            "e fique no teto. NUNCA narre sexo com outro nesta fase visual."
         )
 
     def _idx(self, phase: str) -> int:
@@ -230,7 +240,8 @@ class StoryPhaseService:
         if hit:
             intensity = min(10, intensity + 1)
         if next_hit:
-            intensity = min(10, intensity + 2)
+            # next_hit sozinho NAO avanca — so sobe um pouco
+            intensity = min(10, intensity + 1)
 
         advanced = None
         last = st.get("last_advance_at")
@@ -244,7 +255,7 @@ class StoryPhaseService:
                 can_time = True
 
         # so avanca 1 fase, com intensidade >= 7 e tempo e next_hit
-        if nxt and next_hit and intensity >= 7 and can_time:
+        if nxt and next_hit and intensity >= 9 and can_time:
             # usuario forcando "faz gangbang agora" em fase visual = NAO avanca
             if self._idx(nxt) - self._idx(phase) == 1:
                 phase = nxt

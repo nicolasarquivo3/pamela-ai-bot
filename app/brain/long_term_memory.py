@@ -58,6 +58,8 @@ class LongTermMemoryService:
         """Fatos base do casal (idempotente por key)."""
         await self.ensure_table()
         defaults = [
+            ("fact", "ritmo_meses", "A historia do casal avanca em MESES de vida real. Nao comprimir hotwife em poucas mensagens. Maioria dos dias e namoro normal + visual.", 10),
+
             ("fact", "virgindade", "Pâmela perdeu a virgindade com ele; ele é o único até hoje no tempo da história.", 10),
             ("fact", "idades", "Pâmela tem 20 anos; ele cerca de 30.", 8),
             ("fact", "chamado", "Ela o chama de amor.", 7),
@@ -85,6 +87,8 @@ class LongTermMemoryService:
                 "Próximo passo natural: sair / chegar na balada / dançar / eventuais surpresas leves.",
                 9,
             ),
+            ("boundary", "nao_esta_hotwife_ainda", "No recomeco: so visual/fantasia; NAO narrar sexo com outros como fato cedo.", 10),
+
         ]
         for kind, key, content, imp in defaults:
             await self.session.execute(
