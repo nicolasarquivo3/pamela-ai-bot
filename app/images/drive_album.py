@@ -486,22 +486,145 @@ class DriveAlbumService:
             print(f"[DRIVE] download err: {e}", flush=True)
             return None
 
-    def _score(self, row, pedido_toks, outfit_toks) -> float:
+
+    # --- matching rigoroso (cor + peca + caimento) ---
+    _COLORS = {
+        "preto": "black", "preta": "black", "black": "black",
+        "branco": "white", "branca": "white", "white": "white",
+        "vermelho": "red", "vermelha": "red", "red": "red",
+        "azul": "blue", "blue": "blue",
+        "rosa": "pink", "pink": "pink",
+        "nude": "nude", "bege": "beige", "beige": "beige",
+        "dourado": "gold", "dourada": "gold", "gold": "gold",
+        "prateado": "silver", "prateada": "silver", "silver": "silver",
+        "verde": "green", "green": "green",
+        "amarelo": "yellow", "amarela": "yellow", "yellow": "yellow",
+        "marrom": "brown", "brown": "brown",
+        "cinza": "gray", "gray": "gray", "grey": "gray",
+        "lilas": "purple", "roxo": "purple", "purple": "purple",
+        "laranja": "orange", "orange": "orange",
+    }
+    _GARMENTS = {
+        "saia": "skirt", "skirt": "skirt",
+        "vestido": "dress", "dress": "dress", "vestidinho": "dress",
+        "short": "shorts", "shorts": "shorts",
+        "calca": "pants", "calça": "pants", "pants": "pants", "jeans": "jeans",
+        "blusa": "top", "top": "top", "cropped": "crop_top", "crop": "crop_top",
+        "lingerie": "lingerie", "calcinha": "lingerie", "sutiã": "lingerie", "sutia": "lingerie",
+        "biquini": "bikini", "biquíni": "bikini", "bikini": "bikini",
+        "body": "bodysuit", "bodysuit": "bodysuit",
+        "macacao": "jumpsuit", "macacão": "jumpsuit", "jumpsuit": "jumpsuit",
+        "salto": "heels", "heels": "heels", "scarpin": "heels",
+    }
+    _FIT = {
+        "colada": "tight", "colado": "tight", "justa": "tight", "justo": "tight",
+        "apertada": "tight", "tight": "tight", "bodycon": "tight", "ajustada": "tight",
+        "soltinha": "loose", "solta": "loose", "loose": "loose", "fluida": "loose",
+        "oversized": "loose", "larga": "loose",
+        "curta": "short", "curto": "short", "curtinha": "short", "mini": "short",
+        "longa": "long", "longo": "long", "midi": "midi",
+    }
+
+    def _extract_attrs(self, text: str) -> dict:
+        low = (text or "").lower()
+        # normalize
+        low = low.replace("ç", "c").replace("ã", "a").replace("á", "a").replace("é", "e")
+        colors, garments, fits = set(), set(), set()
+        for k, v in self._COLORS.items():
+            if re.search(rf"\b{re.escape(k)}\b", low):
+                colors.add(v)
+        for k, v in self._GARMENTS.items():
+            if re.search(rf"\b{re.escape(k)}\b", low):
+                garments.add(v)
+        for k, v in self._FIT.items():
+            if re.search(rf"\b{re.escape(k)}\b", low):
+                fits.add(v)
+        return {"colors": colors, "garments": garments, "fits": fits, "raw": low}
+
+    def _score(self, row, pedido_toks, outfit_toks, scene_text: str = "") -> float:
+        """
+        Score rigoroso:
+        - cor pedida vs cor na tag: match forte / conflito = penalidade forte
+        - peca (saia/vestido): obrigatoria se pedida
+        - caimento (colada/solta): bonus/penalidade
+        - token solto "saia" sozinho NAO basta se cor/fit conflitam
+        """
         blob = f"{row.get('caption') or ''} {row.get('tags') or ''} {row.get('name') or ''}".lower()
         photo_toks = _tokenize(blob)
+        scene = f"{scene_text or ''} {' '.join(outfit_toks or [])} {' '.join(pedido_toks or [])}"
+        want = self._extract_attrs(scene)
+        have = self._extract_attrs(blob)
+
         score = 0.0
-        if pedido_toks:
-            score += len(pedido_toks & photo_toks) * 3.0
-            for t in pedido_toks:
-                if t in blob:
-                    score += 1.5
+        detail = []
+
+        # --- GARMENT (obrigatorio se pedido) ---
+        if want["garments"]:
+            inter = want["garments"] & have["garments"]
+            if inter:
+                score += 8.0 * len(inter)
+                detail.append(f"garment+{inter}")
+            else:
+                # peca errada (vestido vs saia) = quase desclassifica
+                if have["garments"]:
+                    score -= 12.0
+                    detail.append(f"garment_conflict want={want['garments']} have={have['garments']}")
+                else:
+                    score -= 4.0
+                    detail.append("garment_missing")
+        else:
+            # bonus fraco por token generico
+            score += len((pedido_toks or set()) & photo_toks) * 0.5
+
+        # --- COLOR (obrigatorio se pedido) ---
+        if want["colors"]:
+            inter = want["colors"] & have["colors"]
+            if inter:
+                score += 10.0 * len(inter)
+                detail.append(f"color+{inter}")
+            else:
+                if have["colors"]:
+                    # saia branca quando pediu preta = matar score
+                    score -= 15.0
+                    detail.append(f"color_conflict want={want['colors']} have={have['colors']}")
+                else:
+                    score -= 5.0
+                    detail.append("color_missing")
+
+        # --- FIT ---
+        if want["fits"]:
+            inter = want["fits"] & have["fits"]
+            if inter:
+                score += 5.0 * len(inter)
+                detail.append(f"fit+{inter}")
+            elif have["fits"]:
+                # tight vs loose
+                if ("tight" in want["fits"] and "loose" in have["fits"]) or (
+                    "loose" in want["fits"] and "tight" in have["fits"]
+                ):
+                    score -= 8.0
+                    detail.append("fit_conflict")
+                if ("short" in want["fits"] and "long" in have["fits"]) or (
+                    "long" in want["fits"] and "short" in have["fits"]
+                ):
+                    score -= 6.0
+                    detail.append("length_conflict")
+
+        # tokens de outfit restantes (fraco)
         if outfit_toks:
-            score += len(outfit_toks & photo_toks) * 1.0
-        if row.get("drive_file_id") in self._recent:
-            score -= 2.5
-        if not photo_toks:
-            score = 0.05
+            score += len(outfit_toks & photo_toks) * 0.8
+        if pedido_toks:
+            # nao dar 3.0 por token; so 0.4 pra nao dominar
+            score += len(pedido_toks & photo_toks) * 0.4
+
+        if row.get("drive_file_id") in getattr(self, "_recent", []):
+            score -= 3.0
+            detail.append("recent")
+
+        # log so top candidates later
+        row["_score_detail"] = ",".join(detail) if detail else "weak"
         return score
+
 
     async def pick_best(self, scene: str) -> dict | None:
         if not self.enabled:
@@ -539,23 +662,55 @@ class DriveAlbumService:
             flush=True,
         )
 
-        scored = [(self._score(row, pedido_toks, outfit_toks), row) for row in rows]
+        scene_blob = f"{scene} {outfit} {pedido}"
+        scored = [
+            (self._score(row, pedido_toks, outfit_toks, scene_text=scene_blob), row)
+            for row in rows
+        ]
         scored.sort(key=lambda x: x[0], reverse=True)
         best = scored[0][0]
+        top5 = []
+        for s, r in scored[:5]:
+            top5.append(
+                f"{round(s,1)}:{str(r.get('caption') or r.get('name') or '')[:40]}"
+            )
         print(
-            f"[DRIVE] candidatos={len(rows)} top={[round(s,2) for s,_ in scored[:5]]}",
+            f"[DRIVE] candidatos={len(rows)} top={top5}",
             flush=True,
         )
+        if scored:
+            print(
+                f"[DRIVE] best_detail={scored[0][1].get('_score_detail')}",
+                flush=True,
+            )
 
-        if best < 0.5:
-            pool = [
-                d for d in rows[:40] if d.get("drive_file_id") not in self._recent
-            ] or rows[:40]
-            chosen = random.choice(pool)
-            print("[DRIVE] score baixo -> aleatoria", flush=True)
-        else:
-            pool = [d for s, d in scored[:8] if s >= best - 1.0] or [scored[0][1]]
-            chosen = random.choice(pool)
+        # Limiar: precisa casar bem (ex. cor+peca ~ 18). Token solto nao basta.
+        MIN_OK = 12.0
+        if best < MIN_OK:
+            print(
+                f"[DRIVE] score baixo ({best:.1f} < {MIN_OK}) -> "
+                f"NAO usa Drive (deixa web/IA com query certa)",
+                flush=True,
+            )
+            return None
+
+        # so candidatos perto do melhor E acima do limiar
+        pool = [
+            d for s, d in scored[:12]
+            if s >= max(MIN_OK, best - 4.0)
+            and d.get("drive_file_id") not in getattr(self, "_recent", [])
+        ]
+        if not pool:
+            pool = [d for s, d in scored[:5] if s >= MIN_OK]
+        if not pool:
+            print("[DRIVE] nenhum candidato apos filtro recent/limiar", flush=True)
+            return None
+        chosen = pool[0]  # melhor score, nao random frouxo
+        # se empate, random so entre top com score quase igual
+        top_s = scored[0][0]
+        tied = [d for s, d in scored[:8] if s >= top_s - 1.0 and d in pool]
+        if len(tied) > 1:
+            chosen = random.choice(tied)
 
         fid = chosen["drive_file_id"]
         raw = await self.download(fid)
