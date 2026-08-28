@@ -427,32 +427,67 @@ async def main():
                 "meta-llama/llama-3.3-70b-instruct:free",
                 "google/gemma-3-27b-it:free",
             ]
-            DEFAULT_FREE_MODELS = ["openrouter/free", "liquid/lfm-2.5-2.6b:free"]
+            DEFAULT_FREE_MODELS = [
+                "openrouter/free",
+                "liquid/lfm-2.5-2.6b:free",
+                "google/gemma-3-12b-it:free",
+            ]
 
     _or_key = getattr(settings, "openrouter_api_key", None)
     _or_timeout = int(getattr(settings, "llm_timeout_seconds", 90) or 90)
     _or_max = int(getattr(settings, "llm_max_output_tokens", 1000) or 1000)
 
-    openrouter_nsfw = OpenRouterLLM(
-        api_key=_or_key,
-        models=list(NSFW_FREE_MODELS),
-        label="OpenRouter-NSFW",
-        timeout=_or_timeout,
-        max_output_tokens=_or_max,
+    def _make_openrouter(model_list, label):
+        """Compativel com OpenRouterLLM antigo (extra_models) e novo (models)."""
+        import inspect as _ins
+        kwargs = {
+            "api_key": _or_key,
+            "timeout": _or_timeout,
+            "max_output_tokens": _or_max,
+        }
+        try:
+            sig = _ins.signature(OpenRouterLLM.__init__)
+            params = sig.parameters
+        except Exception:
+            params = {}
+        ml = list(model_list or [])
+        if "models" in params:
+            kwargs["models"] = ml
+        else:
+            kwargs["model"] = ml[0] if ml else "openrouter/free"
+            if "extra_models" in params:
+                kwargs["extra_models"] = ml[1:] if len(ml) > 1 else ml
+        if "label" in params:
+            kwargs["label"] = label
+        return OpenRouterLLM(**kwargs)
+
+    openrouter_nsfw = _make_openrouter(NSFW_FREE_MODELS, "OpenRouter-NSFW")
+    openrouter = _make_openrouter(
+        DEFAULT_FREE_MODELS
+        if not getattr(settings, "openrouter_model", None)
+        else [settings.openrouter_model] + list(DEFAULT_FREE_MODELS),
+        "OpenRouter-FREE",
     )
-    openrouter = OpenRouterLLM(
-        api_key=_or_key,
-        models=list(DEFAULT_FREE_MODELS),
-        model=getattr(settings, "openrouter_model", None) or "openrouter/free",
-        label="OpenRouter-FREE",
-        timeout=_or_timeout,
-        max_output_tokens=_or_max,
-    )
-    llm = LLMRouter(
-        primary=gemini,
-        nsfw_fallback=openrouter_nsfw,
-        free_fallback=openrouter,
-    )
+    # LLMRouter: nsfw_fallback se o __init__ aceitar
+    try:
+        import inspect as _ins2
+        rp = _ins2.signature(LLMRouter.__init__).parameters
+    except Exception:
+        rp = {}
+    if "nsfw_fallback" in rp:
+        llm = LLMRouter(
+            primary=gemini,
+            nsfw_fallback=openrouter_nsfw,
+            free_fallback=openrouter,
+        )
+    else:
+        # router antigo: so fallback unico — prioriza NSFW na lista do free
+        llm = LLMRouter(primary=gemini, fallback=openrouter_nsfw)
+        print(
+            "[LLM] LLMRouter antigo: nsfw como fallback unico "
+            "(cole llm_router.py novo para 3 tiers)",
+            flush=True,
+        )
     if event_memory_service is not None:
         event_memory_service.set_llm(llm)
         print("[EVENT-MEM] llm ligado", flush=True)
