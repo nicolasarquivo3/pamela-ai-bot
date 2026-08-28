@@ -48,6 +48,22 @@ except Exception:
         from app.images.event_memory import EventMemoryService
     except Exception:
         EventMemoryService = None  # type: ignore
+
+try:
+    from app.brain.story_phase import StoryPhaseService
+except Exception:
+    try:
+        from app.story_phase import StoryPhaseService
+    except Exception:
+        StoryPhaseService = None  # type: ignore
+
+try:
+    from app.brain.long_term_memory import LongTermMemoryService
+except Exception:
+    try:
+        from app.long_term_memory import LongTermMemoryService
+    except Exception:
+        LongTermMemoryService = None  # type: ignore
 from app.brain.context_manager import ContextManager
 from app.brain.emotion_engine import EmotionEngine
 from app.brain.relationship_engine import RelationshipEngine
@@ -67,13 +83,44 @@ def make_brain_components(session):
     semantic_manager = SemanticMemoryManager(session)
     emotion_engine = EmotionEngine(session)
     relationship_engine = RelationshipEngine(session)
+    event_memory_service = None
+    if EventMemoryService is not None:
+        try:
+            event_memory_service = EventMemoryService(session)
+        except Exception as e:
+            print(f"[EVENT-MEM] init fail: {e}", flush=True)
+
+    story_phase_service = None
+    if StoryPhaseService is not None:
+        try:
+            import os as _os
+            story_phase_service = StoryPhaseService(
+                session,
+                min_days_between_advance=int(
+                    getattr(settings, "story_min_days", None)
+                    or _os.getenv("STORY_MIN_DAYS")
+                    or 14
+                ),
+            )
+        except Exception as e:
+            print(f"[STORY] init fail: {e}", flush=True)
+
+    long_term_memory_service = None
+    if LongTermMemoryService is not None:
+        try:
+            long_term_memory_service = LongTermMemoryService(session)
+        except Exception as e:
+            print(f"[LTM] init fail: {e}", flush=True)
+
     context_manager = ContextManager(
         session,
         memory_manager,
         emotion_engine,
         relationship_engine,
         semantic_manager,
-        event_memory_service=None,
+        event_memory_service=event_memory_service,
+        story_phase_service=story_phase_service,
+        long_term_memory_service=long_term_memory_service,
         max_messages=40,
         max_memories=16,
         max_semantic_memories=10,
@@ -85,6 +132,9 @@ def make_brain_components(session):
         emotion_engine,
         relationship_engine,
         context_manager,
+        event_memory_service,
+        story_phase_service,
+        long_term_memory_service,
     )
 
 
@@ -368,22 +418,14 @@ async def main():
         emotion_engine,
         relationship_engine,
         context_manager,
+        event_memory_service,
+        story_phase_service,
+        long_term_memory_service,
     ) = make_brain_components(session)
 
-    # Event memory (noites / balada / momentos)
-    event_memory_service = None
+    # re-cria context se settings pedem mais memoria
     try:
-        if EventMemoryService is not None and bool(
-            getattr(settings, "event_memory_enabled", True)
-        ):
-            event_memory_service = EventMemoryService(
-                session,
-                llm=None,  # liga depois do LLM
-                max_events_in_context=int(
-                    getattr(settings, "memory_max_events", 8) or 8
-                ),
-            )
-            # re-cria context manager com mais historico + eventos
+        if event_memory_service is not None:
             context_manager = ContextManager(
                 session,
                 memory_manager,
@@ -391,6 +433,8 @@ async def main():
                 relationship_engine,
                 semantic_manager,
                 event_memory_service=event_memory_service,
+                story_phase_service=story_phase_service,
+                long_term_memory_service=long_term_memory_service,
                 max_messages=int(getattr(settings, "memory_max_messages", 40) or 40),
                 max_memories=int(getattr(settings, "memory_max_facts", 16) or 16),
                 max_semantic_memories=int(
@@ -402,228 +446,13 @@ async def main():
                 f"[EVENT-MEM] on messages={getattr(settings,'memory_max_messages',40)}",
                 flush=True,
             )
-    except Exception as _em:
-        print(f"[EVENT-MEM] init fail: {_em}", flush=True)
-        event_memory_service = None
-
-
-    # LLM: Gemini -> se bloquear/falhar -> OpenRouter Venice
-    gemini = GeminiLLM(
-        api_key=getattr(settings, "gemini_api_key", None),
-        api_keys=getattr(settings, "gemini_api_keys", None),
-        model=settings.gemini_model,
-        timeout=int(getattr(settings, "llm_timeout_seconds", 60) or 60),
-        max_output_tokens=int(getattr(settings, "llm_max_output_tokens", 1000) or 1000),
-    )
-    # OpenRouter: tier NSFW (menos filtro) + tier free generico
-    try:
-        from app.providers.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
-    except Exception:
-        try:
-            from app.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
-        except Exception:
-            NSFW_FREE_MODELS = [
-                "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "google/gemma-3-27b-it:free",
-            ]
-            DEFAULT_FREE_MODELS = [
-                "openrouter/free",
-                "liquid/lfm-2.5-2.6b:free",
-                "google/gemma-3-12b-it:free",
-            ]
-
-    _or_key = getattr(settings, "openrouter_api_key", None)
-    _or_timeout = int(getattr(settings, "llm_timeout_seconds", 90) or 90)
-    _or_max = int(getattr(settings, "llm_max_output_tokens", 1000) or 1000)
-
-    def _make_openrouter(model_list, label):
-        """Compativel com OpenRouterLLM antigo (extra_models) e novo (models)."""
-        import inspect as _ins
-        kwargs = {
-            "api_key": _or_key,
-            "timeout": _or_timeout,
-            "max_output_tokens": _or_max,
-        }
-        try:
-            sig = _ins.signature(OpenRouterLLM.__init__)
-            params = sig.parameters
-        except Exception:
-            params = {}
-        ml = list(model_list or [])
-        if "models" in params:
-            kwargs["models"] = ml
-        else:
-            kwargs["model"] = ml[0] if ml else "openrouter/free"
-            if "extra_models" in params:
-                kwargs["extra_models"] = ml[1:] if len(ml) > 1 else ml
-        if "label" in params:
-            kwargs["label"] = label
-        return OpenRouterLLM(**kwargs)
-
-    openrouter_nsfw = _make_openrouter(NSFW_FREE_MODELS, "OpenRouter-NSFW")
-    openrouter = _make_openrouter(
-        DEFAULT_FREE_MODELS
-        if not getattr(settings, "openrouter_model", None)
-        else [settings.openrouter_model] + list(DEFAULT_FREE_MODELS),
-        "OpenRouter-FREE",
-    )
-    # LLMRouter: nsfw_fallback se o __init__ aceitar
-    try:
-        import inspect as _ins2
-        rp = _ins2.signature(LLMRouter.__init__).parameters
-    except Exception:
-        rp = {}
-    if "nsfw_fallback" in rp:
-        llm = LLMRouter(
-            primary=gemini,
-            nsfw_fallback=openrouter_nsfw,
-            free_fallback=openrouter,
-        )
-    else:
-        # router antigo: so fallback unico — prioriza NSFW na lista do free
-        llm = LLMRouter(primary=gemini, fallback=openrouter_nsfw)
         print(
-            "[LLM] LLMRouter antigo: nsfw como fallback unico "
-            "(cole llm_router.py novo para 3 tiers)",
+            f"[STORY] on={story_phase_service is not None} "
+            f"[LTM] on={long_term_memory_service is not None}",
             flush=True,
         )
-    if event_memory_service is not None:
-        event_memory_service.set_llm(llm)
-        print("[EVENT-MEM] llm ligado", flush=True)
-    print(
-        f"[LLM] Router: primary=Gemini(keys={len(getattr(gemini, 'keys', []) or [])}) "
-        f"fallback=OpenRouter "
-        f"(key={'sim' if openrouter.api_key else 'NAO'})",
-        flush=True,
-    )
-
-    agent = AgentBrain(
-        image_service,
-        users,
-        context_manager,
-        memory_manager,
-        emotion_engine,
-        relationship_engine,
-        semantic_manager,
-        llm,
-    )
-    if event_memory_service is not None:
-        agent.event_memory_service = event_memory_service
-
-
-    # liga LLM no album (match opcional)
-    if album_service is not None:
-        album_service.llm = llm
-
-    # caption IA do Drive reutiliza AlbumService vision se existir
-    if drive_album_service is not None and album_service is not None:
-        drive_album_service._caption_fn = album_service._auto_caption_vision
-    elif drive_album_service is not None:
-        # fallback: sem caption automatica no sync
-        pass
-
-    try:
-        telegram = TelegramApp(
-            agent,
-            album_service=album_service,
-            drive_album_service=drive_album_service,
-        )
-    except TypeError:
-        try:
-            telegram = TelegramApp(agent, album_service=album_service)
-        except TypeError:
-            telegram = TelegramApp(agent)
-    print(
-        f"[TelegramApp] album={album_service is not None} "
-        f"drive={drive_album_service is not None}",
-        flush=True,
-    )
-
-    await telegram.set_webhook()
-
-    # Drive auto-sync (fotos novas no Drive -> caption IA automatica)
-    try:
-        _auto = bool(getattr(settings, "drive_auto_sync", True)) or (
-            str(os.getenv("DRIVE_AUTO_SYNC", "true")).lower() in ("1", "true", "yes")
-        )
-        _iv = int(
-            getattr(settings, "drive_sync_interval_seconds", None)
-            or os.getenv("DRIVE_SYNC_INTERVAL_SECONDS")
-            or 900
-        )
-        _batch = int(
-            getattr(settings, "drive_sync_batch", None)
-            or os.getenv("DRIVE_SYNC_BATCH")
-            or 30
-        )
-        if (
-            DriveSyncLoop is not None
-            and drive_album_service is not None
-            and _auto
-        ):
-            _tag = int(
-                getattr(settings, "drive_tag_batch", None)
-                or os.getenv("DRIVE_TAG_BATCH")
-                or 15
-            )
-            drive_loop = DriveSyncLoop(
-                drive_album_service,
-                interval_seconds=_iv,
-                batch=_batch,
-                tag_batch=_tag,
-                enabled=True,
-            )
-            await drive_loop.start()
-        else:
-            print("[DriveSync] nao iniciado", flush=True)
-    except Exception as _e:
-        print(f"[DriveSync] start fail: {_e}", flush=True)
-
-
-
-    def memory_factory(tick_session):
-        mm, sm, ee, re, cm = make_brain_components(tick_session)
-        return mm, sm, cm
-
-    agent.autonomy_service = AutonomyService(
-        SessionLocal,
-        telegram.bot,
-        llm,
-        memory_factory,
-        image_service=image_service,
-        min_interval_minutes=getattr(settings, "autonomy_min_interval_minutes", 30),
-        max_daily_messages=getattr(settings, "autonomy_max_daily_messages", 12),
-        photo_chance=0.55,
-    )
-
-    app = create_web_app(agent, telegram)
-
-    # Loop interno: mensagens proativas
-    autonomy_interval = int(
-        getattr(settings, "autonomy_tick_seconds", None)
-        or os.getenv("AUTONOMY_TICK_SECONDS", "600")
-    )
-    start_autonomy_loop(agent, interval_seconds=autonomy_interval)
-    print(f"[Autonomy] loop a cada {autonomy_interval}s", flush=True)
-
-    port = int(os.getenv("PORT", "8000"))
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
-    )
-    try:
-        print(f"[WEB] Starting server on port {port}", flush=True)
-        await server.serve()
-    finally:
-        try:
-            await telegram.bot.session.close()
-        except Exception:
-            pass
-        try:
-            await session.close()
-        except Exception:
-            pass
-
+    except Exception as _em:
+        print(f"[EVENT-MEM] setup fail: {_em}", flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())

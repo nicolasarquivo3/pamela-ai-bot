@@ -109,6 +109,7 @@ class Settings(BaseSettings):
     drive_auto_sync: bool = True  # tag automatica de fotos novas no Drive
     drive_sync_interval_seconds: int = 1200  # 15 min
     drive_sync_batch: int = 25  # novas indexadas por ciclo (sem tag)
+    story_min_days: int = 14  # dias min entre avancar story_phase
     drive_tag_batch: int = 5  # captions Gemini por ciclo (aos poucos)
 
 
