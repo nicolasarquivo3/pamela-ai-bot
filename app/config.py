@@ -107,10 +107,10 @@ class Settings(BaseSettings):
     # JSON da service account (uma linha). Alternativa: arquivo via secret.
     google_service_account_json: str | None = Field(default=None, validation_alias=AliasChoices("GOOGLE_SERVICE_ACCOUNT_JSON", "google_service_account_json"))
     drive_auto_sync: bool = True  # tag automatica de fotos novas no Drive
-    drive_sync_interval_seconds: int = 1200  # 15 min
+    drive_sync_interval_seconds: int = 600  # 15 min
     drive_sync_batch: int = 25  # novas indexadas por ciclo (sem tag)
     story_min_days: int = 30  # dias min entre avancar story_phase
-    drive_tag_batch: int = 2  # captions Gemini por ciclo (aos poucos)
+    drive_tag_batch: int = 8  # captions Gemini por ciclo (aos poucos)
 
 
 

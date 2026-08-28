@@ -370,7 +370,7 @@ async def main():
                 sa_json=_sj if isinstance(_sj, str) else str(_sj),
                 enabled=True,
                 use_vision_caption=True,
-                caption_fn=None,
+                caption_fn=None,  # wired abaixo apos album
             )
             try:
                 import inspect as _ins
@@ -378,8 +378,21 @@ async def main():
                     _kw["session_factory"] = SessionLocal
             except Exception:
                 pass
+
             drive_album_service = DriveAlbumService(**_kw)
             print(f"[DRIVE] enabled folder={str(_df)[:20]}...", flush=True)
+            # WIRE CAPTION: Gemini vision do AlbumService
+            if album_service is not None and hasattr(album_service, "_auto_caption_vision"):
+                drive_album_service._caption_fn = album_service._auto_caption_vision
+                drive_album_service.use_vision_caption = True
+                print("[DRIVE] caption_fn=album_service._auto_caption_vision", flush=True)
+            else:
+                # fallback: caption via album se criar mini wrapper
+                print(
+                    "[DRIVE] WARN: album_service sem _auto_caption_vision — "
+                    "tag auto pode falhar. Use /album_drive_tag apos criar album.",
+                    flush=True,
+                )
     except Exception as _e:
         print(f"[DRIVE] init fail: {_e}", flush=True)
         import traceback
@@ -388,7 +401,20 @@ async def main():
 
 
 
+    # ensure caption_fn after both album+drive exist
+    if drive_album_service is not None and album_service is not None:
+        if not getattr(drive_album_service, "_caption_fn", None):
+            if hasattr(album_service, "_auto_caption_vision"):
+                drive_album_service._caption_fn = album_service._auto_caption_vision
+                drive_album_service.use_vision_caption = True
+                print("[DRIVE] caption_fn ensure wired", flush=True)
+        else:
+            print("[DRIVE] caption_fn OK", flush=True)
+    elif drive_album_service is not None:
+        print("[DRIVE] WARN: sem album_service — tag auto sem vision", flush=True)
+
     image_service = ImageService(
+
 
         chars,
         ImageProviderRouter(providers),
@@ -622,7 +648,7 @@ async def main():
             _iv = int(
                 getattr(settings, "drive_sync_interval_seconds", None)
                 or os.getenv("DRIVE_SYNC_INTERVAL_SECONDS")
-                or 1200
+                or 600
             )
             _batch = int(
                 getattr(settings, "drive_sync_batch", None)
@@ -632,7 +658,7 @@ async def main():
             _tag = int(
                 getattr(settings, "drive_tag_batch", None)
                 or os.getenv("DRIVE_TAG_BATCH")
-                or 2
+                or 8
             )
             drive_loop = DriveSyncLoop(
                 drive_album_service,
