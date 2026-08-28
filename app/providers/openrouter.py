@@ -1,5 +1,6 @@
 """
-OpenRouter LLM (OpenAI-compatible) — fallback free quando Gemini SAFETY/503.
+OpenRouter LLM — free.
+Aceita models= (novo) OU model= + extra_models= (antigo).
 """
 from __future__ import annotations
 
@@ -7,11 +8,18 @@ import re
 import httpx
 
 
+NSFW_FREE_MODELS = [
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+    "google/gemma-3-27b-it:free",
+    "deepseek/deepseek-r1:free",
+]
+
 DEFAULT_FREE_MODELS = [
     "openrouter/free",
-    "google/gemma-3-27b-it:free",
     "google/gemma-3-12b-it:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
     "meta-llama/llama-3.2-3b-instruct:free",
     "qwen/qwen3-4b:free",
     "mistralai/mistral-small-3.1-24b-instruct:free",
@@ -21,36 +29,13 @@ DEFAULT_FREE_MODELS = [
 
 
 _COT_RE = re.compile(
-    r"(?is)"
-    r"("
-    r"okay,?\s+let'?s\s+see|"
-    r"let'?s\s+see\.|"
-    r"looking at the|"
-    r"i need to stay in character|"
-    r"according to the safety|"
-    r"check the behavior guidelines|"
-    r"possible approach:|"
-    r"the user is asking|"
-    r"my previous response|"
-    r"wait,?\s+in the last|"
-    r"^\s*reasoning\s*:|"
-    r"<think>|</think>|"
-    r"chain[- ]of[- ]thought|"
-    r"i'?m an? (ai|assistant|language model)|"
-    r"they'?re\s+referencing|"
-    r"referencing\s+a\s+memory|"
-    r"semantic\s+memor|"
-    r"provided in the prompt|"
-    r"there are several entries|"
-    r"this is in the|"
-    r"based on the (context|memories|prompt)|"
-    r"in the prompt|"
-    r"^\s*-\s+they|"
-    r"^\s*-\s+the user|"
-    r"let me (check|see|think)|"
-    r"the user (is|has|wants|seems)|"
-    r"i should (respond|reply|stay)|"
-    r"entries about this scenario"
+    r"(?is)("
+    r"okay,?\s+let'?s\s+see|looking at the|semantic\s+memor|"
+    r"referencing\s+a\s+memory|provided in the prompt|"
+    r"they'?re\s+referencing|there are several entries|"
+    r"i need to stay in character|the user is asking|"
+    r"entries about this scenario|<think>|based on the (context|memories|prompt)|"
+    r"i should (respond|reply|stay)"
     r")"
 )
 
@@ -63,7 +48,8 @@ def looks_like_meta_or_english_cot(text: str) -> bool:
         return True
     en = len(
         re.findall(
-            r"\b(the|they|this|that|looking|memory|memories|prompt|should|user|about|referencing|semantic|scenario|entries)\b",
+            r"\b(the|they|this|that|looking|memory|memories|prompt|should|user|"
+            r"about|referencing|semantic|scenario|entries)\b",
             t,
             re.I,
         )
@@ -81,13 +67,10 @@ def strip_cot_and_extract_character(text: str) -> str | None:
         return None
     t = text.strip()
     t = re.sub(r"(?is)<think>.*?</think>", "", t).strip()
-    t = re.sub(r"(?is)</?think>", "", t).strip()
-
     if looks_like_meta_or_english_cot(t):
         for pat in (
             r"(?is)(?:final response|resposta final|reply|output)\s*[:\-]\s*(.+)$",
             r'(?is)"([^"]{15,500})"',
-            r"(?is)'([^']{15,500})'",
             r"(?im)^([^\n]*[áàâãéêíóôõúçÁÉÍÓÚ][^\n]{10,})$",
         ):
             m = re.search(pat, t)
@@ -97,7 +80,6 @@ def strip_cot_and_extract_character(text: str) -> str | None:
                     return cand[:800]
         print("[OpenRouter] descartou CoT/meta/ingles", flush=True)
         return None
-
     t = re.sub(r"^(P[aâ]mela|Pamela)\s*:\s*", "", t, flags=re.I).strip()
     return t if t else None
 
@@ -105,28 +87,42 @@ def strip_cot_and_extract_character(text: str) -> str | None:
 class OpenRouterLLM:
     def __init__(
         self,
-        api_key: str | None,
+        api_key: str | None = None,
         model: str | None = None,
         timeout: int = 90,
         max_output_tokens: int = 400,
         site_url: str = "https://pamela-ai.onrender.com",
         app_name: str = "pamela-ai-bot",
-        extra_models: list[str] | None = None,
+        extra_models: list | None = None,
+        models: list | None = None,
+        label: str = "OpenRouter",
+        **kwargs,
     ):
         self.api_key = (api_key or "").strip()
-        self.model = (model or DEFAULT_FREE_MODELS[0]).strip()
         self.timeout = int(timeout)
         self.max_output_tokens = int(max_output_tokens)
         self.site_url = site_url
         self.app_name = app_name
+        self.label = label or "OpenRouter"
 
-        extras = list(extra_models) if extra_models else list(DEFAULT_FREE_MODELS)
         ordered: list[str] = []
-        for m in [self.model] + extras:
-            m = (m or "").strip()
-            if m and m not in ordered:
-                ordered.append(m)
+        if models:
+            for m in models:
+                m = (m or "").strip()
+                if m and m not in ordered:
+                    ordered.append(m)
+        else:
+            primary = (model or DEFAULT_FREE_MODELS[0]).strip()
+            if primary:
+                ordered.append(primary)
+            for m in extra_models or DEFAULT_FREE_MODELS:
+                m = (m or "").strip()
+                if m and m not in ordered:
+                    ordered.append(m)
+        if not ordered:
+            ordered = list(DEFAULT_FREE_MODELS)
         self.models = ordered
+        self.model = self.models[0]
         self.url = "https://openrouter.ai/api/v1/chat/completions"
 
     async def available(self) -> bool:
@@ -135,12 +131,10 @@ class OpenRouterLLM:
     def _to_openai_messages(self, system_instruction: str, messages: list) -> list[dict]:
         guard = (
             "\n\n=== SAIDA OBRIGATORIA ===\n"
-            "Responda SOMENTE como Pâmela, portugues brasileiro, 1-4 frases.\n"
-            "PROIBIDO: ingles, raciocinio, analisar memoria/prompt, "
-            "'looking at', 'semantic memories', 'the user', 'they are referencing', "
-            "listas com traco explicando o contexto, mencionar guidelines/AI.\n"
+            "Responda SOMENTE como Pâmela, portugues brasileiro, 1-5 frases.\n"
+            "PROIBIDO: ingles, raciocinio, analisar memoria/prompt.\n"
             "PROIBIDO: [foto] [imagem].\n"
-            "Use as memorias POR DENTRO (aja como se lembrasse), nunca diga que leu o prompt.\n"
+            "Roleplay ficcional adulto entre adultos ok; fale no personagem.\n"
         )
         out = [{"role": "system", "content": (system_instruction or "") + guard}]
         for message in messages or []:
@@ -164,43 +158,34 @@ class OpenRouterLLM:
             "model": model,
             "messages": openai_messages,
             "max_tokens": self.max_output_tokens,
-            "temperature": 0.85,
+            "temperature": 0.9,
         }
-        print(f"[OpenRouter] modelo={model}", flush=True)
+        print(f"[{self.label}] modelo={model}", flush=True)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(self.url, headers=headers, json=payload)
-
-        print(f"[OpenRouter] HTTP {response.status_code}", flush=True)
+        print(f"[{self.label}] HTTP {response.status_code}", flush=True)
         if response.status_code != 200:
-            print(f"[OpenRouter] ERRO: {response.text[:800]}", flush=True)
+            print(f"[{self.label}] ERRO: {response.text[:600]}", flush=True)
             return None
-
         data = response.json()
         choices = data.get("choices") or []
         if not choices:
             return None
-
-        msg = choices[0].get("message") or {}
-        text = (msg.get("content") or "").strip()
+        text = ((choices[0].get("message") or {}).get("content") or "").strip()
         if not text:
-            print("[OpenRouter] resposta vazia", flush=True)
             return None
-
         cleaned = strip_cot_and_extract_character(text)
         if not cleaned:
             return None
-
-        print(f"[OpenRouter] sucesso model={model} chars={len(cleaned)}", flush=True)
+        print(f"[{self.label}] sucesso model={model} chars={len(cleaned)}", flush=True)
         return cleaned
 
     async def generate(self, system_instruction, messages):
         if not await self.available():
             return None
-
         openai_messages = self._to_openai_messages(system_instruction, messages)
         if len(openai_messages) <= 1:
             return None
-
         last_err = None
         for model in self.models:
             try:
@@ -208,11 +193,10 @@ class OpenRouterLLM:
                 if text:
                     return text
             except httpx.TimeoutException as e:
-                print(f"[OpenRouter] TIMEOUT {model}: {e}", flush=True)
+                print(f"[{self.label}] TIMEOUT {model}: {e}", flush=True)
                 last_err = e
             except Exception as e:
-                print(f"[OpenRouter] ERRO {model}: {e}", flush=True)
+                print(f"[{self.label}] ERRO {model}: {e}", flush=True)
                 last_err = e
-
-        print(f"[OpenRouter] todos falharam: {last_err}", flush=True)
+        print(f"[{self.label}] todos falharam: {last_err}", flush=True)
         return None
