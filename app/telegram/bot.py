@@ -19,12 +19,19 @@ from app.config import settings
 
 class TelegramApp:
 
-    def __init__(self, agent, album_service=None, drive_album_service=None):
+    def __init__(
+        self,
+        agent,
+        album_service=None,
+        drive_album_service=None,
+        face_swap_service=None,
+    ):
         self.bot = Bot(token=settings.telegram_bot_token)
         self.dp = Dispatcher()
         self.agent = agent
         self.album_service = album_service
         self.drive_album_service = drive_album_service
+        self.face_swap_service = face_swap_service
 
         self._user_locks: dict[int, asyncio.Lock] = {}
         self._seen_updates: deque[int] = deque(maxlen=800)
@@ -180,6 +187,105 @@ class TelegramApp:
         try:
             text = (message.text or message.caption or "").strip()
             low = text.lower()
+
+            # --- USER PHOTO: face swap com rosto da Pâmela e reenvia ---
+            user_photo_file_id = None
+            if message.photo:
+                user_photo_file_id = message.photo[-1].file_id
+            elif (
+                message.document
+                and (message.document.mime_type or "").startswith("image/")
+            ):
+                user_photo_file_id = message.document.file_id
+
+            if user_photo_file_id and self.face_swap_service is not None:
+                try:
+                    await message.answer("Processando face swap... ⏳")
+                    from app.images.models import ImageResult
+
+                    tg_file = await self.bot.get_file(user_photo_file_id)
+                    file_path = tg_file.file_path
+                    # download bytes
+                    bio = await self.bot.download_file(file_path)
+                    if hasattr(bio, "read"):
+                        target_bytes = bio.read()
+                    elif hasattr(bio, "getvalue"):
+                        target_bytes = bio.getvalue()
+                    else:
+                        target_bytes = bytes(bio) if bio else b""
+                    if not target_bytes:
+                        # fallback httpx
+                        import httpx
+                        url = (
+                            f"https://api.telegram.org/file/bot"
+                            f"{settings.telegram_bot_token}/{file_path}"
+                        )
+                        async with httpx.AsyncClient(timeout=60) as client:
+                            r = await client.get(url)
+                            r.raise_for_status()
+                            target_bytes = r.content
+
+                    print(
+                        f"[USER-PHOTO] bytes={len(target_bytes)} -> face swap",
+                        flush=True,
+                    )
+                    base = ImageResult(
+                        success=True,
+                        provider="user_upload",
+                        image_bytes=target_bytes,
+                    )
+                    swapped = await self.face_swap_service.apply(base)
+                    if swapped and swapped.success and (
+                        swapped.image_bytes or swapped.image_url
+                    ):
+                        await self._send_image_result(
+                            message,
+                            {
+                                "image_bytes": swapped.image_bytes,
+                                "image_url": swapped.image_url,
+                                "caption": None,
+                            },
+                        )
+                        # se tinha legenda/texto, ainda responde em chat
+                        if text:
+                            result = await self.agent.receive_message(
+                                message.from_user.id, text
+                            )
+                            await session.commit()
+                            if isinstance(result, dict):
+                                await self._send_text_bubbles(message, result)
+                        else:
+                            await session.commit()
+                        return
+                    err = getattr(swapped, "error", None) if swapped else "fail"
+                    print(f"[USER-PHOTO] face swap falhou: {err}", flush=True)
+                    await message.answer(
+                        "Não consegui aplicar o face swap nessa foto agora ❤️ "
+                        "Tenta outra (rosto bem visível, de preferência)."
+                    )
+                    await session.commit()
+                    return
+                except Exception as e:
+                    print(f"[USER-PHOTO] error: {e}", flush=True)
+                    try:
+                        await message.answer(
+                            "Deu erro no face swap dessa foto. Tenta de novo? ❤️"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
+                    return
+            elif user_photo_file_id and self.face_swap_service is None:
+                await message.answer(
+                    "Face swap não está ativo no servidor agora "
+                    "(FACE_SWAP / reference image). "
+                    "No modo texto eu só gero IMAGE_PROMPT nas mensagens ❤️"
+                )
+                await session.commit()
+                return
 
             # --- comandos album ---
             if low in ("/album", "/album_stats"):
