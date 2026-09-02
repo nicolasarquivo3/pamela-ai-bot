@@ -142,180 +142,165 @@ def make_brain_components(session):
     )
 
 
+
+# --- TEXT ONLY MODE: desliga imagem/drive por padrao (acelera chat) ---
+import os as _os_text_only
+if _os_text_only.getenv("TEXT_ONLY_MODE", "true").lower() in ("1", "true", "yes", "on"):
+    _os_text_only.environ.setdefault("IMAGE_DISABLED", "true")
+    _os_text_only.environ.setdefault("DRIVE_ALBUM_ENABLED", "false")
+    _os_text_only.environ.setdefault("DRIVE_AUTO_SYNC", "false")
+    _os_text_only.environ.setdefault("ALBUM_ENABLED", "false")
+    _os_text_only.environ.setdefault("FACE_SWAP_REQUIRED", "false")
+    print("[BOOT] TEXT_ONLY_MODE=true — pipeline de imagem/drive desligado", flush=True)
+
 async def main():
     session = SessionLocal()
     chars = CharacterRepository(session)
     users = UserRepository(session)
 
+    
+    # TEXT_ONLY: nao instancia face swap / providers pesados
+    _img_off = (
+        os.getenv("IMAGE_DISABLED", "true").lower() in ("1", "true", "yes", "on")
+        or os.getenv("TEXT_ONLY_MODE", "true").lower() in ("1", "true", "yes", "on")
+    )
     providers = []
-
-    # 1) Perchance (PRIORIDADE) — estilo do seu gerador
-    # Se a key cair: log perchance:invalid_key → usa Horde/HF/etc até você trocar a key
-    # Channel: https://perchance.org/5yf90s8rdo
-    import os as _os
-    pc_key = (
-        getattr(settings, "perchance_user_key", None)
-        or _os.getenv("PERCHANCE_USER_KEY")
-    )
-    pc_channel = (
-        getattr(settings, "perchance_channel", None)
-        or _os.getenv("PERCHANCE_CHANNEL")
-        or "5yf90s8rdo"
-    )
-    if pc_key:
-        # lista de geradores (mesma API, channels diferentes)
-        raw_chs = (
-            getattr(settings, "perchance_channels", None)
-            or _os.getenv("PERCHANCE_CHANNELS")
-            or ""
-        )
-        extra_channels = [c.strip() for c in str(raw_chs).split(",") if c.strip()]
-        # Compat: se perchance_image.py for antigo (sem cookies),
-        # so passa kwargs que o __init__ aceitar.
-        import inspect as _inspect
-
-        _pc_kwargs = {
-            "user_key": pc_key.strip(),
-            "cookies": (
-                getattr(settings, "perchance_cookies", None)
-                or _os.getenv("PERCHANCE_COOKIES")
-            ),
-            "channel": (pc_channel or "5yf90s8rdo").strip(),
-            "channels": extra_channels or None,
-            "timeout": int(getattr(settings, "image_timeout_seconds", 180) or 180),
-            "resolution": getattr(settings, "perchance_resolution", None)
-            or "512x768",
-        }
-        try:
-            _sig = _inspect.signature(PerchanceImageProvider.__init__)
-            _allowed = set(_sig.parameters.keys()) - {"self"}
-            if any(
-                p.kind == _inspect.Parameter.VAR_KEYWORD
-                for p in _sig.parameters.values()
-            ):
-                _final = _pc_kwargs
-            else:
-                _final = {k: v for k, v in _pc_kwargs.items() if k in _allowed}
-        except Exception:
-            _final = {
-                "user_key": pc_key.strip(),
-                "timeout": int(
-                    getattr(settings, "image_timeout_seconds", 180) or 180
-                ),
-            }
-
-        providers.append(PerchanceImageProvider(**_final))
-        print(
-            f"[IMAGE] Perchance #1 key={pc_key[:8]}... "
-            f"primary={pc_channel!r} extras={extra_channels} "
-            f"kwargs={list(_final.keys())}",
-            flush=True,
-        )
-    else:
-        print(
-            "[IMAGE] Perchance SEM KEY — defina PERCHANCE_USER_KEY "
-            "(cai direto no Stable Horde)",
-            flush=True,
-        )
-
-    # 2) Stable Horde FREE (fallback se Perchance falhar / key morta)
-    # Key gratis: https://stablehorde.net/register
-    horde = StableHordeImageProvider(
-        api_key=getattr(settings, "stable_horde_api_key", None),
-        timeout=int(getattr(settings, "image_timeout_seconds", 180) or 180),
-        width=512,
-        height=768,
-        nsfw=True,
-    )
-    providers.append(horde)
-
-    # 3) HuggingFace Space Flux (gratis, mas SSE falha muito)
-    huggingface_provider = HuggingFaceImageProvider(
-        space_url="https://xurxowsky-flux2-klein-4b-playground.hf.space",
-        timeout=settings.image_timeout_seconds,
-    )
-    providers.append(huggingface_provider)
-
-    # 4) Pollinations — so se tiver key com pollen (402 = sem credito)
-    pol_key = getattr(settings, "pollinations_api_key", None)
-    if pol_key:
-        pollinations = PollinationsImageProvider(
-            api_key=pol_key,
-            model=getattr(settings, "pollinations_image_model", None) or "flux",
-            timeout=int(getattr(settings, "image_timeout_seconds", 120) or 120),
-            width=768,
-            height=1024,
-            max_retries=2,
-        )
-        providers.append(pollinations)
-        print("[IMAGE] Pollinations ativo (key presente)", flush=True)
-    else:
-        print(
-            "[IMAGE] Pollinations desligado (sem key / free acabou — use Stable Horde)",
-            flush=True,
-        )
-
-    print(
-        "[IMAGE] Providers AI: " + ", ".join(p.name for p in providers),
-        flush=True,
-    )
-
     face_swap_service = None
-    if settings.face_swap_enabled:
-        reference_path = settings.face_reference_image_path
-        if reference_path and not reference_path.startswith("/"):
-            reference_path = f"/app/{reference_path}"
-        face_swap_service = FaceSwapService(
-            reference_path=reference_path,
-            required=settings.face_swap_required,
-            provider=settings.face_swap_provider,
-            hf_space=settings.hf_face_swap_space,
-            hf_api_name=settings.hf_face_swap_api_name,
-            hf_token=settings.hf_token,
-            hf_swap_model=settings.hf_face_swap_model,
-            hf_target_index=settings.hf_face_swap_target_index,
-            hf_restore_model=settings.hf_face_restore_model,
-            hf_restore_strength=settings.hf_face_restore_strength,
-            replicate_token=settings.replicate_api_token,
-            replicate_version=settings.replicate_face_swap_version,
-            timeout=settings.face_swap_timeout_seconds,
-        )
-
-    web_image_service = WebImageSearchService(timeout=45, max_results=15)
-    print("[IMAGE] DuckDuckGo ativo (fallback)", flush=True)
-
-    bing_image_service = BingImageSearchService(timeout=45, max_results=15)
-    print("[IMAGE] Bing ativo (fallback)", flush=True)
-
-    reddit_image_service = RedditImageSearchService(timeout=40, limit=30)
-    print("[IMAGE] Reddit ativo (fallback)", flush=True)
-
-    pixabay_key = getattr(settings, "pixabay_api_key", None) or os.getenv(
-        "PIXABAY_API_KEY"
-    )
+    web_image_service = None
+    bing_image_service = None
+    reddit_image_service = None
     pixabay_service = None
-    if pixabay_key:
-        pixabay_service = PixabaySearchService(api_key=pixabay_key)
-        print("[IMAGE] Pixabay ativo (fallback)", flush=True)
-    else:
-        print("[IMAGE] PIXABAY_API_KEY ausente", flush=True)
-
-    gelbooru_service = GelbooruSearchService(timeout=40, limit=30)
-    print("[IMAGE] Gelbooru ativo (fallback)", flush=True)
-
+    gelbooru_service = None
     pexels_service = None
-    if settings.pexels_api_key:
-        pexels_service = PexelsSearchService(
-            api_key=settings.pexels_api_key,
-            timeout=30,
-            per_page=40,
-            orientation="portrait",
+
+    if _img_off:
+        print("[IMAGE] TEXT_ONLY — providers de imagem NAO carregados", flush=True)
+    else:
+        # 1) Perchance
+        import os as _os
+        pc_key = (
+            getattr(settings, "perchance_user_key", None)
+            or _os.getenv("PERCHANCE_USER_KEY")
         )
-        print("[IMAGE] Pexels ativo (ultimo fallback)", flush=True)
+        pc_channel = (
+            getattr(settings, "perchance_channel", None)
+            or _os.getenv("PERCHANCE_CHANNEL")
+            or "5yf90s8rdo"
+        )
+        if pc_key:
+            raw_chs = (
+                getattr(settings, "perchance_channels", None)
+                or _os.getenv("PERCHANCE_CHANNELS")
+                or ""
+            )
+            extra_channels = [c.strip() for c in str(raw_chs).split(",") if c.strip()]
+            import inspect as _inspect
+            _pc_kwargs = {
+                "user_key": pc_key.strip(),
+                "cookies": (
+                    getattr(settings, "perchance_cookies", None)
+                    or _os.getenv("PERCHANCE_COOKIES")
+                ),
+                "channel": (pc_channel or "5yf90s8rdo").strip(),
+                "channels": extra_channels or None,
+                "timeout": int(getattr(settings, "image_timeout_seconds", 180) or 180),
+                "resolution": getattr(settings, "perchance_resolution", None) or "512x768",
+            }
+            try:
+                _sig = _inspect.signature(PerchanceImageProvider.__init__)
+                _allowed = set(_sig.parameters.keys()) - {"self"}
+                if any(
+                    p.kind == _inspect.Parameter.VAR_KEYWORD
+                    for p in _sig.parameters.values()
+                ):
+                    _final = _pc_kwargs
+                else:
+                    _final = {k: v for k, v in _pc_kwargs.items() if k in _allowed}
+            except Exception:
+                _final = {
+                    "user_key": pc_key.strip(),
+                    "timeout": int(getattr(settings, "image_timeout_seconds", 180) or 180),
+                }
+            providers.append(PerchanceImageProvider(**_final))
+            print(
+                f"[IMAGE] Perchance #1 key={pc_key[:8]}... primary={pc_channel!r}",
+                flush=True,
+            )
+        else:
+            print("[IMAGE] Perchance SEM KEY", flush=True)
+
+        horde = StableHordeImageProvider(
+            api_key=getattr(settings, "stable_horde_api_key", None),
+            timeout=int(getattr(settings, "image_timeout_seconds", 180) or 180),
+            width=512,
+            height=768,
+            nsfw=True,
+        )
+        providers.append(horde)
+
+        huggingface_provider = HuggingFaceImageProvider(
+            space_url="https://xurxowsky-flux2-klein-4b-playground.hf.space",
+            timeout=settings.image_timeout_seconds,
+        )
+        providers.append(huggingface_provider)
+
+        pol_key = getattr(settings, "pollinations_api_key", None)
+        if pol_key:
+            providers.append(
+                PollinationsImageProvider(
+                    api_key=pol_key,
+                    model=getattr(settings, "pollinations_image_model", None) or "flux",
+                    timeout=int(getattr(settings, "image_timeout_seconds", 120) or 120),
+                    width=768,
+                    height=1024,
+                    max_retries=2,
+                )
+            )
+            print("[IMAGE] Pollinations ativo", flush=True)
+
+        print(
+            "[IMAGE] Providers AI: " + ", ".join(p.name for p in providers),
+            flush=True,
+        )
+
+        if settings.face_swap_enabled:
+            reference_path = settings.face_reference_image_path
+            if reference_path and not reference_path.startswith("/"):
+                reference_path = f"/app/{reference_path}"
+            face_swap_service = FaceSwapService(
+                reference_path=reference_path,
+                required=settings.face_swap_required,
+                provider=settings.face_swap_provider,
+                hf_space=settings.hf_face_swap_space,
+                hf_api_name=settings.hf_face_swap_api_name,
+                hf_token=settings.hf_token,
+                hf_swap_model=settings.hf_face_swap_model,
+                hf_target_index=settings.hf_face_swap_target_index,
+                hf_restore_model=settings.hf_face_restore_model,
+                hf_restore_strength=settings.hf_face_restore_strength,
+                replicate_token=settings.replicate_api_token,
+                replicate_version=settings.replicate_face_swap_version,
+                timeout=settings.face_swap_timeout_seconds,
+            )
+
+        web_image_service = WebImageSearchService(timeout=45, max_results=15)
+        bing_image_service = BingImageSearchService(timeout=45, max_results=15)
+        reddit_image_service = RedditImageSearchService(timeout=40, limit=30)
+        pixabay_key = getattr(settings, "pixabay_api_key", None) or os.getenv("PIXABAY_API_KEY")
+        if pixabay_key:
+            pixabay_service = PixabaySearchService(api_key=pixabay_key)
+        gelbooru_service = GelbooruSearchService(timeout=40, limit=30)
+        if settings.pexels_api_key:
+            pexels_service = PexelsSearchService(
+                api_key=settings.pexels_api_key,
+                timeout=30,
+                per_page=40,
+                orientation="portrait",
+            )
 
     # Album Telegram (opcional — so ativa se album_service.py existir)
     album_service = None
-    if AlbumService is not None and bool(getattr(settings, "album_enabled", True)):
+    if (not _img_off) and AlbumService is not None and bool(getattr(settings, "album_enabled", True)):
         _album_ch = getattr(settings, "album_channel_id", None) or "-1004349291324"
         try:
             _album_ch_int = int(str(_album_ch).strip())
@@ -674,7 +659,8 @@ async def main():
 
     # ---------- Drive auto sync (background, low priority) ----------
     if (
-        DriveSyncLoop is not None
+        (not _img_off)
+        and DriveSyncLoop is not None
         and drive_album_service is not None
         and bool(
             getattr(settings, "drive_auto_sync", None)
