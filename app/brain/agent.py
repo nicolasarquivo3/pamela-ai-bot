@@ -1,4 +1,5 @@
 import re
+import os
 
 from app.images.models import ImageRequest
 from app.images.outfit import (
@@ -150,6 +151,12 @@ class AgentBrain:
         self.long_term_memory_service = None
         # user_id -> quantas vezes Gemini SAFETY seguidas
         self._gemini_safety_strikes: dict = {}
+        # Modo so texto: zero pipeline de imagem; anexa IMAGE_PROMPT no fim
+        self.text_only = (
+            os.getenv("TEXT_ONLY_MODE", "true").lower() in ("1", "true", "yes", "on")
+            or os.getenv("IMAGE_DISABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        print(f"[Agent] TEXT_ONLY={self.text_only}", flush=True)
 
     async def receive_message(self, telegram_id, text):
         user = await self.user_repository.get_or_create(telegram_id)
@@ -197,7 +204,12 @@ class AgentBrain:
                 emotion,
             )
 
-        if text.lower().startswith("/foto"):
+        # TEXT_ONLY: nunca gera/envia imagem real
+        if getattr(self, "text_only", True):
+            if text.lower().startswith("/foto") or self._is_image_request(text):
+                print("[TEXT_ONLY] pedido de foto -> so texto + IMAGE_PROMPT", flush=True)
+            # nao retorna image request
+        elif text.lower().startswith("/foto"):
             scene = build_image_scene(
                 text[5:].strip() or text,
                 user_id=user.id,
@@ -210,7 +222,7 @@ class AgentBrain:
             )
 
         bubbles = []
-        if self._is_image_request(text):
+        if not getattr(self, "text_only", True) and self._is_image_request(text):
             scene = build_image_scene(
                 text,
                 user_id=user.id,
@@ -222,24 +234,25 @@ class AgentBrain:
                 scene,
             )
 
-        # "Quero"/"Sim" apos ela oferecer ver/foto -> trata como pedido de imagem
-        try:
-            _ctx_peek = await self.context_manager.build(
-                user.id, character_id, query=text
-            )
-        except Exception:
-            _ctx_peek = None
-        if _ctx_peek and self._user_wants_offered_photo(text, _ctx_peek):
-            scene = build_image_scene(
-                "foto no momento da conversa; usuario confirmou que quer ver",
-                user_id=user.id,
-                character_id=character_id,
-            )
-            return await self._handle_image_request(
-                user.id,
-                character_id,
-                scene,
-            )
+        # "Quero"/"Sim" apos oferta de foto — so se NAO text_only
+        if not getattr(self, "text_only", True):
+            try:
+                _ctx_peek = await self.context_manager.build(
+                    user.id, character_id, query=text
+                )
+            except Exception:
+                _ctx_peek = None
+            if _ctx_peek and self._user_wants_offered_photo(text, _ctx_peek):
+                scene = build_image_scene(
+                    "foto no momento da conversa; usuario confirmou que quer ver",
+                    user_id=user.id,
+                    character_id=character_id,
+                )
+                return await self._handle_image_request(
+                    user.id,
+                    character_id,
+                    scene,
+                )
 
         context = await self.context_manager.build(
             user.id,
@@ -342,39 +355,61 @@ class AgentBrain:
         if len(bubbles) > 1:
             print(f"[MULTI] enviando {len(bubbles)} mensagens", flush=True)
 
-        need_photo = force_photo or self._should_send_contextual_photo(text, reply, context)
-        if need_photo:
-            if force_photo:
-                print("[PHOTO-DECIDE] sim (LLM escreveu [foto] -> gera real)", flush=True)
-            photo_payload = await self._auto_photo_for_reply(
-                user_id=user.id,
-                character_id=character_id,
-                user_text=text,
-                reply_text=reply or "foto espontanea pra te provocar",
-                context=context,
-            )
-            if photo_payload and photo_payload.get("type") == "image":
-                # texto limpo (sem [foto]) + imagem
-                if bubbles:
-                    photo_payload["text"] = bubbles[0]
-                    if len(bubbles) > 1:
-                        photo_payload["texts"] = bubbles
-                elif reply:
-                    photo_payload["text"] = reply
-                return photo_payload
-            # falhou imagem: se so tinha [foto], avisa de leve
-            if force_photo and not reply:
-                reply = (
-                    "Quis te mandar uma fotinho agora, mas deu um probleminha. "
-                    "Me pede de novo daqui a pouco? ❤️"
+        # TEXT_ONLY: nunca envia bytes de imagem
+        if not getattr(self, "text_only", True):
+            need_photo = force_photo or self._should_send_contextual_photo(text, reply, context)
+            if need_photo:
+                if force_photo:
+                    print("[PHOTO-DECIDE] sim (LLM escreveu [foto] -> gera real)", flush=True)
+                photo_payload = await self._auto_photo_for_reply(
+                    user_id=user.id,
+                    character_id=character_id,
+                    user_text=text,
+                    reply_text=reply or "foto espontanea pra te provocar",
+                    context=context,
                 )
+                if photo_payload and photo_payload.get("type") == "image":
+                    if bubbles:
+                        photo_payload["text"] = bubbles[0]
+                        if len(bubbles) > 1:
+                            photo_payload["texts"] = bubbles
+                    elif reply:
+                        photo_payload["text"] = reply
+                    return photo_payload
+                if force_photo and not reply:
+                    reply = (
+                        "Quis te mandar uma fotinho agora, mas deu um probleminha. "
+                        "Me pede de novo daqui a pouco? ❤️"
+                    )
+        else:
+            force_photo = False
+            print("[PHOTO-DECIDE] text_only — sem imagem real", flush=True)
+
+        # Prompt de imagem em ingles no fim de cada resposta (sem gerar)
+        img_prompt = self._build_scene_image_prompt_en(
+            user_text=text,
+            reply_text=reply or "",
+            context=context,
+            user_id=user.id,
+            character_id=character_id,
+        )
+        base_text = (bubbles[0] if bubbles else None) or reply or "❤️"
+        # limpa qualquer [foto] residual
+        base_text = re.sub(r"\[\s*(foto|imagem|photo|selfie)\s*\]", "", base_text or "", flags=re.I).strip() or "❤️"
+        full_text = f"{base_text}\n\n---\nIMAGE_PROMPT:\n{img_prompt}"
 
         out = {
             "type": "text",
-            "text": (bubbles[0] if bubbles else None) or reply or "❤️",
+            "text": full_text,
         }
         if bubbles and len(bubbles) > 1:
-            out["texts"] = bubbles
+            # so a ultima bolha leva o prompt (ou todas? so ultima)
+            texts = list(bubbles)
+            texts[0] = re.sub(r"\[\s*(foto|imagem|photo|selfie)\s*\]", "", texts[0] or "", flags=re.I).strip() or texts[0]
+            texts[-1] = f"{texts[-1]}\n\n---\nIMAGE_PROMPT:\n{img_prompt}"
+            out["texts"] = texts
+            out["text"] = texts[0] if len(texts) == 1 else texts[0]
+            # bot envia texts em sequencia; prompt na ultima
         return out
 
     def _is_image_request(self, text):
@@ -408,6 +443,23 @@ class AgentBrain:
         character_id,
         scene,
     ):
+        # TEXT_ONLY_HANDLE
+        if getattr(self, "text_only", True):
+            prompt = self._build_scene_image_prompt_en(
+                user_text=str(scene or ""),
+                reply_text=str(scene or ""),
+                context=None,
+                user_id=user_id,
+                character_id=character_id,
+            )
+            return {
+                "type": "text",
+                "text": (
+                    "Amor, nesse modo eu te mando o prompt da cena pra voce gerar fora ❤️\n\n"
+                    f"---\nIMAGE_PROMPT:\n{prompt}"
+                ),
+            }
+
         try:
             result = await self.generate_image(
                 user_id,
@@ -1424,6 +1476,96 @@ Essa resposta deve ser evitada.
             "caption": None,  # SEM legenda na foto
             "photo_caption": None,
         }
+
+
+    def _build_scene_image_prompt_en(
+        self,
+        user_text: str,
+        reply_text: str,
+        context: dict | None,
+        user_id=None,
+        character_id=None,
+    ) -> str:
+        """
+        Prompt em ingles, rico, para geracao de imagem externa.
+        Nao chama API de imagem — so monta o texto.
+        """
+        outfit = "micro mini dress, high heels"
+        try:
+            o = get_current_outfit(user_id, character_id) if user_id is not None else None
+            if o:
+                outfit = str(o).strip() or outfit
+        except Exception:
+            pass
+        try:
+            bits = extract_outfit_bits(f"{user_text or ''} {reply_text or ''}")
+            if bits:
+                # bits pode ser str/dict/list
+                if isinstance(bits, dict):
+                    extra = ", ".join(str(v) for v in bits.values() if v)
+                elif isinstance(bits, (list, tuple)):
+                    extra = ", ".join(str(v) for v in bits if v)
+                else:
+                    extra = str(bits)
+                if extra and len(extra) > 3:
+                    outfit = f"{outfit}, {extra}"
+        except Exception:
+            pass
+
+        loc = "nightclub dance floor with colorful lights"
+        blob = f"{user_text or ''} {reply_text or ''}".lower()
+        if any(w in blob for w in ("casa", "quarto", "sala", "home", "sofa", "cama")):
+            loc = "cozy apartment living room, warm indoor lighting"
+        elif any(w in blob for w in ("banheiro", "espelho", "bathroom", "mirror")):
+            loc = "bathroom mirror selfie, soft vanity lights"
+        elif any(w in blob for w in ("balada", "festa", "clube", "club", "pista", "dj")):
+            loc = "crowded nightclub, neon lights, party atmosphere"
+        elif any(w in blob for w in ("rua", "uber", "carro", "estacion")):
+            loc = "city street at night, ambient streetlights"
+        elif any(w in blob for w in ("bar", "mesa", "drink", "drink")):
+            loc = "dim cocktail bar, moody lighting"
+        elif any(w in blob for w in ("faculdade", "aula", "campus")):
+            loc = "college campus at night"
+
+        action = "standing confidently, flirty half-smile, looking at camera"
+        if any(w in blob for w in ("danc", "danç", "colad", "grud")):
+            action = "dancing close, body slightly arched, playful expression"
+        elif any(w in blob for w in ("selfie", "espelho", "mirror")):
+            action = "taking a mirror selfie, phone in hand, checking her look"
+        elif any(w in blob for w in ("beijo", "beij", "kiss")):
+            action = "leaning in flirtatiously, intimate close framing"
+        elif any(w in blob for w in ("provoc", "safad", "tesão", "tesao", "olha")):
+            action = "teasing pose, one hand on hip, seductive eye contact"
+        elif any(w in blob for w in ("arrum", "maqui", "cabelo")):
+            action = "getting ready, fixing hair and makeup before going out"
+
+        # trecho curto do roleplay (sem vazar instrucoes)
+        scene_hint = (reply_text or user_text or "").strip()
+        scene_hint = re.sub(r"\s+", " ", scene_hint)[:180]
+
+        # Identidade visual fixa da personagem (adulto, 20 anos)
+        body = (
+            "petite short adult woman, small stature, slim skinny waist, "
+            "wide hips, very prominent round butt, medium-sized breasts, "
+            "perfect hourglass violin body shape, soft feminine curves, "
+            "youthful girl-next-door face, cute feminine features, "
+            "adult 20 years old (not underage), Brazilian look"
+        )
+
+        prompt = (
+            "PHOTOREALISTIC DSLR photo of an adult Brazilian woman, early 20s, "
+            "same consistent fictional character identity, natural skin texture, sharp focus. "
+            f"Body and face: {body}. "
+            f"Outfit: {outfit}. "
+            f"Location: {loc}. "
+            f"Action/pose: {action}. "
+            f"Scene context: {scene_hint}. "
+            "Candid smartphone aesthetic, realistic proportions, realistic hands, "
+            "full body or mirror selfie as appropriate, "
+            "no text, no watermark, not CGI, not anime, not illustration, adult only."
+        )
+        return prompt
+
 
     async def generate_image(
         self,
