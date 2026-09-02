@@ -298,6 +298,47 @@ async def main():
                 orientation="portrait",
             )
 
+
+    # Face swap SEMPRE disponivel para foto enviada pelo usuario (mesmo TEXT_ONLY)
+    if face_swap_service is None:
+        try:
+            reference_path = getattr(settings, "face_reference_image_path", None) or os.getenv(
+                "FACE_REFERENCE_IMAGE_PATH", "app/assets/pamela_face.jpg"
+            )
+            if reference_path and not str(reference_path).startswith("/"):
+                reference_path = f"/app/{reference_path}"
+            # so cria se arquivo de referencia existe ou settings permite
+            import os as _os_fs
+            ref_ok = _os_fs.path.isfile(reference_path) if reference_path else False
+            if not ref_ok:
+                # tenta paths comuns
+                for cand in (
+                    "/app/app/assets/pamela_face.jpg",
+                    "/app/assets/pamela_face.jpg",
+                    "/app/pamela_face.jpg",
+                    "/app/app/assets/face.jpg",
+                ):
+                    if _os_fs.path.isfile(cand):
+                        reference_path = cand
+                        ref_ok = True
+                        break
+            face_swap_service = FaceSwapService(
+                reference_path=reference_path or "/app/app/assets/pamela_face.jpg",
+                required=False,
+                provider=getattr(settings, "face_swap_provider", None) or "huggingface",
+                hf_space=getattr(settings, "hf_face_swap_space", None) or "tonyassi/face-swap",
+                hf_api_name=getattr(settings, "hf_face_swap_api_name", None) or "/swap_faces",
+                hf_token=getattr(settings, "hf_token", None),
+                timeout=int(getattr(settings, "face_swap_timeout_seconds", None) or 180),
+            )
+            print(
+                f"[FaceSwap] USER-PHOTO ready ref={reference_path!r} exists={ref_ok}",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[FaceSwap] USER-PHOTO init fail: {e}", flush=True)
+            face_swap_service = None
+
     # Album Telegram (opcional — so ativa se album_service.py existir)
     album_service = None
     if (not _img_off) and AlbumService is not None and bool(getattr(settings, "album_enabled", True)):
@@ -628,6 +669,7 @@ async def main():
     telegram_app = TelegramApp(
         agent,
         album_service=album_service,
+        face_swap_service=face_swap_service,
         drive_album_service=drive_album_service,
     )
 
