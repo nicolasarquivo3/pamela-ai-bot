@@ -654,6 +654,9 @@ async def main():
             tts_service = EdgeTTSService(
                 voice=os.getenv("TTS_VOICE") or "pt-BR-FranciscaNeural",
                 enabled=True,
+                rate=os.getenv("TTS_RATE") or "-18%",
+                pitch=os.getenv("TTS_PITCH") or "-3Hz",
+                style=os.getenv("TTS_STYLE") or "intimate",
             )
             print(f"[TTS] edge-tts voice={tts_service.voice}", flush=True)
         except Exception as e:
