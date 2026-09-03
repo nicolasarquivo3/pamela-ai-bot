@@ -23,9 +23,11 @@ except Exception:
     DriveSyncLoop = None  # type: ignore
 from app.images.face_swap import FaceSwapService
 try:
-    from app.tts_service import EdgeTTSService
+    from app.tts_service import EdgeTTSService, ElevenLabsTTS, CascadeTTSService
 except Exception:
     EdgeTTSService = None  # type: ignore
+    ElevenLabsTTS = None  # type: ignore
+    CascadeTTSService = None  # type: ignore
 from app.images.pexels import PexelsSearchService
 from app.images.web_search_images import WebImageSearchService
 from app.images.reddit_images import RedditImageSearchService
@@ -647,23 +649,42 @@ async def main():
                 print(f"[DRIVE] TAG check FAIL: {_e}", flush=True)
 
 
-    # ---------- TTS (áudio espontâneo, grátis edge-tts) ----------
+
+    # ---------- TTS (ElevenLabs free sensual -> edge fallback) ----------
     tts_service = None
-    if EdgeTTSService is not None and os.getenv("TTS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+    if os.getenv("TTS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
         try:
-            tts_service = EdgeTTSService(
+            edge = EdgeTTSService(
                 voice=os.getenv("TTS_VOICE") or "pt-BR-FranciscaNeural",
                 enabled=True,
-                rate=os.getenv("TTS_RATE") or "-18%",
-                pitch=os.getenv("TTS_PITCH") or "-3Hz",
-                style=os.getenv("TTS_STYLE") or "intimate",
-            )
-            print(f"[TTS] edge-tts voice={tts_service.voice}", flush=True)
+                rate=os.getenv("TTS_RATE") or "-35%",
+                pitch=os.getenv("TTS_PITCH") or "-8Hz",
+                style=os.getenv("TTS_STYLE") or "whisper",
+            ) if EdgeTTSService is not None else None
+            eleven = None
+            el_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
+            if el_key and ElevenLabsTTS is not None:
+                eleven = ElevenLabsTTS(
+                    api_key=el_key,
+                    voice_id=os.getenv("ELEVENLABS_VOICE_ID") or None,
+                    model_id=os.getenv("ELEVENLABS_MODEL") or "eleven_multilingual_v2",
+                )
+                print(
+                    f"[TTS] ElevenLabs ON voice={eleven.voice_id} model={eleven.model_id}",
+                    flush=True,
+                )
+            else:
+                print("[TTS] ElevenLabs OFF (sem ELEVENLABS_API_KEY)", flush=True)
+            if CascadeTTSService is not None:
+                tts_service = CascadeTTSService(eleven=eleven, edge=edge)
+                print("[TTS] cascata ElevenLabs -> edge-tts pronta", flush=True)
+            else:
+                tts_service = edge
         except Exception as e:
             print(f"[TTS] init fail: {e}", flush=True)
             tts_service = None
     else:
-        print("[TTS] desligado ou modulo ausente", flush=True)
+        print("[TTS] desligado (TTS_ENABLED=false)", flush=True)
 
     agent = AgentBrain(
 
