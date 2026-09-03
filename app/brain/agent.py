@@ -407,8 +407,18 @@ class AgentBrain:
             speech = (speech or base_text or "").strip()
             if self._should_send_voice(text, speech, user.id):
                 out["send_voice"] = True
-                out["voice_text"] = speech
-                print(f"[VOICE] sim user={user.id} chars={len(speech)}", flush=True)
+                # trecho mais curto/intimo se TTS souber limpar
+                vtxt = speech
+                try:
+                    if self.tts_service and hasattr(self.tts_service, "clean_for_speech"):
+                        vtxt = self.tts_service.clean_for_speech(speech) or speech
+                except Exception:
+                    vtxt = speech
+                out["voice_text"] = vtxt
+                print(
+                    f"[VOICE] sim user={user.id} chars={len(vtxt)} excerpt={vtxt[:70]!r}",
+                    flush=True,
+                )
             else:
                 out["send_voice"] = False
         except Exception as e:
