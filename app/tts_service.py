@@ -269,10 +269,12 @@ class ElevenLabsTTS:
         self.api_key = (api_key or os.getenv("ELEVENLABS_API_KEY") or "").strip()
         # Rachel / Bella / Elli etc — user pode trocar. Default: "Sarah" multilingual-ish public
         # Voice "Rachel" EXAVITQu4vr4xnSDxMaL is classic; for more soft: "Elli" MF3mGyEYCl7XYWbV9V6O
+        # IMPORTANTE: no free tier NAO use voice ID da biblioteca publica.
+        # Use Voice ID de voz criada/clonada NA SUA conta (Voices -> My Voices).
         self.voice_id = (
             voice_id
             or os.getenv("ELEVENLABS_VOICE_ID")
-            or "EXAVITQu4vr4xnSDxMaL"  # Rachel — clear female, free library
+            or ""
         ).strip()
         self.model_id = (
             model_id
@@ -288,10 +290,16 @@ class ElevenLabsTTS:
     def available(self) -> bool:
         if not self.api_key:
             return False
+        if not self.voice_id:
+            print(
+                "[TTS/11] ELEVENLABS_VOICE_ID vazio — use Voice ID da SUA conta "
+                "(My Voices), nao da biblioteca. Usando so edge-tts.",
+                flush=True,
+            )
+            return False
         if self.quota_exhausted and time.time() < self.quota_until:
             return False
         if self.quota_exhausted and time.time() >= self.quota_until:
-            # tenta de novo apos cooldown
             self.quota_exhausted = False
             print("[TTS/11] cooldown acabou — tenta ElevenLabs de novo", flush=True)
         return True
@@ -334,7 +342,14 @@ class ElevenLabsTTS:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 r = await client.post(url, headers=headers, json=payload)
             if r.status_code in (401, 402, 429):
-                body = (r.text or "")[:200]
+                body = (r.text or "")[:300]
+                # free tier: library voices bloqueadas na API
+                if "paid_plan_required" in body or "library voices" in body.lower():
+                    print(
+                        "[TTS/11] voz da biblioteca NAO funciona no free via API. "
+                        "Crie/clone uma voz na sua conta e use o Voice ID dela em ELEVENLABS_VOICE_ID.",
+                        flush=True,
+                    )
                 self._mark_exhausted(f"HTTP {r.status_code} {body}")
                 return None
             if r.status_code == 400 and re.search(
@@ -388,7 +403,8 @@ class EdgeTTSService:
         self.volume = (volume or os.getenv("TTS_VOLUME") or "-12%").strip()
         self.max_chars = int(os.getenv("TTS_MAX_CHARS") or max_chars)
         self.style = (style or os.getenv("TTS_STYLE") or "whisper").strip().lower()
-        self.use_ssml = os.getenv("TTS_SSML", "true").lower() in ("1", "true", "yes", "on")
+        # SSML DESLIGADO: edge-tts lia as tags em voz alta
+        self.use_ssml = False
 
     def clean_for_speech(self, text: str) -> str:
         return clean_for_speech(text, self.max_chars)
@@ -402,38 +418,44 @@ class EdgeTTSService:
         except Exception:
             return False
 
-    def _wrap_ssml(self, text: str) -> str:
-        safe = (
-            text.replace("&", "&" + "amp;")
-            .replace("<", "&" + "lt;")
-            .replace(">", "&" + "gt;")
-        )
-        safe = safe.replace("...", '<break time="700ms"/>')
-        return (
-            "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' "
-            "xml:lang='pt-BR'>"
-            f"<voice name='{self.voice}'>"
-            "<prosody rate='-30%' pitch='-6%' volume='soft'>"
-            f"{safe}"
-            "</prosody></voice></speak>"
-        )
+
+    def _plain_for_edge(self, text: str) -> str:
+        """
+        Texto puro para edge-tts (SEM SSML).
+        Reticencias viram pausas naturais na fala; sem tags XML.
+        """
+        s = (text or "").strip()
+        # se vazou SSML de versao antiga, remove tags
+        if "<speak" in s.lower() or "<prosody" in s.lower() or "<break" in s.lower():
+            s = re.sub(r"<[^>]+>", " ", s)
+            s = re.sub(r"\s+", " ", s).strip()
+        # normaliza reticencias (pausa)
+        s = re.sub(r"\.{2,}", "...", s)
+        s = re.sub(r"\s*\.\.\.\s*", "... ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
 
     async def synthesize(self, text: str) -> bytes | None:
         if not self.enabled:
             return None
         clean = clean_for_speech(text, self.max_chars)
+        clean = self._plain_for_edge(clean)
         if not clean or len(clean) < 3:
             return None
+        # barreira: nunca sintetizar markup
+        if re.search(r"(?i)<\s*(speak|prosody|break|voice)\b", clean):
+            clean = re.sub(r"<[^>]+>", " ", clean)
+            clean = re.sub(r"\s+", " ", clean).strip()
         try:
             import edge_tts
         except Exception as e:
             print(f"[TTS/edge] import fail: {e}", flush=True)
             return None
-        speak_text = self._wrap_ssml(clean) if self.use_ssml else clean
         tmp = None
         try:
+            # SEMPRE texto puro + rate/pitch/volume nos parametros
             communicate = edge_tts.Communicate(
-                speak_text,
+                clean,
                 self.voice,
                 rate=self.rate,
                 pitch=self.pitch,
@@ -443,16 +465,11 @@ class EdgeTTSService:
                 tmp = f.name
             await communicate.save(tmp)
             data = Path(tmp).read_bytes()
-            if (not data or len(data) < 200) and self.use_ssml:
-                communicate = edge_tts.Communicate(
-                    clean, self.voice, rate=self.rate, pitch=self.pitch, volume=self.volume
-                )
-                await communicate.save(tmp)
-                data = Path(tmp).read_bytes()
             if not data or len(data) < 200:
+                print("[TTS/edge] empty output", flush=True)
                 return None
             print(
-                f"[TTS/edge] ok rate={self.rate} pitch={self.pitch} "
+                f"[TTS/edge] ok rate={self.rate} pitch={self.pitch} vol={self.volume} "
                 f"whisper={clean!r} bytes={len(data)}",
                 flush=True,
             )
@@ -466,6 +483,8 @@ class EdgeTTSService:
                     Path(tmp).unlink(missing_ok=True)
                 except Exception:
                     pass
+
+
 
 
 # ---------- Cascata: Eleven -> Edge ----------
