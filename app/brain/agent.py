@@ -385,31 +385,19 @@ class AgentBrain:
             force_photo = False
             print("[PHOTO-DECIDE] text_only — sem imagem real", flush=True)
 
-        # Prompt de imagem em ingles no fim de cada resposta (sem gerar)
-        img_prompt = self._build_scene_image_prompt_en(
-            user_text=text,
-            reply_text=reply or "",
-            context=context,
-            user_id=user.id,
-            character_id=character_id,
-        )
+        # Sem IMAGE_PROMPT: so texto limpo do roleplay
         base_text = (bubbles[0] if bubbles else None) or reply or "❤️"
-        # limpa qualquer [foto] residual
         base_text = re.sub(r"\[\s*(foto|imagem|photo|selfie)\s*\]", "", base_text or "", flags=re.I).strip() or "❤️"
-        full_text = f"{base_text}\n\n---\nIMAGE_PROMPT:\n{img_prompt}"
 
         out = {
             "type": "text",
-            "text": full_text,
+            "text": base_text,
         }
         if bubbles and len(bubbles) > 1:
-            # so a ultima bolha leva o prompt (ou todas? so ultima)
             texts = list(bubbles)
             texts[0] = re.sub(r"\[\s*(foto|imagem|photo|selfie)\s*\]", "", texts[0] or "", flags=re.I).strip() or texts[0]
-            texts[-1] = f"{texts[-1]}\n\n---\nIMAGE_PROMPT:\n{img_prompt}"
             out["texts"] = texts
-            out["text"] = texts[0] if len(texts) == 1 else texts[0]
-            # bot envia texts em sequencia; prompt na ultima
+            out["text"] = texts[0]
         return out
 
     def _is_image_request(self, text):
@@ -443,20 +431,13 @@ class AgentBrain:
         character_id,
         scene,
     ):
-        # TEXT_ONLY_HANDLE
+        # TEXT_ONLY_HANDLE — sem prompt de imagem
         if getattr(self, "text_only", True):
-            prompt = self._build_scene_image_prompt_en(
-                user_text=str(scene or ""),
-                reply_text=str(scene or ""),
-                context=None,
-                user_id=user_id,
-                character_id=character_id,
-            )
             return {
                 "type": "text",
                 "text": (
-                    "Amor, nesse modo eu te mando o prompt da cena pra voce gerar fora ❤️\n\n"
-                    f"---\nIMAGE_PROMPT:\n{prompt}"
+                    "Amor, agora tô só no texto com você… "
+                    "me conta o que você imagina que eu tô fazendo 😈❤️"
                 ),
             }
 
