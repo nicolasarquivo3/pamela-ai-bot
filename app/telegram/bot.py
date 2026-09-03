@@ -25,6 +25,7 @@ class TelegramApp:
         album_service=None,
         drive_album_service=None,
         face_swap_service=None,
+        tts_service=None,
     ):
         self.bot = Bot(token=settings.telegram_bot_token)
         self.dp = Dispatcher()
@@ -32,6 +33,7 @@ class TelegramApp:
         self.album_service = album_service
         self.drive_album_service = drive_album_service
         self.face_swap_service = face_swap_service
+        self.tts_service = tts_service
 
         self._user_locks: dict[int, asyncio.Lock] = {}
         self._seen_updates: deque[int] = deque(maxlen=800)
@@ -626,7 +628,11 @@ class TelegramApp:
 
             await self._send_text_bubbles(message, result)
 
-
+            # Áudio espontâneo (provocação)
+            try:
+                await self._maybe_send_voice(message, result)
+            except Exception as _ve:
+                print(f"[VOICE] send fail: {_ve}", flush=True)
 
         except Exception as e:
             print(f"[TelegramApp] handle error: {e}", flush=True)
@@ -640,6 +646,56 @@ class TelegramApp:
                 )
             except Exception:
                 pass
+
+
+    async def _maybe_send_voice(self, message: Message, result: dict) -> bool:
+        """Se o agent pediu send_voice, sintetiza e manda áudio."""
+        if not isinstance(result, dict):
+            return False
+        if not result.get("send_voice"):
+            return False
+        tts = self.tts_service or getattr(self.agent, "tts_service", None)
+        if tts is None:
+            print("[VOICE] tts_service ausente", flush=True)
+            return False
+        text = (result.get("voice_text") or result.get("text") or "").strip()
+        if not text:
+            return False
+        try:
+            await message.bot.send_chat_action(
+                chat_id=message.chat.id, action="record_voice"
+            )
+        except Exception:
+            pass
+        audio = await tts.synthesize(text)
+        if not audio:
+            print("[VOICE] synthesize vazio", flush=True)
+            return False
+        return await self._send_voice_bytes(message, audio)
+
+    async def _send_voice_bytes(self, message: Message, audio_bytes: bytes) -> bool:
+        """Envia MP3 como áudio (Telegram)."""
+        if not audio_bytes:
+            return False
+        try:
+            bio = BufferedInputFile(audio_bytes, filename="pamela.mp3")
+            # send_audio funciona com mp3 sem ffmpeg; send_voice exige ogg/opus
+            await message.answer_audio(
+                bio,
+                title="Pâmela",
+                performer="Pâmela",
+            )
+            print(f"[VOICE] enviado bytes={len(audio_bytes)}", flush=True)
+            return True
+        except Exception as e:
+            print(f"[VOICE] answer_audio fail: {e}", flush=True)
+            try:
+                bio = BufferedInputFile(audio_bytes, filename="pamela.mp3")
+                await message.answer_document(bio, caption=None)
+                return True
+            except Exception as e2:
+                print(f"[VOICE] document fail: {e2}", flush=True)
+                return False
 
     async def _send_image_result(self, message: Message, result: dict) -> bool:
         if not result:
