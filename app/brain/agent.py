@@ -157,6 +157,8 @@ class AgentBrain:
             or os.getenv("IMAGE_DISABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         print(f"[Agent] TEXT_ONLY={self.text_only}", flush=True)
+        self.tts_service = None  # setado no main (EdgeTTS)
+        self._voice_last_ts: dict = {}  # user_id -> epoch
 
     async def receive_message(self, telegram_id, text):
         user = await self.user_repository.get_or_create(telegram_id)
@@ -398,7 +400,108 @@ class AgentBrain:
             texts[0] = re.sub(r"\[\s*(foto|imagem|photo|selfie)\s*\]", "", texts[0] or "", flags=re.I).strip() or texts[0]
             out["texts"] = texts
             out["text"] = texts[0]
+
+        # Áudio espontâneo (provocação) — o bot sintetiza se send_voice=True
+        try:
+            speech = (out.get("texts") or [None])[-1] if out.get("texts") else base_text
+            speech = (speech or base_text or "").strip()
+            if self._should_send_voice(text, speech, user.id):
+                out["send_voice"] = True
+                out["voice_text"] = speech
+                print(f"[VOICE] sim user={user.id} chars={len(speech)}", flush=True)
+            else:
+                out["send_voice"] = False
+        except Exception as e:
+            print(f"[VOICE] decide fail: {e}", flush=True)
+            out["send_voice"] = False
         return out
+
+
+    # Momentos em que ela manda ÁUDIO sozinha (provocar / carinho safado)
+    VOICE_TEASE_PATTERNS = (
+        r"\b(tes[aã]o|safad|gostos|molhad|gemid|goz|foder|fode|transar|sexo)\b",
+        r"\b(te\s+provoc|tô\s+provoc|estou\s+provoc|pra\s+te\s+provocar)\b",
+        r"\b(ouv[eê]|escuta|sussurr|no\s+ouvido)\b",
+        r"\b(me\s+ouve|tô\s+com\s+saudade|quero\s+você|quero\s+voce)\b",
+        r"\b(sem\s+calcinha|micro\s*saia|decote|rebol)\b",
+        r"[😈🔥😏💋🥵]",
+    )
+
+    def _should_send_voice(self, user_text: str, reply_text: str, user_id=None) -> bool:
+        """
+        Áudio espontâneo: às vezes, em provocação.
+        - precisa ter TTS ligado
+        - cooldown por usuário (evita áudio em toda msg)
+        - gatilho: reply provocante OU chance baixa aleatória em msgs longas
+        """
+        import time
+        import random
+
+        if not getattr(self, "tts_service", None):
+            return False
+        # se TTS desabilitado no env
+        if os.getenv("TTS_ENABLED", "true").lower() not in ("1", "true", "yes", "on"):
+            return False
+
+        reply = (reply_text or "").strip()
+        if len(reply) < 18:
+            return False
+        # não narrar logs
+        if reply.startswith("[") or "IMAGE_PROMPT" in reply:
+            return False
+
+        # cooldown (minutos)
+        try:
+            cd_min = float(os.getenv("TTS_COOLDOWN_MINUTES", "8") or 8)
+        except Exception:
+            cd_min = 8.0
+        now = time.time()
+        last = 0.0
+        if user_id is not None:
+            last = float((self._voice_last_ts or {}).get(user_id) or 0)
+        if last and (now - last) < cd_min * 60:
+            print(f"[VOICE] cooldown {(cd_min*60 - (now-last))/60:.1f}m", flush=True)
+            return False
+
+        blob = f"{user_text or ''} {reply}".lower()
+        tease = False
+        for pat in self.VOICE_TEASE_PATTERNS:
+            if re.search(pat, blob, re.I):
+                tease = True
+                break
+
+        # chance: provocação ~45%, senão ~12% se msg carinhosa/flerte
+        try:
+            p_tease = float(os.getenv("TTS_CHANCE_TEASE", "0.45") or 0.45)
+            p_soft = float(os.getenv("TTS_CHANCE_SOFT", "0.12") or 0.12)
+        except Exception:
+            p_tease, p_soft = 0.45, 0.12
+
+        soft = bool(
+            re.search(
+                r"\b(amor|querido|beb[eê]|mm+|haha|kk|rindo|carinho|saudade)\b",
+                blob,
+                re.I,
+            )
+        ) or ("❤️" in reply) or ("😉" in reply)
+
+        roll = random.random()
+        ok = False
+        if tease and roll < p_tease:
+            ok = True
+            reason = f"tease p={p_tease} roll={roll:.2f}"
+        elif soft and not tease and roll < p_soft:
+            ok = True
+            reason = f"soft p={p_soft} roll={roll:.2f}"
+        else:
+            reason = f"no (tease={tease} soft={soft} roll={roll:.2f})"
+
+        print(f"[VOICE] decide {reason}", flush=True)
+        if ok and user_id is not None:
+            if self._voice_last_ts is None:
+                self._voice_last_ts = {}
+            self._voice_last_ts[user_id] = now
+        return ok
 
     def _is_image_request(self, text):
         # pedido explicito de ver/foto
