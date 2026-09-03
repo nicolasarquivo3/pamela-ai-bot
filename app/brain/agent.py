@@ -1487,105 +1487,165 @@ Essa resposta deve ser evitada.
         character_id=None,
     ) -> str:
         """
-        Prompt CURTO e limpo para geracao externa.
-        Formato: sujeito + roupa + local + pose (sem lixo de chat).
+        Prompt curto e FIEL:
+          - corpo fixo
+          - roupa da CONVERSA (prioridade) > memoria
+          - o que ela esta FAZENDO agora
+          - onde esta
         """
-        blob = f"{user_text or ''} {reply_text or ''}".lower()
-
-        # Corpo fixo (curto)
-        body = (
-            "petite Brazilian woman 20yo, short, slim waist, wide hips, "
-            "big round butt, medium breasts, hourglass body, cute youthful face"
-        )
-
-        # Roupa: 1 look so
-        outfit = "black micro mini dress, high heels"
+        parts = [user_text or "", reply_text or ""]
         try:
-            o = get_current_outfit(user_id, character_id) if user_id is not None else None
-            if o:
-                raw = re.sub(r"\s+", " ", str(o).strip().lower())
-                raw = raw.replace("fashion portrait photo", "").strip(" ,")
-                # se tem vestido, usa so vestido (+ salto se houver)
-                if "dress" in raw or "vestido" in blob:
-                    color = ""
-                    for pt, en in (
-                        (r"\bblack|preto\b", "black"),
-                        (r"\bwhite|branco\b", "white"),
-                        (r"\bred|vermelho\b", "red"),
-                        (r"\bblue|azul\b", "blue"),
-                        (r"\bpink|rosa\b", "pink"),
-                    ):
-                        if re.search(pt, raw) or re.search(pt, blob):
-                            color = en
-                            break
-                    outfit = f"{(color + ' ') if color else ''}micro mini dress, high heels".strip()
-                elif "skirt" in raw or "saia" in blob:
-                    color = "black"
-                    for pt, en in (
-                        (r"\bblack|preto\b", "black"),
-                        (r"\bwhite|branco\b", "white"),
-                        (r"\bblue|azul\b", "blue"),
-                        (r"\bjean|denim\b", "denim"),
-                    ):
-                        if re.search(pt, raw + " " + blob):
-                            color = en
-                            break
-                    top = "crop top" if ("crop" in raw or "cropped" in blob) else "tight top"
-                    outfit = f"{color} micro mini skirt, {top}, high heels"
-                elif "lingerie" in raw or "lingerie" in blob:
-                    outfit = "sexy lingerie, high heels"
-                else:
-                    # pega so as 6 primeiras palavras uteis
-                    words = [w for w in raw.replace(",", " ").split() if w and w not in ("and", "with", "a", "the")]
-                    outfit = " ".join(words[:8]) if words else outfit
+            if context:
+                for msg in (context.get("messages") or [])[-8:]:
+                    c = (msg.get("content") or "").strip()
+                    if c:
+                        parts.append(c)
         except Exception:
             pass
+        full = " ".join(parts)
+        blob = full.lower()
+        blob = re.sub(r"\*?\[[0-9:]+\]\*?", " ", blob)
+        blob = re.sub(r"\b(p[aâ]mela|assistant|user|usu[aá]rio)\s*:", " ", blob)
+        blob = re.sub(r"\s+", " ", blob)
 
-        # cor explicita no texto do user/reply sobrepoe
-        for pt, en in (
-            (r"\bvestido\s+preto\b|\bblack\s+dress\b", "black micro mini dress, high heels"),
-            (r"\bvestido\s+branco\b", "white micro mini dress, high heels"),
-            (r"\bvestido\s+vermelho\b", "red micro mini dress, high heels"),
-            (r"\bvestido\s+azul\b", "blue micro mini dress, high heels"),
-            (r"\bvestido\s+rosa\b", "pink micro mini dress, high heels"),
-            (r"\bmicro\s*saia\s+preta\b|\bsaia\s+preta\b", "black micro mini skirt, crop top, high heels"),
-        ):
-            if re.search(pt, blob):
-                outfit = en
-                break
+        body = (
+            "petite short Brazilian woman 20 years old, slim skinny waist, "
+            "very wide hips, huge round bubble butt, medium breasts, "
+            "perfect hourglass violin body, cute youthful girl face, big eyes"
+        )
 
-        # Local (1 frase)
-        place = "nightclub, neon lights"
-        if any(w in blob for w in ("casa", "quarto", "sala", "cama", "sofa", "sofá")):
-            place = "apartment living room, warm light"
-        elif any(w in blob for w in ("banheiro", "espelho", "selfie", "mirror")):
-            place = "bathroom mirror selfie"
-        elif any(w in blob for w in ("balada", "festa", "pista", "club", "pagode", "sertanejo")):
-            place = "crowded nightclub dance floor, neon lights"
-        elif any(w in blob for w in ("bar", "drink")):
-            place = "dim bar, moody light"
-        elif any(w in blob for w in ("rua", "uber", "carro")):
+        def _outfit_from_text(b: str) -> str | None:
+            # saia + blusa/cropped juntos
+            if re.search(
+                r"(micro\s*saia|minissaia|saia\s+curta|saia\s+preta|micro\s*skirt).{0,50}"
+                r"(cropped|crop\s*top|blusa\s+curt|blusinha|top\s+curt)",
+                b,
+            ) or re.search(
+                r"(cropped|crop\s*top|blusa\s+curt|blusinha|top\s+curt).{0,50}"
+                r"(micro\s*saia|minissaia|saia\s+curta|saia\s+preta|micro\s*skirt)",
+                b,
+            ):
+                color = "black"
+                if re.search(r"saia\s+(branca|white)|white\s+skirt", b):
+                    color = "white"
+                elif re.search(r"saia\s+(azul|blue)|jeans|denim", b):
+                    color = "denim" if ("jean" in b or "denim" in b) else "blue"
+                elif re.search(r"saia\s+(rosa|pink)", b):
+                    color = "pink"
+                return f"{color} micro mini skirt, tiny crop top, high heels"
+
+            if re.search(r"\b(micro\s*saia|minissaia|saia\s+curta|saia\s+preta|micro\s*skirt|saia)\b", b):
+                color = "black"
+                if re.search(r"\b(branca|white)\b", b):
+                    color = "white"
+                elif re.search(r"\b(jeans|denim)\b", b):
+                    color = "denim"
+                elif re.search(r"\b(azul|blue)\b", b):
+                    color = "blue"
+                top = (
+                    "tiny crop top"
+                    if re.search(r"\b(cropped|crop|blusa\s+curt|blusinha|top\s+curt)\b", b)
+                    else "fitted top"
+                )
+                return f"{color} micro mini skirt, {top}, high heels"
+
+            if re.search(r"\b(vestido\s+preto|black\s+(micro\s*)?(mini\s*)?dress)\b", b):
+                return "black micro mini dress, high heels"
+            if re.search(r"\b(vestido\s+branco|white\s+.*dress)\b", b):
+                return "white micro mini dress, high heels"
+            if re.search(r"\b(vestido\s+vermelho|red\s+.*dress)\b", b):
+                return "red micro mini dress, high heels"
+            if re.search(r"\b(vestido\s+azul|blue\s+.*dress)\b", b):
+                return "blue micro mini dress, high heels"
+            if re.search(r"\b(vestido\s+rosa|pink\s+.*dress)\b", b):
+                return "pink micro mini dress, high heels"
+            if re.search(r"\b(micro\s*vestido|vestido\s+curto|vestidinho|mini\s*dress)\b", b):
+                return "tight micro mini dress, high heels"
+            if re.search(r"\bvestido\b", b) and not re.search(r"\bsaia\b", b):
+                return "tight micro mini dress, high heels"
+            if re.search(r"\b(lingerie|calcinha|suti[aã])\b", b):
+                if re.search(r"\bsem\s+calcinha\b", b) and re.search(r"\b(saia|vestido)\b", b):
+                    return "micro mini skirt, no panties, crop top, high heels"
+                return "sexy lingerie set, high heels"
+            if re.search(r"\b(cropped|crop\s*top|blusa\s+curt|blusinha)\b", b):
+                return "tiny crop top, micro mini skirt, high heels"
+            return None
+
+        outfit = _outfit_from_text(blob)
+        if not outfit:
+            try:
+                o = get_current_outfit(user_id, character_id) if user_id is not None else None
+                if o:
+                    raw = re.sub(r"\s+", " ", str(o).lower())
+                    raw = raw.replace("fashion portrait photo", "").strip(" ,")
+                    if "skirt" in raw and ("crop" in raw or "top" in raw):
+                        outfit = "black micro mini skirt, tiny crop top, high heels"
+                    elif "skirt" in raw:
+                        outfit = "black micro mini skirt, fitted top, high heels"
+                    elif "dress" in raw:
+                        outfit = "black micro mini dress, high heels"
+                    else:
+                        words = [w for w in re.split(r"[,\s]+", raw) if w][:8]
+                        outfit = " ".join(words) if words else None
+            except Exception:
+                pass
+        if not outfit:
+            outfit = "black micro mini skirt, tiny crop top, high heels"
+
+        place = "nightclub"
+        if any(w in blob for w in ("casa", "quarto", "sala", "cama", "sofá", "sofa", "apartamento", "home")):
+            place = "bedroom apartment, dim warm light"
+        elif any(w in blob for w in ("banheiro", "espelho", "bathroom")):
+            place = "bathroom"
+        elif any(w in blob for w in ("balada", "festa", "pista", "club", "pagode", "dj", "neon")):
+            place = "crowded nightclub, neon lights"
+        elif any(w in blob for w in ("bar", "mesa", "drink", "balcão", "balcao")):
+            place = "bar"
+        elif any(w in blob for w in ("rua", "uber", "carro", "estacion")):
             place = "city street at night"
-        elif any(w in blob for w in ("arrum", "maqui", "cabelo")):
-            place = "bedroom, getting ready, mirror"
+        elif any(w in blob for w in ("motel", "hotel")):
+            place = "hotel room"
 
-        # Pose (1 frase)
-        pose = "full body, looking at camera, flirty smile"
-        if any(w in blob for w in ("danc", "danç", "colad", "grud", "rebol", "pagode")):
-            pose = "dancing, arched back, looking over shoulder"
-        elif any(w in blob for w in ("selfie", "espelho", "mirror")):
-            pose = "mirror selfie, phone in hand, full body"
-        elif any(w in blob for w in ("provoc", "safad", "bunda", "tesão", "tesao")):
-            pose = "teasing pose, hand on hip, arched back"
-        elif any(w in blob for w in ("arrum", "maqui", "cabelo")):
-            pose = "getting ready, adjusting dress"
+        action = None
+        if re.search(r"\b(transando|transar|sexo|fod[ae]|fudend|goz|penetr|metendo|gemend)\b", blob):
+            if re.search(
+                r"\b(dois|2|duas|dois\s+caras|two\s+guys|menage|ménage|dp|dupla|gangbang)\b",
+                blob,
+            ) or re.search(r"\b(caras?|homens|guys?).{0,40}(caras?|homens|guys?)\b", blob):
+                action = "having sex with two men, threesome, passionate explicit adult scene"
+            else:
+                action = "having sex, passionate intimate adult scene"
+        elif re.search(r"\b(boquete|chupando|oral|deepthroat)\b", blob):
+            action = "giving oral sex, explicit adult scene"
+        elif re.search(r"\b(beijando|beijo)\b", blob) and re.search(
+            r"\b(outro|cara|homem|desconhecido)\b", blob
+        ):
+            action = "kissing another man passionately"
+        elif re.search(r"\b(dan[cç]ando\s+colad|colad[oa]|grudada|esfreg|ro[cç]and)\b", blob):
+            action = "grinding dancing very close against a man on the dance floor"
+        elif re.search(r"\b(dan[cç]and|rebol|pagode|sertanejo)\b", blob):
+            action = "dancing, hips moving, looking over shoulder"
+        elif re.search(r"\b(se\s+arrumando|maquiando|passando\s+batom|cabelo)\b", blob):
+            action = "getting ready, fixing hair and makeup in the mirror"
+        elif re.search(r"\b(selfie|espelho|mirror)\b", blob):
+            action = "taking mirror selfie, full body"
+        elif re.search(r"\b(provoc|safad|mostrando|exib)\b", blob):
+            action = "teasing, arched back, seductive pose looking at camera"
+        elif re.search(r"\b(sentada|no\s+colo|cavalg)\b", blob):
+            action = "sitting on a man's lap, intimate close pose"
+        else:
+            snip = re.sub(r"\s+", " ", (reply_text or user_text or "")).strip()
+            snip = re.sub(r"\*?\[[0-9:]+\]\*?", "", snip)
+            snip = re.sub(r"\bP[aâ]mela\s*:", "", snip, flags=re.I)
+            snip = snip[:110].strip()
+            action = f"in this moment: {snip}" if snip else "looking at camera, flirty smile, full body"
 
         prompt = (
             f"photorealistic photo, {body}, "
             f"wearing {outfit}, "
-            f"{place}, "
-            f"{pose}, "
-            "realistic skin, sharp focus, no text, no watermark"
+            f"location: {place}, "
+            f"action: {action}, "
+            "realistic skin, detailed body proportions, sharp focus, no text, no watermark, adult only"
         )
         return prompt
 
