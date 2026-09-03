@@ -1487,82 +1487,105 @@ Essa resposta deve ser evitada.
         character_id=None,
     ) -> str:
         """
-        Prompt em ingles, rico, para geracao de imagem externa.
-        Nao chama API de imagem — so monta o texto.
+        Prompt CURTO e limpo para geracao externa.
+        Formato: sujeito + roupa + local + pose (sem lixo de chat).
         """
-        outfit = "micro mini dress, high heels"
+        blob = f"{user_text or ''} {reply_text or ''}".lower()
+
+        # Corpo fixo (curto)
+        body = (
+            "petite Brazilian woman 20yo, short, slim waist, wide hips, "
+            "big round butt, medium breasts, hourglass body, cute youthful face"
+        )
+
+        # Roupa: 1 look so
+        outfit = "black micro mini dress, high heels"
         try:
             o = get_current_outfit(user_id, character_id) if user_id is not None else None
             if o:
-                outfit = str(o).strip() or outfit
-        except Exception:
-            pass
-        try:
-            bits = extract_outfit_bits(f"{user_text or ''} {reply_text or ''}")
-            if bits:
-                # bits pode ser str/dict/list
-                if isinstance(bits, dict):
-                    extra = ", ".join(str(v) for v in bits.values() if v)
-                elif isinstance(bits, (list, tuple)):
-                    extra = ", ".join(str(v) for v in bits if v)
+                raw = re.sub(r"\s+", " ", str(o).strip().lower())
+                raw = raw.replace("fashion portrait photo", "").strip(" ,")
+                # se tem vestido, usa so vestido (+ salto se houver)
+                if "dress" in raw or "vestido" in blob:
+                    color = ""
+                    for pt, en in (
+                        (r"\bblack|preto\b", "black"),
+                        (r"\bwhite|branco\b", "white"),
+                        (r"\bred|vermelho\b", "red"),
+                        (r"\bblue|azul\b", "blue"),
+                        (r"\bpink|rosa\b", "pink"),
+                    ):
+                        if re.search(pt, raw) or re.search(pt, blob):
+                            color = en
+                            break
+                    outfit = f"{(color + ' ') if color else ''}micro mini dress, high heels".strip()
+                elif "skirt" in raw or "saia" in blob:
+                    color = "black"
+                    for pt, en in (
+                        (r"\bblack|preto\b", "black"),
+                        (r"\bwhite|branco\b", "white"),
+                        (r"\bblue|azul\b", "blue"),
+                        (r"\bjean|denim\b", "denim"),
+                    ):
+                        if re.search(pt, raw + " " + blob):
+                            color = en
+                            break
+                    top = "crop top" if ("crop" in raw or "cropped" in blob) else "tight top"
+                    outfit = f"{color} micro mini skirt, {top}, high heels"
+                elif "lingerie" in raw or "lingerie" in blob:
+                    outfit = "sexy lingerie, high heels"
                 else:
-                    extra = str(bits)
-                if extra and len(extra) > 3:
-                    outfit = f"{outfit}, {extra}"
+                    # pega so as 6 primeiras palavras uteis
+                    words = [w for w in raw.replace(",", " ").split() if w and w not in ("and", "with", "a", "the")]
+                    outfit = " ".join(words[:8]) if words else outfit
         except Exception:
             pass
 
-        loc = "nightclub dance floor with colorful lights"
-        blob = f"{user_text or ''} {reply_text or ''}".lower()
-        if any(w in blob for w in ("casa", "quarto", "sala", "home", "sofa", "cama")):
-            loc = "cozy apartment living room, warm indoor lighting"
-        elif any(w in blob for w in ("banheiro", "espelho", "bathroom", "mirror")):
-            loc = "bathroom mirror selfie, soft vanity lights"
-        elif any(w in blob for w in ("balada", "festa", "clube", "club", "pista", "dj")):
-            loc = "crowded nightclub, neon lights, party atmosphere"
-        elif any(w in blob for w in ("rua", "uber", "carro", "estacion")):
-            loc = "city street at night, ambient streetlights"
-        elif any(w in blob for w in ("bar", "mesa", "drink", "drink")):
-            loc = "dim cocktail bar, moody lighting"
-        elif any(w in blob for w in ("faculdade", "aula", "campus")):
-            loc = "college campus at night"
+        # cor explicita no texto do user/reply sobrepoe
+        for pt, en in (
+            (r"\bvestido\s+preto\b|\bblack\s+dress\b", "black micro mini dress, high heels"),
+            (r"\bvestido\s+branco\b", "white micro mini dress, high heels"),
+            (r"\bvestido\s+vermelho\b", "red micro mini dress, high heels"),
+            (r"\bvestido\s+azul\b", "blue micro mini dress, high heels"),
+            (r"\bvestido\s+rosa\b", "pink micro mini dress, high heels"),
+            (r"\bmicro\s*saia\s+preta\b|\bsaia\s+preta\b", "black micro mini skirt, crop top, high heels"),
+        ):
+            if re.search(pt, blob):
+                outfit = en
+                break
 
-        action = "standing confidently, flirty half-smile, looking at camera"
-        if any(w in blob for w in ("danc", "danç", "colad", "grud")):
-            action = "dancing close, body slightly arched, playful expression"
-        elif any(w in blob for w in ("selfie", "espelho", "mirror")):
-            action = "taking a mirror selfie, phone in hand, checking her look"
-        elif any(w in blob for w in ("beijo", "beij", "kiss")):
-            action = "leaning in flirtatiously, intimate close framing"
-        elif any(w in blob for w in ("provoc", "safad", "tesão", "tesao", "olha")):
-            action = "teasing pose, one hand on hip, seductive eye contact"
+        # Local (1 frase)
+        place = "nightclub, neon lights"
+        if any(w in blob for w in ("casa", "quarto", "sala", "cama", "sofa", "sofá")):
+            place = "apartment living room, warm light"
+        elif any(w in blob for w in ("banheiro", "espelho", "selfie", "mirror")):
+            place = "bathroom mirror selfie"
+        elif any(w in blob for w in ("balada", "festa", "pista", "club", "pagode", "sertanejo")):
+            place = "crowded nightclub dance floor, neon lights"
+        elif any(w in blob for w in ("bar", "drink")):
+            place = "dim bar, moody light"
+        elif any(w in blob for w in ("rua", "uber", "carro")):
+            place = "city street at night"
         elif any(w in blob for w in ("arrum", "maqui", "cabelo")):
-            action = "getting ready, fixing hair and makeup before going out"
+            place = "bedroom, getting ready, mirror"
 
-        # trecho curto do roleplay (sem vazar instrucoes)
-        scene_hint = (reply_text or user_text or "").strip()
-        scene_hint = re.sub(r"\s+", " ", scene_hint)[:180]
-
-        # Identidade visual fixa da personagem (adulto, 20 anos)
-        body = (
-            "petite short adult woman, small stature, slim skinny waist, "
-            "wide hips, very prominent round butt, medium-sized breasts, "
-            "perfect hourglass violin body shape, soft feminine curves, "
-            "youthful girl-next-door face, cute feminine features, "
-            "adult 20 years old (not underage), Brazilian look"
-        )
+        # Pose (1 frase)
+        pose = "full body, looking at camera, flirty smile"
+        if any(w in blob for w in ("danc", "danç", "colad", "grud", "rebol", "pagode")):
+            pose = "dancing, arched back, looking over shoulder"
+        elif any(w in blob for w in ("selfie", "espelho", "mirror")):
+            pose = "mirror selfie, phone in hand, full body"
+        elif any(w in blob for w in ("provoc", "safad", "bunda", "tesão", "tesao")):
+            pose = "teasing pose, hand on hip, arched back"
+        elif any(w in blob for w in ("arrum", "maqui", "cabelo")):
+            pose = "getting ready, adjusting dress"
 
         prompt = (
-            "PHOTOREALISTIC DSLR photo of an adult Brazilian woman, early 20s, "
-            "same consistent fictional character identity, natural skin texture, sharp focus. "
-            f"Body and face: {body}. "
-            f"Outfit: {outfit}. "
-            f"Location: {loc}. "
-            f"Action/pose: {action}. "
-            f"Scene context: {scene_hint}. "
-            "Candid smartphone aesthetic, realistic proportions, realistic hands, "
-            "full body or mirror selfie as appropriate, "
-            "no text, no watermark, not CGI, not anime, not illustration, adult only."
+            f"photorealistic photo, {body}, "
+            f"wearing {outfit}, "
+            f"{place}, "
+            f"{pose}, "
+            "realistic skin, sharp focus, no text, no watermark"
         )
         return prompt
 
