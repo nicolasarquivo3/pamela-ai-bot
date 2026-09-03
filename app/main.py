@@ -22,6 +22,10 @@ try:
 except Exception:
     DriveSyncLoop = None  # type: ignore
 from app.images.face_swap import FaceSwapService
+try:
+    from app.tts_service import EdgeTTSService
+except Exception:
+    EdgeTTSService = None  # type: ignore
 from app.images.pexels import PexelsSearchService
 from app.images.web_search_images import WebImageSearchService
 from app.images.reddit_images import RedditImageSearchService
@@ -642,6 +646,22 @@ async def main():
             except Exception as _e:
                 print(f"[DRIVE] TAG check FAIL: {_e}", flush=True)
 
+
+    # ---------- TTS (áudio espontâneo, grátis edge-tts) ----------
+    tts_service = None
+    if EdgeTTSService is not None and os.getenv("TTS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+        try:
+            tts_service = EdgeTTSService(
+                voice=os.getenv("TTS_VOICE") or "pt-BR-FranciscaNeural",
+                enabled=True,
+            )
+            print(f"[TTS] edge-tts voice={tts_service.voice}", flush=True)
+        except Exception as e:
+            print(f"[TTS] init fail: {e}", flush=True)
+            tts_service = None
+    else:
+        print("[TTS] desligado ou modulo ausente", flush=True)
+
     agent = AgentBrain(
 
         image_service=image_service,
@@ -664,6 +684,9 @@ async def main():
         agent.story_phase_service = story_phase_service
     if long_term_memory_service is not None:
         agent.long_term_memory_service = long_term_memory_service
+    if tts_service is not None:
+        agent.tts_service = tts_service
+        print("[TTS] ligado no AgentBrain", flush=True)
 
     # ---------- Telegram ----------
     telegram_app = TelegramApp(
@@ -671,6 +694,7 @@ async def main():
         album_service=album_service,
         face_swap_service=face_swap_service,
         drive_album_service=drive_album_service,
+        tts_service=tts_service,
     )
 
     # ---------- Autonomy ----------
