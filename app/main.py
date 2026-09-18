@@ -562,13 +562,19 @@ async def main():
                 from app.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
             except Exception:
                 NSFW_FREE_MODELS = [
-                    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-                    "meta-llama/llama-3.3-70b-instruct:free",
-                    "google/gemma-3-27b-it:free",
+                    "openrouter/free",
+                    "deepseek/deepseek-v4-flash-0731:free",
+                    "qwen/qwen3.8-27b:free",
+                    "liquid/lfm-2.5-2.6b:free",
+                    "google/gemma-4-31b-it:free",
                 ]
                 DEFAULT_FREE_MODELS = [
                     "openrouter/free",
+                    "google/gemma-4-31b-it:free",
+                    "qwen/qwen3.8-27b:free",
+                    "deepseek/deepseek-v4-flash-0731:free",
                     "liquid/lfm-2.5-2.6b:free",
+                    "z-ai/glm-5.2:free",
                 ]
 
     _or_key = (
