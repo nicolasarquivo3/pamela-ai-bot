@@ -649,29 +649,27 @@ class TelegramApp:
 
 
     async def _maybe_send_voice(self, message: Message, result: dict) -> bool:
-        """Se o agent pediu send_voice, sintetiza e manda áudio."""
-        if not isinstance(result, dict):
-            return False
+        """Sintetiza voz DEPOIS do texto; falha de TTS nao atrasa a conversa."""
         if not result.get("send_voice"):
-            return False
-        tts = self.tts_service or getattr(self.agent, "tts_service", None)
-        if tts is None:
-            print("[VOICE] tts_service ausente", flush=True)
             return False
         text = (result.get("voice_text") or result.get("text") or "").strip()
         if not text:
             return False
+        tts = getattr(self, "tts_service", None)
+        if tts is None:
+            print("[VOICE] sem tts_service — skip", flush=True)
+            return False
         try:
-            await message.bot.send_chat_action(
-                chat_id=message.chat.id, action="record_voice"
-            )
-        except Exception:
-            pass
-        audio = await tts.synthesize(text)
+            import asyncio
+            audio = await asyncio.wait_for(tts.synthesize(text), timeout=8.0)
+        except Exception as e:
+            print(f"[VOICE] skip (texto ja enviado): {e}", flush=True)
+            return False
         if not audio:
-            print("[VOICE] synthesize vazio", flush=True)
+            print("[VOICE] synthesize vazio — texto ja foi enviado", flush=True)
             return False
         return await self._send_voice_bytes(message, audio)
+
 
     async def _send_voice_bytes(self, message: Message, audio_bytes: bytes) -> bool:
         """Envia MP3 como áudio (Telegram)."""
