@@ -72,6 +72,28 @@ class LongTermMemoryService:
                 10,
             ),
             (
+                "kink_soft",
+                "variedade_cenas",
+                "NÃO só motel/gangbang. Cenas variadas: festa, balada, churrasco, shopping, "
+                "café, restaurante, facul, academia, bar, after, Uber, casa de amiga. "
+                "Às vezes 1x1, às vezes DP, multi só ocasional. Criatividade e surpresa.",
+                10,
+            ),
+            (
+                "kink_soft",
+                "dupla_penetracao",
+                "Gosta muito de dupla penetração (DP) com dois homens ou brinquedo+pau. "
+                "Pode pedir, marcar e relatar DP com prazer.",
+                10,
+            ),
+            (
+                "fact",
+                "memorizar_aventuras",
+                "Tudo que ela faz e relata fica salvo: nomes, lugares, atos (DP/multi/1x1), "
+                "detalhes. Ela retoma aventuras passadas nas próximas conversas.",
+                10,
+            ),
+            (
                 "person",
                 "amantes_nomes",
                 "Amantes recorrentes com nome: Marcos, Davi, Kevin, Bruno (academia), "
@@ -325,10 +347,51 @@ class LongTermMemoryService:
             (r"\bci[uú]me", "ciume_talk", "milestone", "Ciúme dele já foi assunto entre os dois (provocação leve, sem humilhação).", 7),
             (r"\bamigas?\b", "amigas", "person", "Ela tem amigas com quem sai (balada/facul).", 5),
             (r"\bdormi|dormir|pernoite|passar a noite\b", "dormir_junto", "fact", "Eles dormem juntos em algumas noites.", 6),
+            (r"\bchurrasco\b", "churrasco", "place", "Já rolou / rola churrasco com flerte ou putaria no meio.", 7),
+            (r"\bbalada|festa\b", "balada_festa", "place", "Baladas e festas fazem parte das saídas e aventuras dela.", 7),
+            (r"\bshopping\b", "shopping", "place", "Já conheceu / flertou com alguém no shopping.", 7),
+            (r"\bcaf[eé]\b", "cafe", "place", "Já rolou encontro/flerte em café.", 6),
+            (r"\brestaurante\b", "restaurante", "place", "Já rolou clima ou aventura em restaurante.", 6),
+            (r"\bmotel\b", "motel_as_option", "place", "Motel é uma opção (não a única) nas aventuras.", 5),
+            (r"\bDP\b|dupla penetra|duas pi[ck]as|dois ao mesmo", "dupla_penetracao_feita", "kink_soft", "Já fez / curte dupla penetração (DP) e pode retomar o assunto.", 9),
+            (r"\bbukkake\b", "bukkake_exp", "kink_soft", "Já rolou ou falou de bukkake em alguma aventura.", 7),
+            (r"\bgangbang\b|v[aá]rios caras|v[aá]rios homens", "gangbang_exp", "kink_soft", "Gangbang já entrou em alguma aventura (ocasional, não rotina única).", 7),
         ]
         for pat, key, kind, content, imp in rules:
             if re.search(pat, blob, re.I):
                 await self.upsert(user_id, character_id, content, kind=kind, key=key, importance=imp)
+
+        # Grava resumo curto da aventura relatada (lugar + nomes se houver)
+        if re.search(
+            r"\b(trans[aó]|fode|meteu|goz|arromb|amante|motel|balada|festa|"
+            r"churrasco|shopping|caf[eé]|restaurante|DP|bukkake|gangbang)\b",
+            blob,
+            re.I,
+        ):
+            # nomes masculinos comuns no RP
+            names = re.findall(
+                r"\b(Marcos|Davi|Kevin|Bruno|Tyrell|Andre|André|Rafael|Diego|"
+                r"Pedro|Lucas|Jo[aã]o|Carlos|Felipe|Gabriel|Rafa)\b",
+                (reply_text or "") + " " + (user_text or ""),
+                re.I,
+            )
+            place_m = re.search(
+                r"\b(motel|balada|festa|churrasco|shopping|caf[eé]|restaurante|"
+                r"academia|facul(?:dade)?|uber|carro|praia|bar|casa|after|sauna|airbnb)\b",
+                blob,
+                re.I,
+            )
+            place = place_m.group(1) if place_m else "lugar variado"
+            who = ", ".join(dict.fromkeys(n.title() for n in names[:4])) or "amante(s)"
+            snippet = (reply_text or user_text or "")[:180].replace("\n", " ")
+            await self.upsert(
+                user_id,
+                character_id,
+                f"Aventura lembrada ({place} / {who}): {snippet}",
+                kind="milestone",
+                key=f"aventura_{place.lower()}_{who.lower()[:20].replace(' ', '_')}"[:80],
+                importance=8,
+            )
 
         # marco de evento se reply/user menciona danca colada
         if re.search(r"dan[cç]a\s+colad|colad[oa].*cara|cara.*colad", blob, re.I):

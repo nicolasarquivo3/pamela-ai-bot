@@ -27,7 +27,10 @@ EVENT_CUES = re.compile(
     r"briga|discuss[aã]o|ci[uú]me|chor|triste|feliz|"
     r"te\s+amei|eu\s+te\s+amo|saudade|nosso\s+momento|"
     r"viagem|hotel|praia|shopping|cinema|jantar|"
-    r"primeira\s+vez|n[aã]o\s+esque[cç]o|lembra"
+    r"primeira\s+vez|n[aã]o\s+esque[cç]o|lembra|"
+    r"churrasco|caf[eé]|restaurante|motel|academia|facul|faculdade|"
+    r"after|uber|carro|amante|gangbang|bukkake|\bDP\b|dupla\s+penetra|"
+    r"trans[aó]|fode|meteu|gozou|arromb"
     r")\b"
 )
 
@@ -228,9 +231,10 @@ class EventMemoryService:
                 system = (
                     "Voce resume momentos de um roleplay romantico/adulto ficcional. "
                     "Escreva em portugues brasileiro, 2 a 4 frases, no passado, "
-                    "fatos emocionais e o que aconteceu (lugar, clima, o que fizeram). "
+                    "fatos: LUGAR, NOMES dos envolvidos, o que fizeram "
+                    "(1x1, DP, multi, beijo, etc.), clima emocional. "
                     "Sem meta-comentario, sem ingles, sem [foto]. "
-                    "Se for sensual, resuma o clima sem pornografia grafica."
+                    "Pode ser sensual e direto o suficiente para a personagem lembrar depois."
                 )
                 user = (
                     f"Trechos recentes:\n{context_snip[:1500]}\n\n"
@@ -255,11 +259,24 @@ class EventMemoryService:
 
         # fallback deterministico
         place = "um momento juntos"
-        if re.search(r"(?i)balada|festa|clube", user_text):
+        blob_fb = f"{user_text or ''} {reply_text or ''}"
+        if re.search(r"(?i)churrasco", blob_fb):
+            place = "o churrasco"
+        elif re.search(r"(?i)shopping", blob_fb):
+            place = "o shopping"
+        elif re.search(r"(?i)caf[eé]", blob_fb):
+            place = "o café"
+        elif re.search(r"(?i)restaurante|jantar", blob_fb):
+            place = "o restaurante"
+        elif re.search(r"(?i)motel", blob_fb):
+            place = "o motel"
+        elif re.search(r"(?i)balada|festa|clube|after", blob_fb):
             place = "a balada/festa"
-        elif re.search(r"(?i)casa", user_text):
+        elif re.search(r"(?i)academia", blob_fb):
+            place = "a academia"
+        elif re.search(r"(?i)casa", blob_fb):
             place = "em casa"
-        elif re.search(r"(?i)noite", user_text):
+        elif re.search(r"(?i)noite", blob_fb):
             place = "aquela noite"
         return (
             f"Momento marcado {place}: o usuario relembrou/descreveu "
@@ -268,13 +285,26 @@ class EventMemoryService:
         )[:800]
 
     def _title_from(self, summary: str, user_text: str) -> str:
-        if re.search(r"(?i)balada|festa", user_text + summary):
+        blob = (user_text or "") + " " + (summary or "")
+        if re.search(r"(?i)churrasco", blob):
+            return "Churrasco / evento"
+        if re.search(r"(?i)shopping", blob):
+            return "Encontro no shopping"
+        if re.search(r"(?i)caf[eé]", blob):
+            return "Café / encontro"
+        if re.search(r"(?i)restaurante|jantar", blob):
+            return "Restaurante / jantar"
+        if re.search(r"(?i)\bDP\b|dupla penetra", blob):
+            return "Aventura com DP"
+        if re.search(r"(?i)motel", blob):
+            return "Motel (uma das opcoes)"
+        if re.search(r"(?i)balada|festa|after", blob):
             return "Noite na balada/festa"
-        if re.search(r"(?i)casa|depois", user_text + summary):
+        if re.search(r"(?i)casa|depois", blob):
             return "Depois em casa"
-        if re.search(r"(?i)briga|discuss", user_text + summary):
+        if re.search(r"(?i)briga|discuss", blob):
             return "Discussao/briga"
-        if re.search(r"(?i)viagem|hotel|praia", user_text + summary):
+        if re.search(r"(?i)viagem|hotel|praia", blob):
             return "Viagem/passeio"
         first = (summary or user_text or "Momento")[:60]
         return first.split(".")[0][:80] or "Momento especial"

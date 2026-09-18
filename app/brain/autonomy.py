@@ -297,19 +297,18 @@ class AutonomyService:
 
     # Banco de msgs se LLM falhar (sempre putaria com nomes)
     _PUTARIA_FALLBACKS = (
-        "Amor… acabei de sair do motel com o Marcos e o Tyrell. "
-        "Eles me usaram os dois ao mesmo tempo, fiquei cheia e dorida… "
-        "depois te conto cada detalhe 😈",
-        "To no Uber indo pro Kevin e pro Davi. Eles marcaram bukkake pra mim. "
-        "Vou te mandando o que rolar, ok? Sou sua no final ❤️",
-        "Amor, o Bruno da academia chamou mais dois touros BBC pra hoje. "
-        "Gangbang de novo… to molhada só de imaginar. Te amo.",
-        "Acabei de engolir a porra do Andre e do Rafael. "
-        "Dois de uma vez de novo… quero te contar com calma 🔥",
-        "Amor to me arrumando sem calcinha. Vou encontrar o Tyrell e o Diego. "
-        "Eles vão me arrombar e te mando áudio depois 😏",
-        "Pensei em você enquanto o Marcos me fodia e o Kevin esperava a vez. "
-        "Prefiro assim, mais de um… te amo, depois te conto tudo.",
+        "Amor, acabei de sair de um churrasco com o pessoal da facul… "
+        "o Kevin me puxou no quintal e me comeu escondido. Depois te conto 😈",
+        "To no shopping e um cara me abordou no café. Acho que vou pro carro com ele. "
+        "Te aviso o que rolou — sou sua no final ❤️",
+        "Balada ontem com o Marcos e o Davi. Não foi motel: after na casa do Davi, "
+        "DP pela primeira vez com eles… pernas tremendo. Quer os detalhes?",
+        "Amor fui num evento de trabalho e flertei com um silver fox. "
+        "Rolou beijo no banheiro e ele marcou jantar. Posso ir?",
+        "Café da tarde virou putaria: o Bruno me levou no banheiro do restaurante. "
+        "Rápido, safado, sujo. To sem calcinha ainda 🔥",
+        "Churrasco na casa do Tyrell. Vários amigos. Não foi gangbang — "
+        "fiquei só com ele no quarto de cima… e quero repetir DP quando o Kevin vier.",
     )
 
     async def _llm_text(self, system, messages):
@@ -350,7 +349,7 @@ class AutonomyService:
             "FEZ ou VAI fazer AGORA. "
             "OBRIGATORIO: citar NOME de amante(s) — use Marcos, Davi, Kevin, Bruno, "
             "Tyrell, Andre, Rafael, Diego ou invente outro nome masculino. "
-            "Prefira cenas com MAIS DE UM homem: trio, gangbang, bukkake, touros BBC. "
+            "VARIE o lugar: festa, balada, churrasco, shopping, café, restaurante, facul, academia, bar, after, Uber, casa — NÃO só motel. Varie o formato: 1x1, duo, DP (dupla penetração), multi só às vezes (gangbang/bukkake ocasional, não sempre). "
             "Tom safado/chulo ok (pau, porra, arrombada, usada). "
             "Surpreenda com algo safado. No final: carinho com o namorado "
             "('amor', 'sou sua', 'depois te conto') — NUNCA humilhe ele. "
@@ -376,7 +375,7 @@ class AutonomyService:
         return (
             f"Voce e {name}, personagem virtual adulta em roleplay consensual. "
             "DIRETRIZ: hotwife liberada exibicionista. "
-            "Muitos amantes com NOME. Prefere multi, gangbang, bukkake, BBC. "
+            "Muitos amantes com NOME. Gosta de DP, multi ocasional, BBC. Cenas variadas (festa/churrasco/shopping/café), não só motel/gangbang. "
             "Manda msg sozinha contando putaria que faz/vai fazer. "
             "Surpreende com coisas cada vez mais safadas. "
             "Fala chula nos relatos. Nunca humilha o namorado; e a parceira dele. "
@@ -385,7 +384,7 @@ class AutonomyService:
             f"Memorias semanticas: {context.get('semantic_memories', [])}. "
             f"Emocao: {context.get('emotion')}. "
             f"Relacionamento: {context.get('relationship')}. "
-            "pt-BR natural. Nunca diga que e IA."
+            "pt-BR natural. Varie lugares e tipos de encontro. Memorize o que contou. Nunca diga que e IA."
         )
 
     def _reset_daily_counter(self, state, now):
