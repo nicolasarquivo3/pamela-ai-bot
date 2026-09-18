@@ -354,6 +354,8 @@ CANONE JÁ ACONTECEU
             context["messages"] = msgs
             print("[MULTI] forcou hint ||| no contexto", flush=True)
 
+        context["user_text"] = text
+        self._last_user_text = text
         reply = await self._generate_reply(context, user_id=getattr(user, 'id', None))
 
         # LLM as vezes escreve "[foto] ..." — nunca manda isso como texto
@@ -465,8 +467,10 @@ CANONE JÁ ACONTECEU
             print("[PHOTO-DECIDE] text_only — sem imagem real", flush=True)
 
         # Sem IMAGE_PROMPT: so texto limpo do roleplay
-        base_text = (bubbles[0] if bubbles else None) or reply or "❤️"
-        base_text = re.sub(r"\[\s*(foto|imagem|photo|selfie)\s*\]", "", base_text or "", flags=re.I).strip() or "❤️"
+        base_text = (bubbles[0] if bubbles else None) or reply or ""
+        base_text = re.sub(r"\[\s*(foto|imagem|photo|selfie)\s*\]", "", base_text or "", flags=re.I).strip()
+        if not base_text:
+            base_text = self._fallback_reply(context)
 
         out = {
             "type": "text",
@@ -1195,7 +1199,52 @@ Essa resposta deve ser evitada.
 """.strip()
 
     def _fallback_reply(self, context):
-        return "❤️"
+        """Resposta local quando Gemini+OpenRouter falham — NUNCA so emoji."""
+        import random
+        user_text = ""
+        try:
+            user_text = str(
+                (context or {}).get("user_text")
+                or getattr(self, "_last_user_text", "")
+                or ""
+            )
+            if not user_text:
+                msgs = (context or {}).get("messages") or (context or {}).get("recent_messages") or []
+                for m in reversed(list(msgs)):
+                    if isinstance(m, dict) and (m.get("role") == "user"):
+                        user_text = (m.get("content") or m.get("text") or "")[:300]
+                        break
+        except Exception:
+            user_text = ""
+        ut = (user_text or "").lower()
+
+        if re.search(r"\bo que\b.*\b(faz|vai fazer|fazer)\b|planos?|hoje|agora", ut):
+            opts = [
+                "Amor, hoje to na facul de manhã e à tarde penso em sair de micro vestido pro shopping… te mando foto do look 😈",
+                "Hoje: aula, café com a meninas e à noite talvez barzinho de micro saia. Quer escolher o vestido comigo?",
+                "Pensei em ir na praia depois da facul de micro biquíni novo… e te contar quem olhou 🔥",
+                "Hoje quero só provocar um pouco na rua de vestidinho e voltar pra você. Te atualizo no caminho ❤️",
+            ]
+            return random.choice(opts)
+        if re.search(r"\b(vest|roupa|look|saia|biqu[ií]ni|calcinha)\b", ut):
+            opts = [
+                "To de micro saia preta e top… quase não dá pra sentar sem mostrar 😈 Quer foto?",
+                "Micro vestido vermelho, sem calcinha. Saindo assim agora. O que você acha?",
+                "Biquíni novo minúsculo na gaveta — se rolar praia, é esse. Te mostro?",
+            ]
+            return random.choice(opts)
+        if re.search(r"\b(trans[aó]|sexo|fode|amante|kevin|marcos|davi|bruno|tyrell|motel|gang)\b", ut):
+            opts = [
+                "Amor, o papo esquentou e a conexão falhou um segundo 😅 Me pergunta de novo que eu te conto com calma… e safadeza na medida.",
+                "Quero te contar direito… manda de novo o que você quer saber (detalhe ou só o clima)? Tô aqui 🔥",
+            ]
+            return random.choice(opts)
+        opts = [
+            "Amor, travei um segundo aqui 😅 Me diz de novo? Tô de micro vestido te esperando na conversa ❤️",
+            "Sumir? Nem pensar. Repete pra mim, amor — o que você quer saber?",
+            "Tô aqui. Me fala de novo o que você perguntou que eu respondo direitinho 😘",
+        ]
+        return random.choice(opts)
 
 
     async def autonomous_tick(self):
