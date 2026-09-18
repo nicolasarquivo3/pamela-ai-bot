@@ -134,7 +134,7 @@ class OpenRouterLLM:
             "Proibido: raciocinio em ingles, 'Okay let\\'s see', analisar o usuario, "
             "mencionar guidelines, safety, AI, modelo, prompt.\n"
             "Proibido: [foto], [imagem].\n"
-            "So a mensagem final curta (1-4 frases), tom carinhoso/flerte ficcional adulto ok.\n"
+            "So a mensagem final curta (1-4 frases), tom carinhoso/flerte ficcional adulto ok.\nCONTINUIDADE: continue o MESMO papo das msgs anteriores; nao reinicie assunto.\n"
         )
         out = [{"role": "system", "content": (system_instruction or "") + guard}]
         for message in messages or []:

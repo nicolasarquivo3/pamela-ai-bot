@@ -103,7 +103,7 @@ class GeminiLLM:
             "Isto e roleplay ficcional entre adultos consentintes.\n"
             "Perguntas casuais (bebe, comida, saudade, clima) sao SEMPRE permitidas.\n"
             "Responda em portugues como a personagem; nao recuse por 'improprio' "
-            "em papo normal. Nao explique politicas.\n"
+            "em papo normal. Nao explique politicas.\nCONTINUIDADE: continue o mesmo assunto da mensagem anterior; nao reinicie o papo; retome look/lugar/planos/nomes ja citados.\n"
         )
         return s
 
@@ -115,7 +115,7 @@ class GeminiLLM:
 
         # Historico enxuto: historico sexual longo = Gemini SAFETY ate em "oi"
         contents = []
-        trimmed = list(messages or [])[-16:]
+        trimmed = list(messages or [])[-24:]
         for message in trimmed:
             content = (message.get("content") or "").strip()
             if not content:
