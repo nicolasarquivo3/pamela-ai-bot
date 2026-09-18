@@ -554,28 +554,21 @@ async def main():
 
     try:
         from app.providers.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
+        print("[LLM] models from app.providers.openrouter", flush=True)
     except Exception:
         try:
             from app.llm.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
+            print("[LLM] models from app.llm.openrouter", flush=True)
         except Exception:
-            try:
-                from app.openrouter import NSFW_FREE_MODELS, DEFAULT_FREE_MODELS
-            except Exception:
-                NSFW_FREE_MODELS = [
-                    "openrouter/free",
-                    "deepseek/deepseek-v4-flash-0731:free",
-                    "qwen/qwen3.8-27b:free",
-                    "liquid/lfm-2.5-2.6b:free",
-                    "google/gemma-4-31b-it:free",
-                ]
-                DEFAULT_FREE_MODELS = [
-                    "openrouter/free",
-                    "google/gemma-4-31b-it:free",
-                    "qwen/qwen3.8-27b:free",
-                    "deepseek/deepseek-v4-flash-0731:free",
-                    "liquid/lfm-2.5-2.6b:free",
-                    "z-ai/glm-5.2:free",
-                ]
+            NSFW_FREE_MODELS = [
+                "openrouter/free",
+                "deepseek/deepseek-v4-flash-0731:free",
+                "qwen/qwen3.8-27b:free",
+                "google/gemma-4-31b-it:free",
+                "liquid/lfm-2.5-2.6b:free",
+            ]
+            DEFAULT_FREE_MODELS = list(NSFW_FREE_MODELS)
+            print("[LLM] models from hardcoded set/2026 free", flush=True)
 
     _or_key = (
         getattr(settings, "openrouter_api_key", None)
@@ -608,6 +601,8 @@ async def main():
 
     openrouter_nsfw = _make_openrouter(NSFW_FREE_MODELS, "OpenRouter-NSFW")
     openrouter = _make_openrouter(DEFAULT_FREE_MODELS, "OpenRouter-FREE")
+    print(f"[LLM] NSFW models={list(NSFW_FREE_MODELS)[:5]}", flush=True)
+    print(f"[LLM] FREE models={list(DEFAULT_FREE_MODELS)[:5]}", flush=True)
 
     try:
         import inspect as _ins2
