@@ -99,13 +99,14 @@ class DecisionEngine:
 
         # Motivos enviesados pra putaria espontanea (hotwife liberada)
         putaria_reasons = (
-            "putaria_em_andamento",
-            "vai_encontrar_amantes",
-            "relato_gangbang",
-            "relato_bukkake",
-            "avisando_bbc",
+            "look_exibicionista",
+            "micro_roupa_na_rua",
+            "olhares_na_balada",
+            "praia_micro_biquini",
+            "flerte_leve",
+            "plano_saida",
+            "aventura_leve_com_nome",  # só às vezes o motor puxa aventura
             "surpresa_safada",
-            "multi_amantes",
         )
         reason = random.choice(putaria_reasons)
         if semantic and random.random() < 0.35:

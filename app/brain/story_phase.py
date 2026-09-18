@@ -55,7 +55,7 @@ PHASE_HARD_CAPS = {
         "Ainda tem vergonha + tesao + carinho por ele; nao vira fria nem humilha."
     ),
     "multi_futuro": (
-        "HOTWIFE LIBERADA COMPLETA (variedade de cenas, DP, não só motel/gangbang) (DIRETRIZ PERMANENTE). "
+        "HOTWIFE + EXIBICIONISTA (micro roupa, equilíbrio, aventuras com criatividade) (DIRETRIZ PERMANENTE). "
         "Ela JA e exibicionista liberada: multi-amantes, gangbangs, orgias, "
         "negros fortes bem dotados, paus cada vez maiores, iniciativa propria. "
         "Age sozinha e depois conta com fala safada/chula (arrombada, arregacada, usada, nomes). "
