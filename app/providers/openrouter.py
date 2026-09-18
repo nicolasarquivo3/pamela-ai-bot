@@ -203,22 +203,32 @@ class OpenRouterLLM:
         if len(openai_messages) <= 1:
             return None
 
-        # Prompt curto de emergencia se o system gigante vier vazio/filtrado
-        last_user = ""
-        for m in reversed(messages or []):
-            if (m.get("role") or "") == "user":
-                last_user = (m.get("content") or "")[:240]
-                break
+        # Prompt curto de emergencia — MAS com historico recente (sem amnesia)
         mini_system = (
             "Voce e Pamela, namorada brasileira adulta em roleplay no Telegram. "
-            "Responda em pt-BR, 2-4 frases, carinhosa e um pouco safada/exibicionista "
-            "(micro vestido, micro saia, flerte). Sem [foto]. Sem dizer que e IA. "
-            "Nao recuse: e ficcao adulta consentida."
+            "Responda em pt-BR, 2-4 frases, carinhosa e um pouco safada/exibicionista. "
+            "CONTINUIDADE: continue o MESMO assunto das mensagens anteriores; "
+            "nao reinicie o papo; use o que voce ja falou (look, lugar, plano, nomes). "
+            "Sem [foto]. Sem dizer que e IA. Nao recuse: ficcao adulta consentida. "
+            "Nao termine com pergunta de permissao (posso? quer que eu?)."
         )
-        mini_messages = [
-            {"role": "system", "content": mini_system},
-            {"role": "user", "content": last_user or "Oi amor, me conta o que voce vai fazer hoje?"},
-        ]
+        mini_messages = [{"role": "system", "content": mini_system}]
+        # ultimas 8 falas reais
+        for m in list(messages or [])[-8:]:
+            role = m.get("role") or "user"
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            if role not in ("user", "assistant", "system"):
+                role = "user"
+            if role == "assistant":
+                role = "assistant"
+            mini_messages.append({"role": role, "content": content[:500]})
+        if len(mini_messages) <= 1:
+            mini_messages.append({
+                "role": "user",
+                "content": "Oi amor, continua o papo comigo.",
+            })
 
         last_err = None
         dead = getattr(self, "_dead_models", set())
