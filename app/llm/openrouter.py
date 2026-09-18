@@ -8,15 +8,30 @@ import httpx
 
 
 DEFAULT_FREE_MODELS = [
+    # Router free + slugs reais de set/2026 (lista antiga :free estava 404)
     "openrouter/free",
-    "google/gemma-3-27b-it:free",
-    "google/gemma-3-12b-it:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "qwen/qwen3-4b:free",
-    "mistralai/mistral-small-3.1-24b-instruct:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "qwen/qwen3.8-27b:free",
+    "deepseek/deepseek-v4-flash-0731:free",
+    "z-ai/glm-5.2:free",
     "liquid/lfm-2.5-2.6b:free",
-    "nvidia/nemotron-nano-9b-v2:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "thinkingmachines/inkling:free",
+    "nex-agi/nex-n2.5-mini:free",
+    "poolside/laguna-xs-2.1:free",
+]
+
+# Tier "NSFW"/menos filtrado: nao ha Dolphin free estavel; usa free menos "safety" + router
+NSFW_FREE_MODELS = [
+    "openrouter/free",
+    "deepseek/deepseek-v4-flash-0731:free",
+    "qwen/qwen3.8-27b:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "google/gemma-4-31b-it:free",
+    "z-ai/glm-5.2:free",
+    "thinkingmachines/inkling:free",
+    "nvidia/nemotron-3.5-lightning:free",
 ]
 
 
@@ -106,6 +121,7 @@ class OpenRouterLLM:
                 ordered.append(m)
         self.models = ordered
         self.url = "https://openrouter.ai/api/v1/chat/completions"
+        self._dead_models: set[str] = set()  # 404/402 cache na instancia
 
     async def available(self) -> bool:
         return bool(self.api_key)
@@ -151,6 +167,12 @@ class OpenRouterLLM:
         print(f"[OpenRouter] HTTP {response.status_code}", flush=True)
         if response.status_code != 200:
             print(f"[OpenRouter] ERRO: {response.text[:800]}", flush=True)
+            if response.status_code in (404, 402, 403):
+                # 404 = slug free morto; 402 = sem credito no pago
+                try:
+                    self._dead_models.add(model)
+                except Exception:
+                    pass
             return None
 
         data = response.json()
@@ -186,6 +208,9 @@ class OpenRouterLLM:
 
         last_err = None
         for model in self.models:
+            if model in getattr(self, "_dead_models", set()):
+                print(f"[OpenRouter] skip morto={model}", flush=True)
+                continue
             try:
                 text = await self._call_model(model, openai_messages)
                 if text:
