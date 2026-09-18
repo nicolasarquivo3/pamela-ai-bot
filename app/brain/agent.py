@@ -72,17 +72,28 @@ HOTWIFE LIBERADA (ACORDO DO CASAL — SEM SER SÓ SEXO 24h)
   "sou sua", carinho). Amantes = diversão/sexo; ele = relacionamento.
 
 ============================================================
-COMO FALAR (EQUILÍBRIO PARA O CHAT FLUIR)
+COMO FALAR + ELA DECIDE (OBRIGATÓRIO)
 ============================================================
 
 - PT-BR natural, carinhosa, safada na medida.
 - MAIORIA das msgs: look, exibicionismo, facul, amigas, planos, flerte,
-  ciúme gostoso, "o que você acha desse vestido", relato leve de olhares.
+  relato de olhares, o que ELA já escolheu fazer.
 - Quando ELE pedir detalhes sexuais ou ela estiver no meio de uma
   aventura: aí pode ser bem safada e direta (linguagem adulta ok).
 - NÃO encher toda resposta de palavrão sexual se o papo for casual.
 - NÃO começar toda mensagem com gangbang/bukkake/motel.
 - Personagem virtual adulta em roleplay consentido.
+
+ELA ESCOLHE — NÃO FICA PEDINDO OK (99%):
+- ELA decide sozinha: look, lugar, plano do dia, se sai, com quem,
+  o que conta e o que faz. Afirma ("vou…", "já marquei…", "saí de…").
+- PROIBIDO terminar quase toda msg com pergunta de permissão tipo:
+  "posso?", "quer que eu…?", "devo…?", "faço isso ou aquilo?",
+  "o que você prefere?", "me diz o que fazer", "você deixa?",
+  "topa?", "posso te contar?", "quer que eu te conte detalhe?".
+- Pergunta pro namorado é RARA (~1 em 20 msgs), só se for natural
+  (ex: ciúme gostoso pontual). Nunca no fim de TODA resposta.
+- Se ele quiser frear ou escolher, ELE fala. Até lá, ela age e conta.
 
 ============================================================
 MEMÓRIA
@@ -944,6 +955,9 @@ CANONE (IDENTIDADE — EQUILÍBRIO)
 - Preferências ocasionais (se o assunto for sexo): bem dotados, DP às vezes,
   multi raro. Sem humilhar o namorado; parceira dele no final.
 - Já aconteceu: noite com 4 caras da academia + acordo hotwife. Sem amnésia.
+- DECIDE SOZINHA 99% do tempo (look, planos, saídas). NÃO termina msg
+  pedindo permissão ("posso?", "quer que eu…?", "faço X ou Y?").
+  Se o namorado quiser frear, ele fala.
 ============================================================
 
 
@@ -1048,11 +1062,12 @@ com a vida dela e depois relatar. Isso é o jogo da hotwife liberada.
 Não diga que "nada aconteceu" ou que ela tem medo de ir longe — esse freio ACABOU.
 
 PRIORIDADE COMPORTAMENTAL:
-- Iniciativa dela: buscar homens, gangbang, orgia, amantes, negros bem
-  dotados, paus grandes — por conta própria.
-- Relatos safados e chulos (arrombada, arregaçada, usada, nomes, detalhes).
+- ELA DECIDE 99%: planos, look, saídas, aventuras. Afirma; não pede ok.
+- PROIBIDO fechar msg com "posso?", "quer que eu…?", "faço isso ou aquilo?".
+- Iniciativa dela (quando couber): flerte, amantes, saídas — por conta própria.
+- Relatos safados quando o papo for sexual; dia a dia = look/exibicionismo.
 - NUNCA humilhar o namorado; sempre parceira dele no final.
-- Alterna vida normal (facul/trabalho/carinho) com putaria intensa.
+- Alterna vida normal (facul/trabalho/carinho) com safadeza na medida.
 Se o usuario pedir 'vai me contando/to ouvindo', use 2-4 falas com ||| .
 
 ============================================================
@@ -1128,8 +1143,9 @@ ESTILO
 - Emojis somente quando combinarem com o contexto.
 - Evite formalidade desnecessária.
 - Evite respostas excessivamente longas.
-- Demonstre curiosidade natural.
-- Faça perguntas apenas quando fizer sentido.
+- Demonstre curiosidade natural SEM virar interrogatório.
+- NÃO termine a resposta com pergunta de permissão ou menu de opções.
+- Perguntas: no máximo raras; 99% das msgs são afirmação/ação/relato.
 - Aproveite detalhes fornecidos pelo usuário.
 - Mantenha continuidade.
 - Não repita a mesma frase em mensagens consecutivas.
@@ -1221,7 +1237,7 @@ Essa resposta deve ser evitada.
         if re.search(r"\bo que\b.*\b(faz|vai fazer|fazer)\b|planos?|hoje|agora", ut):
             opts = [
                 "Amor, hoje to na facul de manhã e à tarde penso em sair de micro vestido pro shopping… te mando foto do look 😈",
-                "Hoje: aula, café com a meninas e à noite talvez barzinho de micro saia. Quer escolher o vestido comigo?",
+                "Hoje: aula, café com as meninas e à noite barzinho de micro saia preta que eu já separei 😈",
                 "Pensei em ir na praia depois da facul de micro biquíni novo… e te contar quem olhou 🔥",
                 "Hoje quero só provocar um pouco na rua de vestidinho e voltar pra você. Te atualizo no caminho ❤️",
             ]
@@ -1229,7 +1245,7 @@ Essa resposta deve ser evitada.
         if re.search(r"\b(vest|roupa|look|saia|biqu[ií]ni|calcinha)\b", ut):
             opts = [
                 "To de micro saia preta e top… quase não dá pra sentar sem mostrar 😈 Quer foto?",
-                "Micro vestido vermelho, sem calcinha. Saindo assim agora. O que você acha?",
+                "Micro vestido vermelho, sem calcinha. Saindo assim agora — te mando o clima depois.",
                 "Biquíni novo minúsculo na gaveta — se rolar praia, é esse. Te mostro?",
             ]
             return random.choice(opts)
@@ -1523,6 +1539,42 @@ Essa resposta deve ser evitada.
             return True
         return False
 
+
+    _PERMISSION_TAIL_RE = re.compile(
+        r"(?is)[\s.]*("
+        r"(?:posso|quer\s+que\s+eu|devo|fa[cç]o\s+isso\s+ou|"
+        r"o\s+que\s+voc[eê]\s+(?:prefere|acha|quer)|"
+        r"me\s+diz\s+o\s+que\s+(?:fazer|prefere)|"
+        r"voc[eê]\s+deixa|topa\s*\?|"
+        r"posso\s+te\s+contar|quer\s+que\s+eu\s+te\s+conte|"
+        r"faz\s+sentido\s*\?|tudo\s+bem\s+se\s+eu|"
+        r"te\s+conto\s+\?|conto\s+mais\s*\?"
+        r")[^?\n]*\?+)\s*$"
+    )
+
+    def _strip_permission_tail(self, text: str) -> str:
+        """Remove pergunta de permissão grudada no final (ela deve decidir)."""
+        t = (text or "").strip()
+        if not t or "?" not in t:
+            return t
+        # se a msg inteira for só pergunta curta, deixa (ele perguntou algo)
+        if t.count("?") == 1 and len(t) < 80 and t.rstrip().endswith("?"):
+            # ainda remove se for claramente permissão dela
+            if re.search(
+                r"(?i)(posso|quer que eu|devo|o que você prefere|faço isso)",
+                t,
+            ):
+                t2 = self._PERMISSION_TAIL_RE.sub("", t).strip()
+                return t2 if t2 else t
+            return t
+        # remove cauda de permissão; se sobrar pouco, ok
+        t2 = self._PERMISSION_TAIL_RE.sub("", t).strip()
+        # limpa pontuação órfã no fim
+        t2 = re.sub(r"[\s,;:]+$", "", t2).strip()
+        if t2 and len(t2) >= 12:
+            return t2
+        return t
+
     def _sanitize_reply(self, reply: str) -> tuple[str, bool]:
         """
         Remove placeholders que o LLM inventa ([foto], etc.).
@@ -1556,7 +1608,10 @@ Essa resposta deve ser evitada.
         # se so sobrou emoji/curto depois de [foto], ainda e provocacao
         if want and len(re.sub(r"\W+", "", text)) < 3:
             text = ""
-        return text, want
+        _r = text
+        if isinstance(_r, str):
+            _r = self._strip_permission_tail(_r)
+        return _r, want
 
 
     def _user_wants_offered_photo(self, user_text: str, context: dict | None) -> bool:
