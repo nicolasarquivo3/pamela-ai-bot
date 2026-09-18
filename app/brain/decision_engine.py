@@ -101,11 +101,13 @@ class DecisionEngine:
         putaria_reasons = (
             "look_exibicionista",
             "micro_roupa_na_rua",
+            "danca_rebolado_balada",
+            "esfregando_na_pista",
             "olhares_na_balada",
             "praia_micro_biquini",
             "flerte_leve",
             "plano_saida",
-            "aventura_leve_com_nome",  # só às vezes o motor puxa aventura
+            "aventura_leve_com_nome",
             "surpresa_safada",
         )
         reason = random.choice(putaria_reasons)

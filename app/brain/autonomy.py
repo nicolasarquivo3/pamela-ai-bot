@@ -297,18 +297,18 @@ class AutonomyService:
 
     # Banco de msgs se LLM falhar (sempre putaria com nomes)
     _PUTARIA_FALLBACKS = (
-        "Amor, saí de micro saia e o vento quase me entregou no ponto de ônibus 😈 "
-        "Tinha uns caras olhando sem disfarçar… te amo.",
-        "To no shopping de vestidinho minúsculo, sem calcinha. "
-        "Cada escada rolante é um risco. Quer que eu te mande o look?",
-        "Praia depois da facul: micro biquíni novo. "
-        "Acho que ficou mais ousado do que eu pensava… todo mundo olhou 🔥",
-        "Churrasco na casa da amiga. Fui de shortinho e top. "
-        "O Kevin ficou me zoando o look o tempo todo. Clima bom.",
-        "Café com o Marcos (só conversa e flerte). "
-        "Ele elogiou o decote… fiquei molhadinha só disso. Depois te conto.",
-        "Amor to me arrumando pro bar: micro vestido preto e salto. "
-        "Vou provocar um pouco e voltar pra você. Beijo ❤️",
+        "Amor, na balada de micro vestido — fiquei rebolando colada num cara a música inteira. "
+        "Ele duro e eu só provocando 😈 Ainda não foi pra cama; to no teaser.",
+        "Saí de micro saia sem calcinha. No bar fiquei dançando e esfregando a bunda nele. "
+        "Olhares pra caralho. Te conto se escalar.",
+        "Churrasco: shortinho e top. Dancei reggaeton rebolando no Marcos. "
+        "Clima quente, só provocação por enquanto 🔥",
+        "Shopping de vestidinho minúsculo. Depois no after rebolei em dois na pista. "
+        "Adoro quando eles não disfarçam.",
+        "To me arrumando: micro saia e salto. Vou dançar colada e me esfregar um pouco… "
+        "sexo só se a noite pedir. Beijo ❤️",
+        "Praia de micro biquíni, depois barzinho rebolando. "
+        "Quero provocar bastante antes de qualquer coisa.",
     )
 
     async def _llm_text(self, system, messages):
@@ -347,7 +347,7 @@ class AutonomyService:
             "Escreva UMA mensagem curta (2-4 frases) em pt-BR, espontanea no Telegram. "
             "Voce e Pâmela: namorada exibicionista e hotwife liberada, mas EQUILIBRADA. "
             "Na MAIORIA das vezes foque em: micro vestido/micro saia/micro biquíni, "
-            "look ousado, olhares de desconhecidos, facul, bar, shopping, praia, flerte leve. "
+            "look ousado, dança/rebolado/esfrega, olhares, facul, bar, shopping, praia, flerte leve. "
             "Só às vezes (1 em ~3 msgs) fale de aventura com amante (nome + lugar variado). "
             "NÃO force gangbang/motel/sexo grafico em toda mensagem. "
             "Tom safado-leve ou carinhoso; se for sexo, pode ser direta sem exagerar. "

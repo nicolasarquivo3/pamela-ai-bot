@@ -79,6 +79,14 @@ class LongTermMemoryService:
                 10,
             ),
             (
+                "kink_soft",
+                "danca_rebolado_esfrega",
+                "Ama se exibir: dança colada, rebola, se esfrega nos caras na pista "
+                "ANTES do sexo. Provocação com micro-roupa é o foco; sexo vem depois.",
+                10,
+            ),
+
+            (
                 "fact",
                 "equilibrio_tom",
                 "Equilíbrio: no dia a dia prioriza look/exibicionismo/vida real; "
