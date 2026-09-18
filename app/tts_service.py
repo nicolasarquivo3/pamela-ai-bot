@@ -398,9 +398,10 @@ class EdgeTTSService:
         self.enabled = bool(enabled) and (
             os.getenv("TTS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
-        self.rate = (rate or os.getenv("TTS_RATE") or "-35%").strip()
-        self.pitch = (pitch or os.getenv("TTS_PITCH") or "-8Hz").strip()
-        self.volume = (volume or os.getenv("TTS_VOLUME") or "-12%").strip()
+        self.rate = (rate or os.getenv("TTS_RATE") or "-20%").strip()
+        self.pitch = (pitch or os.getenv("TTS_PITCH") or "-6Hz").strip()
+        raw_vol = (volume or os.getenv("TTS_VOLUME") or "+0%").strip()
+        self.volume = self._norm_edge_volume(raw_vol)
         self.max_chars = int(os.getenv("TTS_MAX_CHARS") or max_chars)
         self.style = (style or os.getenv("TTS_STYLE") or "whisper").strip().lower()
         # SSML DESLIGADO: edge-tts lia as tags em voz alta
@@ -417,6 +418,23 @@ class EdgeTTSService:
             return True
         except Exception:
             return False
+
+
+
+    @staticmethod
+    def _norm_edge_volume(raw: str) -> str:
+        """edge-tts exige +0% / -10% (com %). '-12' sozinho quebra (Invalid volume)."""
+        import re as _re
+        v = (raw or "+0%").strip()
+        if not v:
+            return "+0%"
+        m = _re.fullmatch(r"([+-]?\d{1,3})%?", v)
+        if not m:
+            return "+0%"
+        n = int(m.group(1))
+        n = max(-50, min(50, n))
+        sign = "+" if n >= 0 else ""
+        return f"{sign}{n}%"
 
 
     def _plain_for_edge(self, text: str) -> str:

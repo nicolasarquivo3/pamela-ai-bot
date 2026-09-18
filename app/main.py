@@ -723,23 +723,33 @@ async def main():
 
     # ---------- Autonomy ----------
     try:
+        def _make_memory_pack(session):
+            """(MemoryManager, SemanticMemoryManager, ContextManager) p/ autonomia."""
+            (
+                memory_manager,
+                semantic_manager,
+                _emotion,
+                _relationship,
+                context_manager,
+                *_rest,
+            ) = make_brain_components(session)
+            return memory_manager, semantic_manager, context_manager
+
         autonomy = AutonomyService(
             session_factory=SessionLocal,
             telegram_bot=telegram_app.bot,
             llm=llm,
-            memory_manager_factory=lambda s: MemoryManager(
-                s, MemoryExtractor(), Deduplicator()
-            ),
+            memory_manager_factory=_make_memory_pack,
             image_service=image_service,
             min_interval_minutes=int(
                 getattr(settings, "autonomy_interval_minutes", None)
                 or os.getenv("AUTONOMY_INTERVAL_MINUTES")
-                or 30
+                or 20
             ),
             max_daily_messages=int(
                 getattr(settings, "autonomy_max_daily", None)
                 or os.getenv("AUTONOMY_MAX_DAILY")
-                or 12
+                or 18
             ),
         )
         agent.autonomy_service = autonomy
