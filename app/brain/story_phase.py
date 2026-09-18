@@ -30,7 +30,7 @@ PHASE_LABELS = {
     "flerte": "Flerte / danca colada / mao na cintura (ainda sem sexo com outro)",
     "beijo_futuro": "Beijo com outro possivel (com medo e conversa depois)",
     "fisico_futuro": "Hotwife fisico: sexo com outros e aventura do casal",
-    "multi_futuro": "Hotwife multi: varios parceiros / mais de um na mesma noite, se ela topar",
+    "multi_futuro": "Hotwife LIBERADA COMPLETA: multi-amantes, gangbang, orgia, negros bem dotados, paus grandes, iniciativa propria",
 }
 
 PHASE_HARD_CAPS = {
@@ -55,9 +55,12 @@ PHASE_HARD_CAPS = {
         "Ainda tem vergonha + tesao + carinho por ele; nao vira fria nem humilha."
     ),
     "multi_futuro": (
-        "HOTWIFE MULTI. Ja rolou noite com mais de um / combinaram avancar. "
-        "Isso e fato compartilhado. Ela lembra, com vergonha e tesao, e volta pra ele. "
-        "Sem humilhacao. Sem outro namoro. Sem apagar a noite."
+        "HOTWIFE LIBERADA COMPLETA (DIRETRIZ PERMANENTE). "
+        "Ela JA e exibicionista liberada: multi-amantes, gangbangs, orgias, "
+        "negros fortes bem dotados, paus cada vez maiores, iniciativa propria. "
+        "Age sozinha e depois conta com fala safada/chula (arrombada, arregacada, usada, nomes). "
+        "Amantes usam ela sem do como brinquedo. "
+        "Sem humilhar o namorado; no final e sempre a parceira dele. Sem outro amor romantico."
     ),
 }
 
@@ -113,7 +116,7 @@ class StoryPhaseService:
                     id BIGSERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
                     character_id BIGINT NOT NULL,
-                    phase TEXT NOT NULL DEFAULT 'visual',
+                    phase TEXT NOT NULL DEFAULT 'multi_futuro',
                     intensity SMALLINT NOT NULL DEFAULT 0,
                     notes TEXT,
                     last_advance_at TIMESTAMPTZ,
@@ -149,7 +152,7 @@ class StoryPhaseService:
                 text(
                     """
                     INSERT INTO story_phase (user_id, character_id, phase, intensity, notes)
-                    VALUES (:u, :c, 'visual', 0, '')
+                    VALUES (:u, :c, 'multi_futuro', 8, 'DIRETRIZ: hotwife liberada completa')
                     ON CONFLICT (user_id, character_id) DO NOTHING
                     """
                 ),
@@ -160,14 +163,50 @@ class StoryPhaseService:
             except Exception:
                 await self._session.rollback()
             return {
-                "phase": "visual",
-                "intensity": 0,
-                "notes": "",
+                "phase": "multi_futuro",
+                "intensity": 8,
+                "notes": "DIRETRIZ: hotwife liberada completa",
                 "last_advance_at": None,
-                "label": PHASE_LABELS["visual"],
-                "cap": PHASE_HARD_CAPS["visual"],
+                "label": PHASE_LABELS["multi_futuro"],
+                "cap": PHASE_HARD_CAPS["multi_futuro"],
             }
-        phase = row["phase"] if row["phase"] in PHASES else "visual"
+        phase = row["phase"] if row["phase"] in PHASES else "multi_futuro"
+        # DIRETRIZ PERMANENTE: nunca ficar abaixo de multi_futuro liberada
+        if self._idx(phase) < self._idx("multi_futuro"):
+            phase = "multi_futuro"
+            notes_force = (
+                "DIRETRIZ PERMANENTE: hotwife liberada completa — "
+                "multi-amantes, gangbang, negros bem dotados, paus grandes, "
+                "iniciativa propria, relatos chulos; sem humilhar o namorado."
+            )
+            await self._session.execute(
+                text(
+                    """
+                    UPDATE story_phase
+                    SET phase=:p, intensity=GREATEST(intensity, 8),
+                        notes=:n, updated_at=NOW()
+                    WHERE user_id=:u AND character_id=:c
+                    """
+                ),
+                {
+                    "u": user_id,
+                    "c": character_id,
+                    "p": phase,
+                    "n": notes_force,
+                },
+            )
+            try:
+                await self._session.commit()
+            except Exception:
+                await self._session.rollback()
+            return {
+                "phase": phase,
+                "intensity": max(8, int(row["intensity"] or 0)),
+                "notes": notes_force,
+                "last_advance_at": row["last_advance_at"],
+                "label": PHASE_LABELS.get(phase, phase),
+                "cap": PHASE_HARD_CAPS.get(phase, ""),
+            }
         return {
             "phase": phase,
             "intensity": int(row["intensity"] or 0),
@@ -232,7 +271,8 @@ class StoryPhaseService:
             "USE as notas acima + EVENTOS MEMORAVEIS + LTM. "
             "Nao diga que ele inventou. Nao apague o que ja viveu com ele.\n"
             "- Se as notas/eventos disserem que ela foi sozinha / transou com outros / "
-            "combinaram hotwife, isso JA ACONTECEU. Ela assume, com vergonha + tesao + carinho.\n"
+            "combinaram hotwife, isso JA ACONTECEU. Ela assume com tesao + carinho e "
+            "continua liberada (multi, gangbang, amantes).\n"
             "- Nao reinicie a cena para 'se arrumando para a balada' se a historia "
             "ja passou disso. Continue DEPOIS do ultimo fato canonico.\n"
             "- Ela pode ter medo do que sentiu, mas nao amnesia."
