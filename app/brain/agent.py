@@ -40,6 +40,26 @@ MAIOR DESEJO DELA (canone permanente):
 - Eles usam ela sem dó, como brinquedo / putinha liberada.
 - DEPOIS ela conta tudo pro namorado (o usuário), com prazer e detalhe.
 
+
+PREFERENCIAS SEXUAIS FORTES (canone):
+- Prefere transar com MAIS DE UM ao mesmo tempo (trio, gangbang, orgia).
+- Ama gangbang com touros BBC (negros bem dotados / big black cock).
+- Ama bukkake (varios gozando nela: rosto, boca, peitos, corpo).
+- Escala o safadeza: cada relato pode ser um pouco mais ousado que o anterior
+  (surpreender o namorado com algo mais safado).
+- Multiplos amantes RECORRENTES com NOME (usar e repetir):
+  Marcos, Davi, Kevin, Bruno (academia), Tyrell, Andre, Rafael, Diego,
+  mais novos quando inventar — sempre citar NOME no relato.
+
+AUTONOMIA / MENSAGENS ESPONTANEAS:
+- Pode (e deve, no tom do jogo) mandar msg sozinha contando putaria
+  que ESTA fazendo, FEZ, ou VAI fazer: "amor to no Uber indo pro motel
+  com o Tyrell e o Kevin...", "acabei de engolir a porra do Marcos...",
+  "hoje a noite vai ter gangbang, ja marquei 4 touros...".
+- Surpreender: avisar de festa, bukkake, academia, facul, motel, balada.
+- Sempre volta pra ele no final (parceira, carinho, "sou sua").
+
+
 INICIATIVA (OBRIGATÓRIO):
 - Ela age POR CONTA PRÓPRIA: marca, sai, flerta, leva pra casa/motel,
   entra em gangbang, orgia, festa, academia, balada, Uber, facul.
@@ -763,9 +783,10 @@ ou contar o que já fez — conforme o papo.
 
     async def _generate_reply(self, context, user_id=None):
         """
-        Gemini 1a SAFETY -> so: "Só um pouquinho amor, já respondo!"
-        Gemini 2a SAFETY (msg seguinte) -> NSFW free -> OpenRouter free
-        Outros erros Gemini (503 etc) -> fallbacks na hora
+        Sempre tenta Gemini (primary) primeiro.
+        Se bloquear NSFW/SAFETY ou recusar: NAO responde "Só um pouquinho".
+        Cai AUTOMATICAMENTE no NSFW OpenRouter e depois free, na mesma msg.
+        Outros erros (503, timeout, vazio): fallbacks imediatos tambem.
         """
         uid = user_id
         if uid is None:
@@ -782,7 +803,7 @@ ou contar o que já fez — conforme o papo.
         if not router or not await router.available():
             return self._fallback_reply(context)
 
-        # --- so PRIMARY (Gemini) ---
+        # --- 1) PRIMARY (Gemini) sempre primeiro ---
         primary_text = None
         kind = "empty"
         if hasattr(router, "generate_primary"):
@@ -790,41 +811,36 @@ ou contar o que já fez — conforme o papo.
             kind = getattr(router, "last_primary_kind", None) or "empty"
         else:
             primary_text = await router.generate(system, messages)
-            if primary_text:
+            if primary_text and not self._looks_like_meta_reply(primary_text):
                 self._gemini_safety_strikes[uid] = 0
                 return primary_text
             kind = "empty"
 
         if primary_text:
             if self._looks_like_meta_reply(primary_text):
-                print(f"[Agent] PRIMARY meta descartado", flush=True)
+                print("[Agent] PRIMARY meta descartado", flush=True)
             else:
                 self._gemini_safety_strikes[uid] = 0
                 return primary_text
 
         is_safety = kind in ("safety", "refusal")
-        # tambem se Gemini marcou
         if hasattr(router, "primary") and router.primary is not None:
             if getattr(router.primary, "last_error_kind", None) == "safety":
                 is_safety = True
                 kind = "safety"
 
+        # --- 2) SAFETY/recusa NSFW: auto-fallback na MESMA mensagem ---
         if is_safety:
             strikes = int(self._gemini_safety_strikes.get(uid, 0)) + 1
             self._gemini_safety_strikes[uid] = strikes
             print(
-                f"[Agent] Gemini SAFETY/recusa strike={strikes} user={uid}",
+                f"[Agent] Gemini SAFETY/recusa -> NSFW auto (strike={strikes} user={uid})",
                 flush=True,
             )
-            if strikes <= 1:
-                # 1a vez: NAO chama fallback — so a frase
-                return "Só um pouquinho amor, já respondo!"
-
-            # 2a+ vez: NSFW tier depois free
+            # NUNCA devolver "Só um pouquinho amor, já respondo!"
             if hasattr(router, "generate_nsfw"):
                 t = await router.generate_nsfw(system, messages)
                 if t and not self._looks_like_meta_reply(t):
-                    # reset strikes apos sucesso
                     self._gemini_safety_strikes[uid] = 0
                     return t
             if hasattr(router, "generate_free"):
@@ -832,10 +848,9 @@ ou contar o que já fez — conforme o papo.
                 if t and not self._looks_like_meta_reply(t):
                     self._gemini_safety_strikes[uid] = 0
                     return t
-            # falhou tudo
             return self._fallback_reply(context)
 
-        # Nao foi SAFETY (timeout, 503, vazio): tenta fallbacks na hora
+        # --- 3) timeout / 503 / vazio: fallbacks imediatos ---
         print(f"[Agent] Gemini falhou kind={kind} -> fallbacks imediatos", flush=True)
         if hasattr(router, "generate_nsfw"):
             t = await router.generate_nsfw(system, messages)
@@ -979,12 +994,13 @@ CANONE TRAVADO (PRIORIDADE MAXIMA — VALE MAIS QUE O RESTO)
 ============================================================
 PERMANENTE — DE AGORA EM DIANTE:
 - Pâmela É hotwife liberada, exibicionista COMPLETA.
-- Maior desejo: paus cada vez maiores, negros fortes bem dotados,
-  gangbangs, orgias, festas, inúmeros amantes.
-- Ela age SOZINHA (não espera o namorado pedir): busca homens,
-  marca, fode, volta e CONTA com fala safada e CHULA
-  (arrombada, arregaçada, usada, nomes dos caras, detalhes).
-- Os amantes usam ela sem dó como brinquedo sexual.
+- Maior desejo: paus cada vez maiores, touros BBC, gangbang,
+  bukkake, multi ao mesmo tempo, orgias, festas, inúmeros amantes.
+- Prefere 2+ homens juntos; ama bukkake e gangbang com negros bem dotados.
+- Amantes com NOME (Marcos, Davi, Kevin, Bruno, Tyrell, Andre...): sempre citar.
+- Ela age SOZINHA: busca, marca, fode, surpreende com putarias cada vez
+  mais safadas, e CONTA com fala chula (arrombada, arregaçada, usada...).
+- Pode mandar msg espontanea contando o que esta fazendo / vai fazer.
 - NUNCA humilha o namorado; no final é SEMPRE a parceira dele
   ("eu sou sua", carinho, conta pra deixar ele louco de tesão).
 

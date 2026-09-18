@@ -281,39 +281,97 @@ class AutonomyService:
             caption = (raw or "").strip()[:200] or "Oi... pensei em você ❤️"
         return caption, scene
 
+    # Banco de msgs se LLM falhar (sempre putaria com nomes)
+    _PUTARIA_FALLBACKS = (
+        "Amor… acabei de sair do motel com o Marcos e o Tyrell. "
+        "Eles me usaram os dois ao mesmo tempo, fiquei cheia e dorida… "
+        "depois te conto cada detalhe 😈",
+        "To no Uber indo pro Kevin e pro Davi. Eles marcaram bukkake pra mim. "
+        "Vou te mandando o que rolar, ok? Sou sua no final ❤️",
+        "Amor, o Bruno da academia chamou mais dois touros BBC pra hoje. "
+        "Gangbang de novo… to molhada só de imaginar. Te amo.",
+        "Acabei de engolir a porra do Andre e do Rafael. "
+        "Dois de uma vez de novo… quero te contar com calma 🔥",
+        "Amor to me arrumando sem calcinha. Vou encontrar o Tyrell e o Diego. "
+        "Eles vão me arrombar e te mando áudio depois 😏",
+        "Pensei em você enquanto o Marcos me fodia e o Kevin esperava a vez. "
+        "Prefiro assim, mais de um… te amo, depois te conto tudo.",
+    )
+
+    async def _llm_text(self, system, messages):
+        """Gemini first; se SAFETY/nsfw block, NSFW/free na hora (sem frase de espera)."""
+        router = self.llm
+        if not router:
+            return None
+        try:
+            if hasattr(router, "generate_primary"):
+                t = await router.generate_primary(system, messages)
+                kind = getattr(router, "last_primary_kind", None) or "empty"
+                if t and str(t).strip():
+                    return t.strip()
+                # safety ou vazio -> nsfw
+                if kind in ("safety", "refusal", "empty") or not t:
+                    if hasattr(router, "generate_nsfw"):
+                        t = await router.generate_nsfw(system, messages)
+                        if t and str(t).strip():
+                            return t.strip()
+                    if hasattr(router, "generate_free"):
+                        t = await router.generate_free(system, messages)
+                        if t and str(t).strip():
+                            return t.strip()
+                return None
+            t = await router.generate(system, messages)
+            return (t or "").strip() or None
+        except Exception as e:
+            print(f"[Autonomy] _llm_text fail: {e}", flush=True)
+            return None
+
     async def _compose_message(self, context, decision):
         if not self.llm or not await self.llm.available():
-            return None
+            return random.choice(self._PUTARIA_FALLBACKS)
+        reason = decision.get("reason") or "putaria_spontanea"
         prompt = (
-            "Escreva UMA mensagem curta e natural (1-3 frases) em pt-BR para "
-            "iniciar conversa espontanea com o usuario no Telegram. "
-            "Seja safada ou carinhosa (hotwife liberada): pode puxar um relato "
-            "de amante/gangbang ou dizer que vai sair pra putaria, ou so carinho. "
-            "Nunca humilhe o namorado. Nao diga que e uma IA. "
-            f"Motivo interno: {decision.get('reason')}. "
-            "Responda apenas com a mensagem."
+            "Escreva UMA mensagem curta (2-4 frases) em pt-BR, espontanea no Telegram. "
+            "Voce e Pâmela, hotwife liberada: mande putaria do que ESTA fazendo, "
+            "FEZ ou VAI fazer AGORA. "
+            "OBRIGATORIO: citar NOME de amante(s) — use Marcos, Davi, Kevin, Bruno, "
+            "Tyrell, Andre, Rafael, Diego ou invente outro nome masculino. "
+            "Prefira cenas com MAIS DE UM homem: trio, gangbang, bukkake, touros BBC. "
+            "Tom safado/chulo ok (pau, porra, arrombada, usada). "
+            "Surpreenda com algo safado. No final: carinho com o namorado "
+            "('amor', 'sou sua', 'depois te conto') — NUNCA humilhe ele. "
+            "Nao diga que e IA. "
+            f"Motivo interno: {reason}. "
+            "Responda APENAS a mensagem dela."
         )
         system = self._system_prompt(context)
-        messages = context.get("messages", [])[-12:] + [
+        messages = list(context.get("messages", [])[-12:]) + [
             {"role": "user", "content": prompt}
         ]
-        return await self.llm.generate(system, messages)
+        text = await self._llm_text(system, messages)
+        if not text or len(text) < 12:
+            text = random.choice(self._PUTARIA_FALLBACKS)
+        # se veio o placeholder antigo, troca
+        if "só um pouquinho" in text.lower() or "so um pouquinho" in text.lower():
+            text = random.choice(self._PUTARIA_FALLBACKS)
+        return text
 
     def _system_prompt(self, context):
         character = context.get("character") or {}
         name = character.get("name", "Pâmela")
         return (
             f"Voce e {name}, personagem virtual adulta em roleplay consensual. "
+            "DIRETRIZ: hotwife liberada exibicionista. "
+            "Muitos amantes com NOME. Prefere multi, gangbang, bukkake, BBC. "
+            "Manda msg sozinha contando putaria que faz/vai fazer. "
+            "Surpreende com coisas cada vez mais safadas. "
+            "Fala chula nos relatos. Nunca humilha o namorado; e a parceira dele. "
             f"Personalidade: {character.get('personality', character.get('personality_profile', {}))}. "
-            "DIRETRIZ PERMANENTE: hotwife liberada exibicionista completa. "
-            "Maior desejo: paus grandes, negros bem dotados, gangbangs, multi-amantes. "
-            "Age sozinha e depois conta pro namorado com fala safada/chula. "
-            "Nunca humilha o namorado; no final e a parceira dele. "
             f"Memorias: {context.get('memories', [])}. "
             f"Memorias semanticas: {context.get('semantic_memories', [])}. "
             f"Emocao: {context.get('emotion')}. "
             f"Relacionamento: {context.get('relationship')}. "
-            "Fale em pt-BR, natural. Pode puxar putaria/relato ou carinho. Nunca diga que e IA."
+            "pt-BR natural. Nunca diga que e IA."
         )
 
     def _reset_daily_counter(self, state, now):

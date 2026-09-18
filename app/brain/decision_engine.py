@@ -68,7 +68,7 @@ class DecisionEngine:
                 last_user_at = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
                 if last_user_at.tzinfo is None:
                     last_user_at = last_user_at.replace(tzinfo=timezone.utc)
-                quiet_after_user = max(10, self.min_interval_minutes * 0.4)
+                quiet_after_user = max(5, self.min_interval_minutes * 0.25)
                 mins = (now - last_user_at).total_seconds() / 60
                 if mins < quiet_after_user:
                     return {
@@ -82,14 +82,14 @@ class DecisionEngine:
         if closeness < 0.05 and len(messages) < 4:
             return {"action": "wait", "reason": "relationship_too_new"}
 
-        score = 0.35
+        score = 0.45
         score += closeness * 0.30
         score += curiosity * 0.20
         score += trust * 0.15
         score += min(0.15, len(memories) * 0.03 + len(semantic) * 0.03)
         score += random.uniform(-0.05, 0.08)
 
-        threshold = 0.40
+        threshold = 0.28
         if score < threshold:
             return {
                 "action": "wait",
@@ -97,12 +97,22 @@ class DecisionEngine:
                 "score": round(score, 3),
             }
 
-        reason = "missing_you"
-        if semantic:
+        # Motivos enviesados pra putaria espontanea (hotwife liberada)
+        putaria_reasons = (
+            "putaria_em_andamento",
+            "vai_encontrar_amantes",
+            "relato_gangbang",
+            "relato_bukkake",
+            "avisando_bbc",
+            "surpresa_safada",
+            "multi_amantes",
+        )
+        reason = random.choice(putaria_reasons)
+        if semantic and random.random() < 0.35:
             reason = "contextual_memory"
-        elif memories:
+        elif memories and random.random() < 0.25:
             reason = "remembered_user_detail"
-        elif curiosity > 0.4:
+        elif curiosity > 0.55 and random.random() < 0.2:
             reason = "curiosity_and_closeness"
 
         return {
