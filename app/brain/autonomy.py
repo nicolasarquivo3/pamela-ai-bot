@@ -99,9 +99,23 @@ class AutonomyService:
         state = locked.scalar_one()
         self._reset_daily_counter(state, now)
 
-        memory_manager, semantic_manager, context_manager = self.memory_manager_factory(
-            session
-        )
+        packed = self.memory_manager_factory(session)
+        # Aceita 3-tupla OU um MemoryManager sozinho (main antigo no Render).
+        if isinstance(packed, (tuple, list)) and len(packed) >= 3:
+            memory_manager, semantic_manager, context_manager = (
+                packed[0], packed[1], packed[2]
+            )
+        else:
+            memory_manager = packed
+            from app.brain.semantic_memory import SemanticMemoryManager
+            from app.brain.context_manager import ContextManager
+            semantic_manager = SemanticMemoryManager(session)
+            # ContextManager(session, memory_manager, semantic_manager) — posicional
+            context_manager = ContextManager(
+                session,
+                memory_manager,
+                semantic_memory_manager=semantic_manager,
+            )
         context = await context_manager.build(
             user.id, character_id, query=None, semantic_manager=semantic_manager
         )
