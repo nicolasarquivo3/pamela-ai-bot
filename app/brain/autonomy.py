@@ -351,9 +351,9 @@ class AutonomyService:
             "Só às vezes (1 em ~3 msgs) fale de aventura com amante (nome + lugar variado). "
             "NÃO force gangbang/motel/sexo grafico em toda mensagem. "
             "Tom safado-leve ou carinhoso; se for sexo, pode ser direta sem exagerar. "
-            "ELA DECIDE sozinha (nao peca permissao no fim). Nunca humilhe o namorado; 'amor', 'sou sua'. Nao diga que e IA. "
+            "ELA DECIDE sozinha. ZERO pergunta no fim (proibido: posso?, quer que eu?, faço X ou Y?, o que prefere?). Nunca humilhe o namorado; 'amor', 'sou sua'. Nao diga que e IA. "
             f"Motivo interno: {reason}. "
-            "Responda APENAS a mensagem dela."
+            "PROIBIDO terminar com pergunta (posso? quer que eu? faço X ou Y?). Afirme o que esta fazendo. Responda APENAS a mensagem dela."
         )
         system = self._system_prompt(context)
         messages = list(context.get("messages", [])[-12:]) + [
