@@ -24,9 +24,9 @@ class Settings(BaseSettings):
 
     # AUTONOMIA
     autonomy_token: str
-    autonomy_min_interval_minutes: int = 30
-    autonomy_max_daily_messages: int = 12
-    autonomy_tick_seconds: int = 600
+    autonomy_min_interval_minutes: int = 20
+    autonomy_max_daily_messages: int = 18
+    autonomy_tick_seconds: int = 300
 
     # IMAGENS
     cloudflare_account_id: str | None = None
