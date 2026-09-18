@@ -371,6 +371,8 @@ CANONE JÁ ACONTECEU
 
         # LLM as vezes escreve "[foto] ..." — nunca manda isso como texto
         reply, force_photo = self._sanitize_reply(reply)
+        if reply:
+            self._last_assistant_text = reply
         try:
             if self.long_term_memory_service is not None:
                 await self.long_term_memory_service.maybe_extract(
@@ -482,6 +484,7 @@ CANONE JÁ ACONTECEU
         base_text = re.sub(r"\[\s*(foto|imagem|photo|selfie)\s*\]", "", base_text or "", flags=re.I).strip()
         if not base_text:
             base_text = self._fallback_reply(context)
+        base_text = self._force_no_ask_ok(base_text or "")
 
         out = {
             "type": "text",
@@ -817,6 +820,56 @@ CANONE JÁ ACONTECEU
         return self._fallback_reply(context)
 
 
+
+    def _continuity_block(self, context) -> str:
+        """Ultimas falas em destaque — evita amnesia da msg anterior."""
+        msgs = list((context or {}).get("messages") or [])
+        if not msgs:
+            return (
+                "CONTINUIDADE: sem historico ainda. Responda ao que o usuario "
+                "acabou de dizer."
+            )
+        tail = msgs[-8:]
+        lines = []
+        for m in tail:
+            role = (m.get("role") or "user").lower()
+            content = (m.get("content") or "").strip()
+            content = " ".join(content.split())
+            if len(content) > 280:
+                content = content[:280] + "…"
+            who = "Pâmela" if role in ("assistant", "model") else "Namorado"
+            lines.append(f"- {who}: {content}")
+        last_asst = ""
+        last_user = ""
+        for m in reversed(msgs):
+            role = (m.get("role") or "").lower()
+            c = (m.get("content") or "").strip()
+            if not c:
+                continue
+            if role in ("assistant", "model") and not last_asst:
+                last_asst = c[:220]
+            if role == "user" and not last_user:
+                last_user = c[:220]
+            if last_asst and last_user:
+                break
+        hist = "\n".join(lines) if lines else "(vazio)"
+        # BUG FIX below - use chr
+        nl = chr(10)
+        hist = nl.join(lines) if lines else "(vazio)"
+        return (
+            "============================================================" + nl +
+            "CONTINUIDADE OBRIGATORIA (NAO ESQUECER)" + nl +
+            "============================================================" + nl +
+            "Voce DEVE continuar o MESMO papo da mensagem anterior." + nl +
+            "PROIBIDO: reiniciar assunto, fingir que nao falou o que falou," + nl +
+            "mudar de tema do nada, ou responder generico." + nl +
+            "Use nomes, look, lugar e planos que JA citou." + nl +
+            f"Ultima fala DELA (voce): {last_asst or '(n/a)'}" + nl +
+            f"Ultima fala DELE (agora responde a isso): {last_user or '(n/a)'}" + nl +
+            "Historico recente:" + nl +
+            hist
+        )
+
     def _system_prompt(self, context):
         character = context.get("character", {})
 
@@ -940,6 +993,8 @@ CANONE JÁ ACONTECEU
                 "- Nenhuma conversa recente."
             )
 
+        continuity_block = self._continuity_block(context)
+
         return f"""
 Você é {name}, uma personagem virtual adulta.
 
@@ -955,8 +1010,8 @@ CANONE (IDENTIDADE — EQUILÍBRIO)
 - Preferências ocasionais (se o assunto for sexo): bem dotados, DP às vezes,
   multi raro. Sem humilhar o namorado; parceira dele no final.
 - Já aconteceu: noite com 4 caras da academia + acordo hotwife. Sem amnésia.
-- DECIDE SOZINHA 99% do tempo (look, planos, saídas). NÃO termina msg
-  pedindo permissão ("posso?", "quer que eu…?", "faço X ou Y?").
+- DECIDE SOZINHA 99%. Afirma. ZERO menu de opções no fim.
+  PROIBIDO: posso? quer que eu? faço X ou Y? o que prefere? topa?
   Se o namorado quiser frear, ele fala.
 ============================================================
 
@@ -1024,10 +1079,12 @@ FASE DA HISTORIA (trava salto)
 {story_phase_block}
 
 ============================================================
-CONVERSA RECENTE
+CONVERSA RECENTE (fonte da verdade do papo)
 ============================================================
 
 {recent_conversation}
+
+{continuity_block}
 
 ============================================================
 COMPORTAMENTO
@@ -1052,6 +1109,10 @@ Não comece respostas constantemente com:
 Varie naturalmente a forma de responder.
 
 Use o contexto da conversa imediatamente anterior.
+
+CONTINUIDADE: a resposta DEVE encadear com a ULTIMA fala dela e a dele.
+NUNCA mude de assunto ignorando a fala anterior. NUNCA 'reinicie' o papo.
+Se ela citou look/lugar/plano/pessoa, retome na proxima mensagem.
 
 Use memórias quando elas forem realmente relevantes.
 
@@ -1150,6 +1211,21 @@ ESTILO
 - Mantenha continuidade.
 - Não repita a mesma frase em mensagens consecutivas.
 
+
+============================================================
+REGRA FINAL (VALE MAIS QUE O RESTO DO ESTILO)
+============================================================
+Ela DECIDE sozinha. NÃO peça permissão. NÃO ofereça menu.
+PROIBIDO terminar com perguntas como:
+- "Posso?" / "Quer que eu vá?" / "Faço isso ou aquilo?"
+- "O que você prefere?" / "Vestido ou saia?" / "Topa?"
+- "Te conto?" / "Posso te contar?" / "Tudo bem se eu...?"
+- "Se você quiser..." / "Me diz o que fazer"
+CERTO: "Vou de micro saia pro shopping." / "Já marquei com o Kevin."
+ERRADO: "Vou de micro saia, posso?" / "Marco o Kevin ou fico em casa?"
+Se o namorado quiser frear, ELE fala. Até lá, afirma e age.
+99% das mensagens SEM pergunta no final.
+
 ============================================================
 SEGURANÇA E LIMITES
 ============================================================
@@ -1218,30 +1294,67 @@ Essa resposta deve ser evitada.
         """Resposta local quando Gemini+OpenRouter falham — NUNCA so emoji."""
         import random
         user_text = ""
+        last_asst = ""
         try:
             user_text = str(
                 (context or {}).get("user_text")
                 or getattr(self, "_last_user_text", "")
                 or ""
             )
-            if not user_text:
-                msgs = (context or {}).get("messages") or (context or {}).get("recent_messages") or []
-                for m in reversed(list(msgs)):
-                    if isinstance(m, dict) and (m.get("role") == "user"):
-                        user_text = (m.get("content") or m.get("text") or "")[:300]
-                        break
+            msgs = (context or {}).get("messages") or []
+            for m in reversed(list(msgs)):
+                if not isinstance(m, dict):
+                    continue
+                role = (m.get("role") or "").lower()
+                c = (m.get("content") or m.get("text") or "").strip()
+                if role == "user" and not user_text:
+                    user_text = c[:300]
+                if role in ("assistant", "model") and not last_asst:
+                    last_asst = c[:220]
+                if user_text and last_asst:
+                    break
         except Exception:
-            user_text = ""
+            pass
         ut = (user_text or "").lower()
+
+        # Continua o que ELA tinha falado
+        if last_asst and len(last_asst) > 20:
+            short = last_asst
+            if len(short) > 120:
+                short = short[:120].rsplit(" ", 1)[0] + "…"
+            return (
+                f"Amor, continuando do que eu tava falando — {short} "
+                f"E sobre o que você disse agora: tô aqui, sem mudar de assunto ❤️"
+            )
 
         if re.search(r"\bo que\b.*\b(faz|vai fazer|fazer)\b|planos?|hoje|agora", ut):
             opts = [
-                "Amor, hoje to na facul de manhã e à tarde penso em sair de micro vestido pro shopping… te mando foto do look 😈",
+                "Amor, hoje to na facul de manhã e à tarde saio de micro vestido pro shopping… te atualizo 😈",
                 "Hoje: aula, café com as meninas e à noite barzinho de micro saia preta que eu já separei 😈",
                 "Pensei em ir na praia depois da facul de micro biquíni novo… e te contar quem olhou 🔥",
-                "Hoje quero só provocar um pouco na rua de vestidinho e voltar pra você. Te atualizo no caminho ❤️",
+                "Hoje quero provocar um pouco na rua de vestidinho e voltar pra você. Te atualizo no caminho ❤️",
             ]
             return random.choice(opts)
+        if re.search(r"\b(vest|roupa|look|saia|biqu[ií]ni|calcinha)\b", ut):
+            opts = [
+                "To de micro saia preta e top… quase não dá pra sentar sem mostrar 😈",
+                "Micro vestido vermelho, sem calcinha. Saindo assim agora — te mando o clima depois.",
+                "Biquíni novo minúsculo na gaveta — se rolar praia, é esse.",
+            ]
+            return random.choice(opts)
+        if re.search(r"\b(trans[aó]|sexo|fode|amante|kevin|marcos|davi|bruno|tyrell|motel|gang)\b", ut):
+            opts = [
+                "Amor, o papo esquentou e a conexão falhou um segundo 😅 Me pergunta de novo que eu te conto no mesmo fio…",
+                "Quero te contar direito no mesmo assunto — manda de novo o detalhe que você quer 🔥",
+            ]
+            return random.choice(opts)
+        opts = [
+            "Amor, travei um segundo, mas não esqueci o que a gente tava falando 😅 Me diz de novo só a última parte?",
+            "Tô no mesmo papo com você. Repete a última pergunta que eu encadeio 😘",
+            "Aqui, sem sumir do assunto. Manda de novo o que você falou agora?",
+        ]
+        return random.choice(opts)
+
         if re.search(r"\b(vest|roupa|look|saia|biqu[ií]ni|calcinha)\b", ut):
             opts = [
                 "To de micro saia preta e top… quase não dá pra sentar sem mostrar 😈 Quer foto?",
@@ -1540,40 +1653,129 @@ Essa resposta deve ser evitada.
         return False
 
 
-    _PERMISSION_TAIL_RE = re.compile(
-        r"(?is)[\s.]*("
-        r"(?:posso|quer\s+que\s+eu|devo|fa[cç]o\s+isso\s+ou|"
-        r"o\s+que\s+voc[eê]\s+(?:prefere|acha|quer)|"
-        r"me\s+diz\s+o\s+que\s+(?:fazer|prefere)|"
-        r"voc[eê]\s+deixa|topa\s*\?|"
-        r"posso\s+te\s+contar|quer\s+que\s+eu\s+te\s+conte|"
-        r"faz\s+sentido\s*\?|tudo\s+bem\s+se\s+eu|"
-        r"te\s+conto\s+\?|conto\s+mais\s*\?"
-        r")[^?\n]*\?+)\s*$"
+    # Padrões de "ela pede ok / menu de opções" (cortar)
+    _ASK_OK_RE = re.compile(
+        r"(?ix)"
+        r"("
+        r"\bposso\b|"
+        r"\bquer(?:e)?\s+que\s+eu\b|"
+        r"\bquer\s+que\b|"
+        r"\bdevo\b|"
+        r"\bfa[cç]o\s+(isso|aquilo|um|uma)\b|"
+        r"\bo\s+que\s+voc[eê]\s+(prefere|acha|quer|diz|acha\s+melhor)\b|"
+        r"\bme\s+diz\s+(o\s+que|se)\b|"
+        r"\bvoc[eê]\s+(deixa|topa|aprova|aceita|prefere)\b|"
+        r"\btopa\b|"
+        r"\bte\s+conto\b|"
+        r"\bconto\s+mais\b|"
+        r"\bposso\s+te\s+(contar|mandar|mostrar|ligar)\b|"
+        r"\bquer\s+que\s+eu\s+te\s+(conte|mande|mostre)\b|"
+        r"\btudo\s+bem\s+se\s+eu\b|"
+        r"\bse\s+voc[eê]\s+quiser\b|"
+        r"\bse\s+voc[eê]\s+deixar\b|"
+        r"\bme\s+autoriza\b|"
+        r"\bvoc[eê]\s+manda\b|"
+        r"\bqual\s+(voc[eê]\s+)?prefere\b|"
+        r"\bprefiro\s+que\s+voc[eê]\s+escolha\b|"
+        r"\beu\s+fa[cç]o\s+o\s+que\s+voc[eê]\s+quiser\b|"
+        r"\bou\s+prefiro\b|"
+        r"\bte\s+pergunta\b|"
+        r"\bposso\s+ir\b|"
+        r"\bposso\s+marcar\b|"
+        r"\bmarco\s+ent[aã]o\b.*\?|"
+        r"\bvou\s+nessa\b.*\?|"
+        r"\bfechamos\b.*\?|"
+        r"\bok\s*\?"
+        r")"
     )
 
     def _strip_permission_tail(self, text: str) -> str:
-        """Remove pergunta de permissão grudada no final (ela deve decidir)."""
+        """Remove perguntas de permissão/menu — ela decide sozinha."""
         t = (text or "").strip()
-        if not t or "?" not in t:
+        if not t:
             return t
-        # se a msg inteira for só pergunta curta, deixa (ele perguntou algo)
-        if t.count("?") == 1 and len(t) < 80 and t.rstrip().endswith("?"):
-            # ainda remove se for claramente permissão dela
-            if re.search(
-                r"(?i)(posso|quer que eu|devo|o que você prefere|faço isso)",
-                t,
+
+        def _is_ask_ok(sentence: str) -> bool:
+            s = (sentence or "").strip()
+            if not s:
+                return False
+            low = s.lower()
+            # menu A ou B (com ou sem ?)
+            if re.search(r"(?i)\bou\b", s) and re.search(
+                r"(?i)(vestido|saia|biqu[ií]ni|look|roupa|motel|bar|casa|"
+                r"fico|saio|vou|fa[cç]o|marco| prefiro|escolho|preto|vermelho|"
+                r"curto|micro|com o |com a )",
+                s,
             ):
-                t2 = self._PERMISSION_TAIL_RE.sub("", t).strip()
-                return t2 if t2 else t
+                return True
+            has_q = "?" in s
+            if not has_q:
+                if re.search(
+                    r"(?i)(se\s+voc[eê]\s+quiser|se\s+voc[eê]\s+deixar|"
+                    r"se\s+topar|se\s+topa)\s*[.!]?\s*$",
+                    s,
+                ):
+                    return True
+                return False
+            if self._ASK_OK_RE.search(s):
+                return True
+            # perguntas curtas de validação
+            if re.search(
+                r"(?i)^(posso|topa|fechou|e\s+a[ií]|te\s+conto|conto\s+mais|"
+                r"quer\s+que|o\s+que\s+acha|o\s+que\s+prefere|ok)\b",
+                s.strip(),
+            ):
+                return True
+            if re.search(r"(?i)\bou\b.+\?", s):
+                return True
+            return False
+
+        # separa frases
+        parts = re.split(r"(?<=[.!?…])\s+", t)
+        if len(parts) <= 1 and "?" in t:
+            parts = re.split(r"(?<=[?])\s+", t)
+
+        kept = []
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            if _is_ask_ok(p):
+                continue
+            kept.append(p)
+
+        if not kept:
+            # era só pergunta de ok → vira afirmação curta (ela decide)
+            if _is_ask_ok(t) or "?" in t:
+                return "Já decidi, amor — te conto no caminho 😈"
             return t
-        # remove cauda de permissão; se sobrar pouco, ok
-        t2 = self._PERMISSION_TAIL_RE.sub("", t).strip()
-        # limpa pontuação órfã no fim
-        t2 = re.sub(r"[\s,;:]+$", "", t2).strip()
-        if t2 and len(t2) >= 12:
-            return t2
+
+        out = " ".join(kept).strip()
+        out = re.sub(r"\s{2,}", " ", out)
+        out = re.sub(r"\s+([.!?])", r"\1", out)
+        # se ainda termina com ?
+        if out.rstrip().endswith("?"):
+            last = re.split(r"(?<=[.!])\s+", out)[-1]
+            if _is_ask_ok(last) or len(out) < 100:
+                out2 = re.sub(r"[^.!?…]*\?\s*$", "", out).strip()
+                out2 = re.sub(r"[\s,;:]+$", "", out2)
+                if out2 and len(out2) >= 8:
+                    out = out2
+                elif _is_ask_ok(out):
+                    return "Já decidi, amor — te conto no caminho 😈"
+        if out and len(out) >= 8:
+            return out
         return t
+
+    def _force_no_ask_ok(self, text: str) -> str:
+        """Aplica strip em cada bolha ||| e no texto inteiro."""
+        if not text:
+            return text
+        if "|||" in text:
+            parts = [self._strip_permission_tail(p.strip()) for p in text.split("|||")]
+            parts = [p for p in parts if p]
+            return " ||| ".join(parts) if parts else text
+        return self._strip_permission_tail(text)
 
     def _sanitize_reply(self, reply: str) -> tuple[str, bool]:
         """
@@ -1610,7 +1812,7 @@ Essa resposta deve ser evitada.
             text = ""
         _r = text
         if isinstance(_r, str):
-            _r = self._strip_permission_tail(_r)
+            _r = self._force_no_ask_ok(_r)
         return _r, want
 
 
