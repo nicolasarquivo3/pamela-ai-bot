@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     face_swap_provider: str = "huggingface"
 
     face_reference_image_path: str = "assets/pamela_face_reference.jpg"
-    face_swap_timeout_seconds: int = 180
+    face_swap_timeout_seconds: int = 240
 
     hf_face_swap_space: str = "V0pr0S/FaceFusion-Face-Swap-Hyperswap"
     hf_face_swap_api_name: str = "/generate_image"
@@ -84,14 +84,15 @@ class Settings(BaseSettings):
     hf_face_swap_target_index: int = 0
     # gfpgan_1.4 | codeformer | gpen_bfr_512 | none
     hf_face_restore_model: str = "gfpgan_1.4"
-    hf_face_restore_strength: float = 0.65
+    hf_face_restore_strength: float = 0.8
     # 256x256 | 512x512 | 768x768 | 1024x1024 (se o Space aceitar)
-    hf_face_swap_pixel_boost: str = "512x512"
+    hf_face_swap_pixel_boost: str = "1024x1024"
     # Upscale pos-swap da imagem inteira (1.0 = off, 1.5 = +50%, 2.0 = 2x)
-    face_swap_post_upscale: float = 1.5
-    face_swap_min_target_side: int = 768
+    face_swap_post_upscale: float = 2.0
+    face_swap_min_target_side: int = 1024
     face_swap_max_output_side: int = 2048
-    face_swap_jpeg_quality: int = 95
+    face_swap_jpeg_quality: int = 97
+    face_swap_face_sharpen: float = 1.8
 
     replicate_api_token: str | None = None
     replicate_face_swap_version: str = (
