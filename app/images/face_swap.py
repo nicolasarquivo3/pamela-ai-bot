@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import io
 import tempfile
 from pathlib import Path
 
@@ -11,11 +12,17 @@ from app.images.models import ImageResult
 class FaceSwapService:
     """
     Face swap free-first:
-      1. Hugging Face Gradio (tonyassi/face-swap por padrão — API simples)
+      1. Hugging Face Gradio (FaceFusion / Hyperswap)
       2. Replicate (opcional)
 
+    Qualidade do rosto / imagem:
+      - modelo hyperswap_1b_256 (base 256; qualidade sobe com pixel_boost)
+      - face restore (gfpgan / codeformer / gpen)
+      - pixel_boost 512/768/1024 se o Space aceitar
+      - upscale pos-swap (Pillow LANCZOS) da imagem inteira
+
     Source = rosto da personagem (reference)
-    Target = foto do Pexels / gerada
+    Target = foto do album / gerada / web
     """
 
     def __init__(
@@ -28,8 +35,13 @@ class FaceSwapService:
         hf_token: str | None = None,
         hf_swap_model: str = "hyperswap_1b_256.onnx",
         hf_target_index: int = 0,
-        hf_restore_model: str = "none",
-        hf_restore_strength: float = 0.7,
+        hf_restore_model: str = "gfpgan_1.4",
+        hf_restore_strength: float = 0.65,
+        hf_pixel_boost: str = "512x512",
+        post_upscale: float = 1.5,
+        min_target_side: int = 768,
+        max_output_side: int = 2048,
+        jpeg_quality: int = 95,
         replicate_token: str | None = None,
         replicate_version: str = (
             "codeplugtech/face-swap:"
@@ -45,8 +57,13 @@ class FaceSwapService:
         self.hf_token = hf_token
         self.hf_swap_model = hf_swap_model
         self.hf_target_index = int(hf_target_index)
-        self.hf_restore_model = hf_restore_model
+        self.hf_restore_model = hf_restore_model or "none"
         self.hf_restore_strength = float(hf_restore_strength)
+        self.hf_pixel_boost = (hf_pixel_boost or "512x512").strip()
+        self.post_upscale = float(post_upscale or 1.0)
+        self.min_target_side = int(min_target_side or 0)
+        self.max_output_side = int(max_output_side or 2048)
+        self.jpeg_quality = int(jpeg_quality or 95)
         self.replicate_token = replicate_token
         self.replicate_version = replicate_version
         self.timeout = int(timeout)
@@ -82,6 +99,12 @@ class FaceSwapService:
                 else generated
             )
 
+        # Prepara target em resolucao decente ANTES do swap
+        try:
+            target_bytes = self._prepare_target_bytes(target_bytes)
+        except Exception as e:
+            print(f"[FaceSwap] prepare_target skip: {e}", flush=True)
+
         providers = self._provider_order()
         errors: list[str] = []
         for name in providers:
@@ -91,6 +114,10 @@ class FaceSwapService:
                 else:
                     output = await self._replicate_swap(target_bytes)
                 if output:
+                    try:
+                        output = self._enhance_output_bytes(output)
+                    except Exception as e:
+                        print(f"[FaceSwap] enhance_output skip: {e}", flush=True)
                     return ImageResult(
                         success=True,
                         provider=f"{generated.provider or 'image'}+faceswap:{name}",
@@ -133,16 +160,87 @@ class FaceSwapService:
             response.raise_for_status()
             return response.content
 
+    def _prepare_target_bytes(self, data: bytes) -> bytes:
+        """Garante lado minimo no target (rosto maior = swap melhor)."""
+        if self.min_target_side <= 0:
+            return data
+        try:
+            from PIL import Image
+        except ImportError:
+            return data
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        w, h = im.size
+        side = max(w, h)
+        if side >= self.min_target_side:
+            # so re-encode em qualidade alta
+            return self._to_jpeg_bytes(im)
+        scale = self.min_target_side / float(side)
+        nw, nh = int(w * scale), int(h * scale)
+        im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+        print(
+            f"[FaceSwap] target upscale {w}x{h} -> {nw}x{nh} (min_side={self.min_target_side})",
+            flush=True,
+        )
+        return self._to_jpeg_bytes(im)
+
+    def _enhance_output_bytes(self, data: bytes) -> bytes:
+        """Upscale pos-swap da imagem inteira + JPEG alta qualidade."""
+        try:
+            from PIL import Image
+        except ImportError:
+            return data
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        w, h = im.size
+        scale = float(self.post_upscale or 1.0)
+        if scale > 1.01:
+            nw = min(int(w * scale), self.max_output_side)
+            nh = min(int(h * scale), self.max_output_side)
+            # mantem proporcao se bater no max
+            ratio = min(nw / w, nh / h)
+            nw, nh = max(1, int(w * ratio)), max(1, int(h * ratio))
+            if nw > w or nh > h:
+                im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+                print(
+                    f"[FaceSwap] output upscale {w}x{h} -> {nw}x{nh} (x{scale})",
+                    flush=True,
+                )
+        # clamp max side
+        w2, h2 = im.size
+        m = max(w2, h2)
+        if m > self.max_output_side:
+            r = self.max_output_side / float(m)
+            im = im.resize((max(1, int(w2 * r)), max(1, int(h2 * r))), Image.Resampling.LANCZOS)
+        return self._to_jpeg_bytes(im)
+
+    def _to_jpeg_bytes(self, im) -> bytes:
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=self.jpeg_quality, optimize=True, subsampling=0)
+        return buf.getvalue()
+
     async def _huggingface_swap(self, target_bytes: bytes) -> bytes | None:
         return await asyncio.to_thread(self._huggingface_swap_sync, target_bytes)
 
     def _huggingface_swap_sync(self, target_bytes: bytes) -> bytes | None:
         from gradio_client import Client, handle_file
 
+        # nomes de modelo com e sem .onnx (Spaces variam)
+        model = self.hf_swap_model
+        model_alt = model.replace(".onnx", "") if model.endswith(".onnx") else f"{model}.onnx"
+        restore = self.hf_restore_model
+        strength = self.hf_restore_strength
+        boost = self.hf_pixel_boost
+        idx = self.hf_target_index
+
         with tempfile.TemporaryDirectory(prefix="face-swap-") as tmp:
             source = Path(tmp) / "source.jpg"
             target = Path(tmp) / "target.jpg"
-            source.write_bytes(self.reference_path.read_bytes())
+            # referencia: se muito pequena, sobe um pouco
+            ref = self.reference_path.read_bytes()
+            try:
+                ref = self._prepare_reference_bytes(ref)
+            except Exception:
+                pass
+            source.write_bytes(ref)
             target.write_bytes(target_bytes)
 
             client_kwargs = {}
@@ -151,28 +249,82 @@ class FaceSwapService:
 
             client = Client(self.hf_space, **client_kwargs)
             print(
-                f"[FaceSwap] HF space={self.hf_space} api={self.hf_api_name}",
+                f"[FaceSwap] HF space={self.hf_space} api={self.hf_api_name} "
+                f"model={model} restore={restore} boost={boost}",
                 flush=True,
             )
 
+            # Tentativas: do mais completo (boost+restore) ao mais simples
             attempts = [
+                # FaceFusion-like: source, target, index, model, restore, strength, pixel_boost
                 lambda: client.predict(
                     handle_file(str(source)),
                     handle_file(str(target)),
+                    idx,
+                    model,
+                    restore,
+                    strength,
+                    boost,
                     api_name=self.hf_api_name,
                 ),
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    idx,
+                    model_alt,
+                    restore,
+                    strength,
+                    boost,
+                    api_name=self.hf_api_name,
+                ),
+                # sem boost
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    idx,
+                    model,
+                    restore,
+                    strength,
+                    api_name=self.hf_api_name,
+                ),
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    idx,
+                    model_alt,
+                    restore,
+                    strength,
+                    api_name=self.hf_api_name,
+                ),
+                # gfpgan alternativo se restore falhar no space
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    idx,
+                    model,
+                    "codeformer",
+                    strength,
+                    api_name=self.hf_api_name,
+                ),
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    idx,
+                    model,
+                    "gpen_bfr_512",
+                    strength,
+                    api_name=self.hf_api_name,
+                ),
+                # kwargs named
                 lambda: client.predict(
                     src_img=handle_file(str(source)),
                     dest_img=handle_file(str(target)),
                     api_name=self.hf_api_name,
                 ),
+                # simples 2 args
                 lambda: client.predict(
                     handle_file(str(source)),
                     handle_file(str(target)),
-                    self.hf_target_index,
-                    self.hf_swap_model,
-                    self.hf_restore_model,
-                    self.hf_restore_strength,
                     api_name=self.hf_api_name,
                 ),
                 lambda: client.predict(
@@ -184,6 +336,11 @@ class FaceSwapService:
                     handle_file(str(source)),
                     handle_file(str(target)),
                     api_name="/swap_faces",
+                ),
+                lambda: client.predict(
+                    handle_file(str(source)),
+                    handle_file(str(target)),
+                    api_name="/generate_image",
                 ),
             ]
 
@@ -203,6 +360,22 @@ class FaceSwapService:
             if last_err:
                 raise last_err
             return None
+
+    def _prepare_reference_bytes(self, data: bytes) -> bytes:
+        """Referencia facial em boa resolucao (lado min ~768 se menor)."""
+        try:
+            from PIL import Image
+        except ImportError:
+            return data
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        w, h = im.size
+        side = max(w, h)
+        # referencia ja 923x1536 no repo — so reencode alta qualidade
+        if side < 512:
+            scale = 768 / float(side)
+            im = im.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+            print(f"[FaceSwap] reference upscale -> {im.size}", flush=True)
+        return self._to_jpeg_bytes(im)
 
     async def _replicate_swap(self, target_bytes: bytes) -> bytes | None:
         if not self.replicate_token:
@@ -265,7 +438,13 @@ class FaceSwapService:
 
             if not output:
                 raise RuntimeError(prediction.get("error") or "replicate_no_output")
-            return await self._download_output(output)
+            data = await self._download_output(output)
+            if data:
+                try:
+                    data = self._enhance_output_bytes(data)
+                except Exception:
+                    pass
+            return data
 
     async def _download_output(self, output) -> bytes | None:
         if isinstance(output, list):
