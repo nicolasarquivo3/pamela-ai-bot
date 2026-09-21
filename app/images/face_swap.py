@@ -37,7 +37,7 @@ class FaceSwapService:
         hf_enhance_space: str = "sczhou/CodeFormer",
         hf_enhance_api_name: str = "/inference",
         hf_enhance_upscale: int = 2,
-        hf_enhance_fidelity: float = 0.5,
+        hf_enhance_fidelity: float = 0.75,
         replicate_token: str | None = None,
         replicate_version: str = (
             "codeplugtech/face-swap:"
@@ -66,7 +66,7 @@ class FaceSwapService:
         self.hf_enhance_space = (hf_enhance_space or "sczhou/CodeFormer").strip()
         self.hf_enhance_api_name = hf_enhance_api_name or "/inference"
         self.hf_enhance_upscale = int(hf_enhance_upscale or 2)
-        self.hf_enhance_fidelity = float(hf_enhance_fidelity or 0.5)
+        self.hf_enhance_fidelity = float(hf_enhance_fidelity if hf_enhance_fidelity is not None else 0.75)
         self.replicate_token = replicate_token
         self.replicate_version = replicate_version
         self.timeout = int(timeout)
@@ -200,6 +200,81 @@ class FaceSwapService:
             response.raise_for_status()
             return response.content
 
+
+    def _prepare_identity_reference(self, data: bytes) -> bytes:
+        """
+        Prepara a foto-modelo para o swap copiar MELHOR a identidade:
+        - se for corpo inteiro, recorta a regiao da cabeca (centro-superior)
+        - garante lado min ~768 no rosto (sem unsharp agressivo)
+        - JPEG alta qualidade
+        Nao inventa pixels; so enquadra o rosto para o modelo ver detalhes.
+        """
+        try:
+            from PIL import Image
+            import io
+        except ImportError:
+            return data
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        w, h = im.size
+        # retrato corpo inteiro / 3/4: rosto costuma estar no terco superior
+        # se a imagem for bem alta (h > 1.25*w), crop cabeca
+        if h >= int(w * 1.15):
+            # faixa y: 2%..48%  x: 12%..88%  — foca rosto sem cortar orelhas
+            x0, x1 = int(w * 0.10), int(w * 0.90)
+            y0, y1 = int(h * 0.02), int(h * 0.48)
+            if y1 > y0 + 80 and x1 > x0 + 80:
+                face = im.crop((x0, y0, x1, y1))
+                print(
+                    f"[FaceSwap] ref crop identity {w}x{h} -> {face.size}",
+                    flush=True,
+                )
+                im = face
+                w, h = im.size
+        # se rosto ainda pequeno, sobe so o enquadramento (LANCZOS suave)
+        side = max(w, h)
+        if side < 768:
+            scale = 768 / float(side)
+            nw, nh = int(round(w * scale)), int(round(h * scale))
+            im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+            print(f"[FaceSwap] ref upscale identity -> {im.size}", flush=True)
+        elif side > 1600:
+            # evita mandar 4k enorme (tonyassi comprime feio)
+            scale = 1400 / float(side)
+            nw, nh = int(round(w * scale)), int(round(h * scale))
+            im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+            print(f"[FaceSwap] ref downscale identity -> {im.size}", flush=True)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=95, optimize=True, subsampling=0)
+        return buf.getvalue()
+
+    def _prepare_target_for_identity(self, data: bytes) -> bytes:
+        """Target com lado razoavel: rosto destino maior = swap mais fiel."""
+        try:
+            from PIL import Image
+            import io
+        except ImportError:
+            return data
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        w, h = im.size
+        side = max(w, h)
+        if side < 900:
+            scale = 900 / float(side)
+            im = im.resize(
+                (int(round(w * scale)), int(round(h * scale))),
+                Image.Resampling.LANCZOS,
+            )
+            print(f"[FaceSwap] target upscale for identity -> {im.size}", flush=True)
+        elif side > 1800:
+            scale = 1600 / float(side)
+            im = im.resize(
+                (int(round(w * scale)), int(round(h * scale))),
+                Image.Resampling.LANCZOS,
+            )
+            print(f"[FaceSwap] target downscale -> {im.size}", flush=True)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=95, optimize=True, subsampling=0)
+        return buf.getvalue()
+
     async def _huggingface_swap(self, target_bytes: bytes) -> bytes | None:
         return await asyncio.to_thread(self._huggingface_swap_sync, target_bytes)
 
@@ -215,8 +290,22 @@ class FaceSwapService:
         with tempfile.TemporaryDirectory(prefix="face-swap-") as tmp:
             source = Path(tmp) / "source.jpg"
             target = Path(tmp) / "target.jpg"
-            source.write_bytes(self.reference_path.read_bytes())
+            ref_bytes = self.reference_path.read_bytes()
+            try:
+                ref_bytes = self._prepare_identity_reference(ref_bytes)
+            except Exception as e:
+                print(f"[FaceSwap] ref prep skip: {e}", flush=True)
+            try:
+                target_bytes = self._prepare_target_for_identity(target_bytes)
+            except Exception as e:
+                print(f"[FaceSwap] target prep skip: {e}", flush=True)
+            source.write_bytes(ref_bytes)
             target.write_bytes(target_bytes)
+            print(
+                f"[FaceSwap] identity prep ref_bytes={len(ref_bytes)} "
+                f"target_bytes={len(target_bytes)}",
+                flush=True,
+            )
 
             last_err = None
             for space, api in swap_spaces:
@@ -311,24 +400,32 @@ class FaceSwapService:
                 print(f"[FaceSwap] CodeFormer client fail: {e}", flush=True)
                 return None
 
+            # fidelity ALTO = preserva mais o rosto do swap (identidade)
+            # fidelity BAIXO = "melhora" generica e pode mudar o rosto
+            fid_hi = min(0.9, max(fidelity, 0.75))
             attempts = [
                 lambda: client.predict(
                     handle_file(str(img_path)),
-                    True, True, True, upscale, fidelity,
+                    True, True, True, upscale, fid_hi,
+                    api_name="/inference",
+                ),
+                lambda: client.predict(
+                    handle_file(str(img_path)),
+                    True, False, True, upscale, fid_hi,  # sem background enhance
                     api_name="/inference",
                 ),
                 lambda: client.predict(
                     image=handle_file(str(img_path)),
                     face_align=True,
-                    background_enhance=True,
+                    background_enhance=False,
                     face_upsample=True,
                     upscale=upscale,
-                    codeformer_fidelity=fidelity,
+                    codeformer_fidelity=fid_hi,
                     api_name="/inference",
                 ),
                 lambda: client.predict(
                     handle_file(str(img_path)),
-                    True, True, True, 1, fidelity,
+                    True, True, True, 1, fid_hi,
                     api_name="/inference",
                 ),
             ]
