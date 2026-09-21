@@ -68,7 +68,9 @@ class Settings(BaseSettings):
     # Chance de surpresa espontânea (0.0 a 1.0). 0.08 ≈ 8%
     photo_surprise_chance: float = 0.03
 
-    # FACE SWAP (caminho GRÁTIS — restore neural no Space, sem upscale local)
+    # FACE SWAP free path:
+    # 1) tonyassi/face-swap (swap simples)
+    # 2) sczhou/CodeFormer /inference (face_upsample neural)
     face_swap_enabled: bool = True
     face_swap_required: bool = True
     face_swap_provider: str = "huggingface"
@@ -76,18 +78,21 @@ class Settings(BaseSettings):
     face_reference_image_path: str = "assets/pamela_face_reference.jpg"
     face_swap_timeout_seconds: int = 240
 
-    hf_face_swap_space: str = "V0pr0S/FaceFusion-Face-Swap-Hyperswap"
-    hf_face_swap_api_name: str = "/generate_image"
+    # Swap principal GRÁTIS e estável
+    hf_face_swap_space: str = "tonyassi/face-swap"
+    hf_face_swap_api_name: str = "/swap_faces"
     hf_token: str | None = None
     hf_face_swap_model: str = "hyperswap_1b_256.onnx"
     hf_face_swap_target_index: int = 0
-    # Restore NEURAL no próprio Space (gfpgan_1.4 | codeformer | gpen_bfr_512 | none)
-    hf_face_restore_model: str = "gfpgan_1.4"
+    hf_face_restore_model: str = "none"
     hf_face_restore_strength: float = 0.5
-    # 2º Space GRÁTIS (CodeFormer). Se fila/cair, mantém o swap. false = só 1 passo
+
+    # Enhance GRÁTIS (API real do CodeFormer = /inference)
     hf_face_enhance_enabled: bool = True
     hf_face_enhance_space: str = "sczhou/CodeFormer"
-    hf_face_enhance_api_name: str = "/predict"
+    hf_face_enhance_api_name: str = "/inference"
+    hf_face_enhance_upscale: int = 2
+    hf_face_enhance_fidelity: float = 0.5
 
     replicate_api_token: str | None = None
     replicate_face_swap_version: str = (
