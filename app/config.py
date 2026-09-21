@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     # Swap principal GRÁTIS e estável
     hf_face_swap_space: str = "tonyassi/face-swap"
     hf_face_swap_api_name: str = "/swap_faces"
-    hf_token: str | None = None
+    hf_token: str | None = None  # HF_TOKEN grátis: huggingface.co/settings/tokens (ZeroGPU CodeFormer)
     hf_face_swap_model: str = "hyperswap_1b_256.onnx"
     hf_face_swap_target_index: int = 0
     hf_face_restore_model: str = "none"
