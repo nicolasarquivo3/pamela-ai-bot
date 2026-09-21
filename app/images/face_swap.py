@@ -10,12 +10,14 @@ from app.images.models import ImageResult
 
 class FaceSwapService:
     """
-    Face swap free-first:
-      1. Hugging Face Gradio (tonyassi/face-swap por padrão — API simples)
-      2. Replicate (opcional)
+    Face swap free-first (sem upscale Pillow — evita "quadriculado"):
 
-    Source = rosto da personagem (reference)
-    Target = foto do Pexels / gerada
+      1. Hugging Face Gradio FaceFusion/Hyperswap
+         - tenta PRIMEIRO com face restore neural (gfpgan/codeformer no Space)
+      2. Opcional: 2º Space GRÁTIS só de enhance (CodeFormer/GFPGAN)
+      3. Replicate (opcional / pago se token)
+
+    NÃO faz resize/unsharp local. Qualidade vem do modelo no Space.
     """
 
     def __init__(
@@ -28,8 +30,12 @@ class FaceSwapService:
         hf_token: str | None = None,
         hf_swap_model: str = "hyperswap_1b_256.onnx",
         hf_target_index: int = 0,
-        hf_restore_model: str = "none",
-        hf_restore_strength: float = 0.7,
+        hf_restore_model: str = "gfpgan_1.4",
+        hf_restore_strength: float = 0.5,
+        # 2º passo grátis: enhance neural após o swap (pode ser lento / fila)
+        hf_enhance_enabled: bool = True,
+        hf_enhance_space: str = "sczhou/CodeFormer",
+        hf_enhance_api_name: str = "/predict",
         replicate_token: str | None = None,
         replicate_version: str = (
             "codeplugtech/face-swap:"
@@ -45,8 +51,11 @@ class FaceSwapService:
         self.hf_token = hf_token
         self.hf_swap_model = hf_swap_model
         self.hf_target_index = int(hf_target_index)
-        self.hf_restore_model = hf_restore_model
+        self.hf_restore_model = (hf_restore_model or "none").strip()
         self.hf_restore_strength = float(hf_restore_strength)
+        self.hf_enhance_enabled = bool(hf_enhance_enabled)
+        self.hf_enhance_space = (hf_enhance_space or "").strip()
+        self.hf_enhance_api_name = hf_enhance_api_name or "/predict"
         self.replicate_token = replicate_token
         self.replicate_version = replicate_version
         self.timeout = int(timeout)
@@ -91,6 +100,22 @@ class FaceSwapService:
                 else:
                     output = await self._replicate_swap(target_bytes)
                 if output:
+                    # 2º passo GRÁTIS: enhance neural (se falhar, mantém o swap)
+                    if self.hf_enhance_enabled and self.hf_enhance_space:
+                        try:
+                            enhanced = await self._huggingface_enhance(output)
+                            if enhanced:
+                                print(
+                                    f"[FaceSwap] enhance OK space={self.hf_enhance_space} "
+                                    f"bytes {len(output)}->{len(enhanced)}",
+                                    flush=True,
+                                )
+                                output = enhanced
+                                name = f"{name}+enhance"
+                            else:
+                                print("[FaceSwap] enhance sem output — mantém swap", flush=True)
+                        except Exception as e:
+                            print(f"[FaceSwap] enhance skip: {e}", flush=True)
                     return ImageResult(
                         success=True,
                         provider=f"{generated.provider or 'image'}+faceswap:{name}",
@@ -139,6 +164,13 @@ class FaceSwapService:
     def _huggingface_swap_sync(self, target_bytes: bytes) -> bytes | None:
         from gradio_client import Client, handle_file
 
+        model = self.hf_swap_model
+        model_plain = model.replace(".onnx", "") if model.endswith(".onnx") else model
+        model_onnx = model if model.endswith(".onnx") else f"{model}.onnx"
+        restore = self.hf_restore_model
+        strength = self.hf_restore_strength
+        idx = self.hf_target_index
+
         with tempfile.TemporaryDirectory(prefix="face-swap-") as tmp:
             source = Path(tmp) / "source.jpg"
             target = Path(tmp) / "target.jpg"
@@ -151,44 +183,84 @@ class FaceSwapService:
 
             client = Client(self.hf_space, **client_kwargs)
             print(
-                f"[FaceSwap] HF space={self.hf_space} api={self.hf_api_name}",
+                f"[FaceSwap] HF space={self.hf_space} api={self.hf_api_name} "
+                f"model={model} restore={restore} strength={strength}",
                 flush=True,
             )
 
-            attempts = [
-                lambda: client.predict(
-                    handle_file(str(source)),
-                    handle_file(str(target)),
-                    api_name=self.hf_api_name,
-                ),
-                lambda: client.predict(
-                    src_img=handle_file(str(source)),
-                    dest_img=handle_file(str(target)),
-                    api_name=self.hf_api_name,
-                ),
-                lambda: client.predict(
-                    handle_file(str(source)),
-                    handle_file(str(target)),
-                    self.hf_target_index,
-                    self.hf_swap_model,
-                    self.hf_restore_model,
-                    self.hf_restore_strength,
-                    api_name=self.hf_api_name,
-                ),
-                lambda: client.predict(
-                    handle_file(str(source)),
-                    handle_file(str(target)),
-                    api_name="/predict",
-                ),
-                lambda: client.predict(
-                    handle_file(str(source)),
-                    handle_file(str(target)),
-                    api_name="/swap_faces",
-                ),
-            ]
+            # IMPORTANTE: restore/model PRIMEIRO.
+            # Se a API simples for primeiro, o swap "cru" (rosto 256) vence e o restore nunca roda.
+            attempts = []
+
+            if restore and restore.lower() != "none":
+                for m in (model, model_onnx, model_plain, "hyperswap_1b_256.onnx", "hyperswap_1b_256"):
+                    for r in (restore, "gfpgan_1.4", "codeformer", "gpen_bfr_512"):
+                        def _mk(mm=m, rr=r):
+                            return lambda: client.predict(
+                                handle_file(str(source)),
+                                handle_file(str(target)),
+                                idx,
+                                mm,
+                                rr,
+                                strength,
+                                api_name=self.hf_api_name,
+                            )
+                        attempts.append(_mk())
+                        def _mk2(mm=m, rr=r):
+                            return lambda: client.predict(
+                                handle_file(str(source)),
+                                handle_file(str(target)),
+                                idx,
+                                mm,
+                                rr,
+                                strength,
+                                api_name="/generate_image",
+                            )
+                        attempts.append(_mk2())
+
+            # Fallbacks simples (sem restore) — por último
+            attempts.extend(
+                [
+                    lambda: client.predict(
+                        handle_file(str(source)),
+                        handle_file(str(target)),
+                        idx,
+                        model,
+                        "none",
+                        0.0,
+                        api_name=self.hf_api_name,
+                    ),
+                    lambda: client.predict(
+                        handle_file(str(source)),
+                        handle_file(str(target)),
+                        api_name=self.hf_api_name,
+                    ),
+                    lambda: client.predict(
+                        src_img=handle_file(str(source)),
+                        dest_img=handle_file(str(target)),
+                        api_name=self.hf_api_name,
+                    ),
+                    lambda: client.predict(
+                        handle_file(str(source)),
+                        handle_file(str(target)),
+                        api_name="/generate_image",
+                    ),
+                    lambda: client.predict(
+                        handle_file(str(source)),
+                        handle_file(str(target)),
+                        api_name="/predict",
+                    ),
+                    lambda: client.predict(
+                        handle_file(str(source)),
+                        handle_file(str(target)),
+                        api_name="/swap_faces",
+                    ),
+                ]
+            )
 
             last_err = None
-            for i, attempt in enumerate(attempts):
+            # evita 100 tentativas: no máx 12
+            for i, attempt in enumerate(attempts[:12]):
                 try:
                     result = attempt()
                     data = self._read_result_sync(result)
@@ -203,6 +275,94 @@ class FaceSwapService:
             if last_err:
                 raise last_err
             return None
+
+    async def _huggingface_enhance(self, image_bytes: bytes) -> bytes | None:
+        """2º Space GRÁTIS: CodeFormer/GFPGAN — neural, sem LANCZOS."""
+        return await asyncio.to_thread(self._huggingface_enhance_sync, image_bytes)
+
+    def _huggingface_enhance_sync(self, image_bytes: bytes) -> bytes | None:
+        from gradio_client import Client, handle_file
+
+        spaces = []
+        if self.hf_enhance_space:
+            spaces.append(self.hf_enhance_space)
+        # fallbacks grátis conhecidos
+        for s in (
+            "sczhou/CodeFormer",
+            "xinntao/GFPGAN",
+            "akhaliq/GFPGAN",
+            "TencentARC/GFPGAN",
+        ):
+            if s not in spaces:
+                spaces.append(s)
+
+        client_kwargs = {}
+        if self.hf_token:
+            client_kwargs["token"] = self.hf_token
+
+        with tempfile.TemporaryDirectory(prefix="face-enhance-") as tmp:
+            img_path = Path(tmp) / "in.jpg"
+            img_path.write_bytes(image_bytes)
+
+            for space in spaces[:3]:
+                try:
+                    print(f"[FaceSwap] enhance try space={space}", flush=True)
+                    client = Client(space, **client_kwargs)
+                    attempts = [
+                        # CodeFormer típico: image, fidelity, upscale?
+                        # upscale=1 para NÃO aumentar (evita artefato)
+                        lambda c=client: c.predict(
+                            handle_file(str(img_path)),
+                            0.5,  # fidelity / weight
+                            1,    # upscale factor = 1 (sem zoom)
+                            api_name=self.hf_enhance_api_name,
+                        ),
+                        lambda c=client: c.predict(
+                            handle_file(str(img_path)),
+                            0.5,
+                            1,
+                            api_name="/predict",
+                        ),
+                        lambda c=client: c.predict(
+                            handle_file(str(img_path)),
+                            api_name="/predict",
+                        ),
+                        lambda c=client: c.predict(
+                            handle_file(str(img_path)),
+                            api_name="/",
+                        ),
+                        # GFPGAN spaces: image only or image + version
+                        lambda c=client: c.predict(
+                            handle_file(str(img_path)),
+                            "v1.4",
+                            1,
+                            api_name="/predict",
+                        ),
+                        lambda c=client: c.predict(
+                            img=handle_file(str(img_path)),
+                            api_name="/predict",
+                        ),
+                    ]
+                    for j, attempt in enumerate(attempts):
+                        try:
+                            result = attempt()
+                            data = self._read_result_sync(result)
+                            if data and len(data) > 1000:
+                                print(
+                                    f"[FaceSwap] enhance ok space={space} try={j+1}",
+                                    flush=True,
+                                )
+                                return data
+                        except Exception as e:
+                            print(
+                                f"[FaceSwap] enhance {space} try={j+1}: {e}",
+                                flush=True,
+                            )
+                            continue
+                except Exception as e:
+                    print(f"[FaceSwap] enhance space fail {space}: {e}", flush=True)
+                    continue
+        return None
 
     async def _replicate_swap(self, target_bytes: bytes) -> bytes | None:
         if not self.replicate_token:
