@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import os
 import tempfile
 from pathlib import Path
 
@@ -10,15 +11,14 @@ from app.images.models import ImageResult
 
 class FaceSwapService:
     """
-    Caminho GRÁTIS corrigido (log real):
+    Caminho GRÁTIS (log real de 2026-09):
 
-    1) Swap em tonyassi/face-swap (API simples: src+dest) — confiável
-    2) Enhance em sczhou/CodeFormer com api_name=/inference
-       (face_upsample neural — NÃO é LANCZOS)
+    1) tonyassi/face-swap  — swap OK
+    2) sczhou/CodeFormer /inference — melhora o rosto (ZeroGPU)
+       * PRECISA de HF_TOKEN grátis ou a cota zera (erro do log)
+    3) Fallback: bookbot/Image-Upscaling-Playground (se CodeFormer sem cota)
 
-    O log mostrou:
-    - restore no tonyassi NÃO existe (só 2 imagens) → tentativas com gfpgan eram no-op
-    - CodeFormer falhava porque usávamos /predict (API real é /inference)
+    Sem upscale Pillow (não quadrícula).
     """
 
     def __init__(
@@ -50,7 +50,14 @@ class FaceSwapService:
         self.provider = provider
         self.hf_space = (hf_space or "tonyassi/face-swap").strip()
         self.hf_api_name = hf_api_name or "/swap_faces"
-        self.hf_token = hf_token
+        # Token GRÁTIS do HF — essencial pro ZeroGPU do CodeFormer
+        self.hf_token = (
+            (hf_token or "").strip()
+            or (os.getenv("HF_TOKEN") or "").strip()
+            or (os.getenv("HUGGINGFACE_TOKEN") or "").strip()
+            or (os.getenv("HUGGINGFACE_HUB_TOKEN") or "").strip()
+            or None
+        )
         self.hf_swap_model = hf_swap_model
         self.hf_target_index = int(hf_target_index)
         self.hf_restore_model = (hf_restore_model or "none").strip()
@@ -63,6 +70,20 @@ class FaceSwapService:
         self.replicate_token = replicate_token
         self.replicate_version = replicate_version
         self.timeout = int(timeout)
+
+        tok = "yes" if self.hf_token else "NO"
+        print(
+            f"[FaceSwap] init space={self.hf_space} enhance={self.hf_enhance_space} "
+            f"hf_token={tok}",
+            flush=True,
+        )
+        if self.hf_enhance_enabled and not self.hf_token:
+            print(
+                "[FaceSwap] AVISO: sem HF_TOKEN — CodeFormer ZeroGPU vai falhar por cota. "
+                "Crie token grátis em https://huggingface.co/settings/tokens "
+                "e defina HF_TOKEN no Render.",
+                flush=True,
+            )
 
     async def available(self) -> bool:
         if not self.reference_path.is_file():
@@ -108,20 +129,24 @@ class FaceSwapService:
                     continue
 
                 tag = name
-                if self.hf_enhance_enabled and self.hf_enhance_space:
+                if self.hf_enhance_enabled:
                     try:
-                        enhanced = await self._codeformer_enhance(output)
+                        enhanced = await self._enhance_free(output)
                         if enhanced:
                             print(
-                                f"[FaceSwap] CodeFormer OK bytes {len(output)}->{len(enhanced)}",
+                                f"[FaceSwap] enhance OK bytes {len(output)}->{len(enhanced)}",
                                 flush=True,
                             )
                             output = enhanced
-                            tag = f"{name}+codeformer"
+                            tag = f"{name}+enhance"
                         else:
-                            print("[FaceSwap] CodeFormer sem output — mantém swap", flush=True)
+                            print(
+                                "[FaceSwap] enhance sem output — mantém swap "
+                                "(defina HF_TOKEN grátis no Render se CodeFormer falhou por cota)",
+                                flush=True,
+                            )
                     except Exception as e:
-                        print(f"[FaceSwap] CodeFormer skip: {e}", flush=True)
+                        print(f"[FaceSwap] enhance skip: {e}", flush=True)
 
                 return ImageResult(
                     success=True,
@@ -154,6 +179,12 @@ class FaceSwapService:
             return order
         return []
 
+    def _client_kwargs(self) -> dict:
+        kw = {}
+        if self.hf_token:
+            kw["token"] = self.hf_token
+        return kw
+
     async def _get_image_bytes(self, generated: ImageResult) -> bytes | None:
         if generated.image_bytes:
             return generated.image_bytes
@@ -167,20 +198,12 @@ class FaceSwapService:
     async def _huggingface_swap(self, target_bytes: bytes) -> bytes | None:
         return await asyncio.to_thread(self._huggingface_swap_sync, target_bytes)
 
-    def _client_kwargs(self) -> dict:
-        kw = {}
-        if self.hf_token:
-            kw["token"] = self.hf_token
-        return kw
-
     def _huggingface_swap_sync(self, target_bytes: bytes) -> bytes | None:
         from gradio_client import Client, handle_file
 
-        # Spaces de swap simples (2 imagens) — tonyassi é o que o log usa de fato
         swap_spaces = []
         if self.hf_space:
             swap_spaces.append((self.hf_space, self.hf_api_name))
-        # sempre tenta tonyassi se ainda não for ele (confiável + grátis)
         if "tonyassi/face-swap" not in {s for s, _ in swap_spaces}:
             swap_spaces.append(("tonyassi/face-swap", "/swap_faces"))
 
@@ -194,12 +217,8 @@ class FaceSwapService:
             for space, api in swap_spaces:
                 try:
                     client = Client(space, **self._client_kwargs())
-                    print(
-                        f"[FaceSwap] swap space={space} api={api}",
-                        flush=True,
-                    )
+                    print(f"[FaceSwap] swap space={space} api={api}", flush=True)
                     attempts = [
-                        # tonyassi API real
                         lambda c=client, a=api: c.predict(
                             handle_file(str(source)),
                             handle_file(str(target)),
@@ -234,10 +253,7 @@ class FaceSwapService:
                                 return data
                         except Exception as e:
                             last_err = e
-                            print(
-                                f"[FaceSwap] swap {space} try={i+1}: {e}",
-                                flush=True,
-                            )
+                            print(f"[FaceSwap] swap {space} try={i+1}: {e}", flush=True)
                 except Exception as e:
                     last_err = e
                     print(f"[FaceSwap] swap space fail {space}: {e}", flush=True)
@@ -246,70 +262,56 @@ class FaceSwapService:
                 raise last_err
             return None
 
-    async def _codeformer_enhance(self, image_bytes: bytes) -> bytes | None:
-        return await asyncio.to_thread(self._codeformer_enhance_sync, image_bytes)
+    async def _enhance_free(self, image_bytes: bytes) -> bytes | None:
+        return await asyncio.to_thread(self._enhance_free_sync, image_bytes)
+
+    def _enhance_free_sync(self, image_bytes: bytes) -> bytes | None:
+        # 1) CodeFormer (melhor pro rosto) — precisa HF_TOKEN p/ cota ZeroGPU
+        data = self._codeformer_enhance_sync(image_bytes)
+        if data:
+            return data
+        # 2) Fallback Real-ESRGAN playground (grátis, outro space)
+        data = self._bookbot_upscale_sync(image_bytes)
+        if data:
+            return data
+        return None
 
     def _codeformer_enhance_sync(self, image_bytes: bytes) -> bytes | None:
-        """
-        sczhou/CodeFormer API real (view_api):
-          /inference(
-            image,
-            face_align=True,
-            background_enhance=True,
-            face_upsample=True,
-            upscale=2,
-            codeformer_fidelity=0.5,
-          ) -> output
-        """
         from gradio_client import Client, handle_file
 
         space = self.hf_enhance_space or "sczhou/CodeFormer"
-        api = self.hf_enhance_api_name or "/inference"
         upscale = max(1, min(4, int(self.hf_enhance_upscale or 2)))
         fidelity = float(self.hf_enhance_fidelity or 0.5)
 
+        if not self.hf_token:
+            print(
+                "[FaceSwap] CodeFormer: SEM HF_TOKEN — ZeroGPU quase sempre recusa. "
+                "Pulando para fallback / configure HF_TOKEN.",
+                flush=True,
+            )
+            # ainda tenta uma vez (às vezes sobra cota anônima)
+        
         with tempfile.TemporaryDirectory(prefix="face-enhance-") as tmp:
             img_path = Path(tmp) / "in.jpg"
             img_path.write_bytes(image_bytes)
 
             print(
-                f"[FaceSwap] CodeFormer space={space} api={api} "
-                f"upscale={upscale} fidelity={fidelity}",
+                f"[FaceSwap] CodeFormer space={space} api=/inference "
+                f"upscale={upscale} fidelity={fidelity} token={'yes' if self.hf_token else 'NO'}",
                 flush=True,
             )
-            client = Client(space, **self._client_kwargs())
+            try:
+                client = Client(space, **self._client_kwargs())
+            except Exception as e:
+                print(f"[FaceSwap] CodeFormer client fail: {e}", flush=True)
+                return None
 
             attempts = [
-                # assinatura oficial
                 lambda: client.predict(
                     handle_file(str(img_path)),
-                    True,   # face_align
-                    True,   # background_enhance
-                    True,   # face_upsample  << neural no rosto
-                    upscale,
-                    fidelity,
+                    True, True, True, upscale, fidelity,
                     api_name="/inference",
                 ),
-                lambda: client.predict(
-                    handle_file(str(img_path)),
-                    True,
-                    True,
-                    True,
-                    upscale,
-                    fidelity,
-                    api_name=api,
-                ),
-                # upscale 1 se 2 falhar por memória
-                lambda: client.predict(
-                    handle_file(str(img_path)),
-                    True,
-                    True,
-                    True,
-                    1,
-                    fidelity,
-                    api_name="/inference",
-                ),
-                # kwargs
                 lambda: client.predict(
                     image=handle_file(str(img_path)),
                     face_align=True,
@@ -317,6 +319,11 @@ class FaceSwapService:
                     face_upsample=True,
                     upscale=upscale,
                     codeformer_fidelity=fidelity,
+                    api_name="/inference",
+                ),
+                lambda: client.predict(
+                    handle_file(str(img_path)),
+                    True, True, True, 1, fidelity,
                     api_name="/inference",
                 ),
             ]
@@ -334,11 +341,61 @@ class FaceSwapService:
                         return data
                 except Exception as e:
                     last_err = e
-                    print(f"[FaceSwap] CodeFormer try={i+1}: {e}", flush=True)
+                    msg = str(e)
+                    print(f"[FaceSwap] CodeFormer try={i+1}: {msg}", flush=True)
+                    if "ZeroGPU quota" in msg or "quota" in msg.lower():
+                        print(
+                            "[FaceSwap] COTA ZeroGPU esgotada. "
+                            "Solução GRÁTIS: crie token em huggingface.co/settings/tokens "
+                            "e coloque HF_TOKEN no Render (Environment). "
+                            "Sem token o enhance não roda e o rosto fica em baixa res.",
+                            flush=True,
+                        )
+                        break  # não spamma 4x a mesma cota
 
             if last_err:
-                print(f"[FaceSwap] CodeFormer all failed: {last_err}", flush=True)
+                print(f"[FaceSwap] CodeFormer failed: {last_err}", flush=True)
             return None
+
+    def _bookbot_upscale_sync(self, image_bytes: bytes) -> bytes | None:
+        """Fallback grátis se CodeFormer sem cota."""
+        from gradio_client import Client, handle_file
+        import base64 as b64
+
+        space = "bookbot/Image-Upscaling-Playground"
+        print(f"[FaceSwap] fallback upscale space={space}", flush=True)
+        try:
+            client = Client(space, **self._client_kwargs())
+        except Exception as e:
+            print(f"[FaceSwap] bookbot client fail: {e}", flush=True)
+            return None
+
+        with tempfile.TemporaryDirectory(prefix="face-up-") as tmp:
+            img_path = Path(tmp) / "in.jpg"
+            img_path.write_bytes(image_bytes)
+            # API pede base64 string às vezes; handle_file costuma funcionar
+            b64img = "data:image/jpeg;base64," + b64.b64encode(image_bytes).decode()
+            for upscaler in ("modelx2", "modelx4", "RealESRGAN_x2", "RealESRGAN_x4plus"):
+                for payload in (
+                    lambda u=upscaler: client.predict(
+                        handle_file(str(img_path)), u, api_name="/predict"
+                    ),
+                    lambda u=upscaler: client.predict(
+                        b64img, u, api_name="/predict"
+                    ),
+                ):
+                    try:
+                        result = payload()
+                        data = self._read_result_sync(result)
+                        if data and len(data) > 1000:
+                            print(
+                                f"[FaceSwap] bookbot OK upscaler={upscaler} bytes={len(data)}",
+                                flush=True,
+                            )
+                            return data
+                    except Exception as e:
+                        print(f"[FaceSwap] bookbot {upscaler}: {e}", flush=True)
+        return None
 
     async def _replicate_swap(self, target_bytes: bytes) -> bytes | None:
         if not self.replicate_token:
@@ -440,8 +497,13 @@ class FaceSwapService:
             return base64.b64decode(result.split(",", 1)[1])
         if result.startswith("http://") or result.startswith("https://"):
             import urllib.request
-
             with urllib.request.urlopen(result, timeout=self.timeout) as response:
                 return response.read()
+        # base64 raw
+        if len(result) > 200 and not result.startswith("/") and " " not in result[:50]:
+            try:
+                return base64.b64decode(result)
+            except Exception:
+                pass
         path = Path(result)
         return path.read_bytes() if path.is_file() else None
