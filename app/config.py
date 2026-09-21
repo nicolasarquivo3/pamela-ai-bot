@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     hf_face_enhance_space: str = "sczhou/CodeFormer"
     hf_face_enhance_api_name: str = "/inference"
     hf_face_enhance_upscale: int = 2
-    hf_face_enhance_fidelity: float = 0.5
+    hf_face_enhance_fidelity: float = 0.8  # alto = mais parecido com o rosto modelo
 
     replicate_api_token: str | None = None
     replicate_face_swap_version: str = (

@@ -288,7 +288,7 @@ async def main():
                 hf_enhance_space=getattr(settings, "hf_face_enhance_space", None) or "sczhou/CodeFormer",
                 hf_enhance_api_name=getattr(settings, "hf_face_enhance_api_name", None) or "/inference",
                 hf_enhance_upscale=int(getattr(settings, "hf_face_enhance_upscale", 2) or 2),
-                hf_enhance_fidelity=float(getattr(settings, "hf_face_enhance_fidelity", 0.5) or 0.5),
+                hf_enhance_fidelity=float(getattr(settings, "hf_face_enhance_fidelity", 0.8) or 0.8),
                 replicate_token=settings.replicate_api_token,
                 replicate_version=settings.replicate_face_swap_version,
                 timeout=settings.face_swap_timeout_seconds,
@@ -336,7 +336,7 @@ async def main():
                 hf_enhance_space=getattr(settings, "hf_face_enhance_space", None) or "sczhou/CodeFormer",
                 hf_enhance_api_name=getattr(settings, "hf_face_enhance_api_name", None) or "/inference",
                 hf_enhance_upscale=int(getattr(settings, "hf_face_enhance_upscale", 2) or 2),
-                hf_enhance_fidelity=float(getattr(settings, "hf_face_enhance_fidelity", 0.5) or 0.5),
+                hf_enhance_fidelity=float(getattr(settings, "hf_face_enhance_fidelity", 0.8) or 0.8),
                 timeout=int(getattr(settings, "face_swap_timeout_seconds", None) or 240),
             )
             print(
