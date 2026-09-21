@@ -68,21 +68,26 @@ class Settings(BaseSettings):
     # Chance de surpresa espontânea (0.0 a 1.0). 0.08 ≈ 8%
     photo_surprise_chance: float = 0.03
 
-    # FACE SWAP
+    # FACE SWAP (caminho GRÁTIS — restore neural no Space, sem upscale local)
     face_swap_enabled: bool = True
     face_swap_required: bool = True
     face_swap_provider: str = "huggingface"
 
     face_reference_image_path: str = "assets/pamela_face_reference.jpg"
-    face_swap_timeout_seconds: int = 180
+    face_swap_timeout_seconds: int = 240
 
     hf_face_swap_space: str = "V0pr0S/FaceFusion-Face-Swap-Hyperswap"
     hf_face_swap_api_name: str = "/generate_image"
     hf_token: str | None = None
     hf_face_swap_model: str = "hyperswap_1b_256.onnx"
     hf_face_swap_target_index: int = 0
-    hf_face_restore_model: str = "none"
-    hf_face_restore_strength: float = 0.7
+    # Restore NEURAL no próprio Space (gfpgan_1.4 | codeformer | gpen_bfr_512 | none)
+    hf_face_restore_model: str = "gfpgan_1.4"
+    hf_face_restore_strength: float = 0.5
+    # 2º Space GRÁTIS (CodeFormer). Se fila/cair, mantém o swap. false = só 1 passo
+    hf_face_enhance_enabled: bool = True
+    hf_face_enhance_space: str = "sczhou/CodeFormer"
+    hf_face_enhance_api_name: str = "/predict"
 
     replicate_api_token: str | None = None
     replicate_face_swap_version: str = (
