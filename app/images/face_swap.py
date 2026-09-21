@@ -120,6 +120,16 @@ class FaceSwapService:
                 else generated
             )
 
+        # Multi-pessoa: forcar swap no rosto da MULHER
+        original_target = target_bytes
+        restore_boxes: list = []
+        try:
+            target_bytes, restore_boxes = await self._prefer_woman_faces(target_bytes)
+        except Exception as e:
+            print(f"[FaceSwap] prefer_woman skip: {e}", flush=True)
+            target_bytes = original_target
+            restore_boxes = []
+
         providers = self._provider_order()
         errors: list[str] = []
         for name in providers:
@@ -131,6 +141,15 @@ class FaceSwapService:
                 if not output:
                     errors.append(f"{name}:no_output")
                     continue
+
+                # restaura rostos de homens / nao-alvo
+                if restore_boxes:
+                    try:
+                        output = self._restore_face_boxes(
+                            output, original_target, restore_boxes
+                        )
+                    except Exception as e:
+                        print(f"[FaceSwap] restore faces skip: {e}", flush=True)
 
                 tag = name
                 if self.hf_enhance_enabled:
@@ -262,6 +281,316 @@ class FaceSwapService:
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=95, optimize=True, subsampling=0)
         return buf.getvalue()
+
+
+    def _gemini_keys(self) -> list[str]:
+        keys = []
+        try:
+            from app.config import settings
+            if getattr(settings, "gemini_api_key", None):
+                keys.append(str(settings.gemini_api_key).strip())
+            multi = getattr(settings, "gemini_api_keys", None) or ""
+            for part in str(multi).split(","):
+                p = part.strip()
+                if p and p not in keys:
+                    keys.append(p)
+        except Exception:
+            pass
+        for env_k in ("GEMINI_API_KEY", "GEMINI_API_KEYS"):
+            import os
+            v = (os.getenv(env_k) or "").strip()
+            if not v:
+                continue
+            for part in v.split(","):
+                p = part.strip()
+                if p and p not in keys:
+                    keys.append(p)
+        return keys
+
+    async def _prefer_woman_faces(self, target_bytes: bytes) -> tuple[bytes, list]:
+        """
+        Se houver varias pessoas, mascara rostos NAO-femininos para o swap
+        pegar sempre a mulher. Depois restauramos esses rostos no resultado.
+
+        Retorna (target_preparado, lista de boxes normalizados 0-1 a restaurar).
+        box = (x0, y0, x1, y1) em fracao da imagem.
+        """
+        try:
+            faces = await self._detect_faces_gender(target_bytes)
+        except Exception as e:
+            print(f"[FaceSwap] woman-detect fail: {e}", flush=True)
+            return target_bytes, []
+
+        if not faces:
+            print("[FaceSwap] woman-detect: 0 faces (segue normal)", flush=True)
+            return target_bytes, []
+
+        women = [f for f in faces if f.get("gender") == "female"]
+        others = [f for f in faces if f.get("gender") != "female"]
+        print(
+            f"[FaceSwap] faces={len(faces)} women={len(women)} others={len(others)} "
+            f"detail={faces}",
+            flush=True,
+        )
+
+        if len(faces) <= 1:
+            return target_bytes, []
+        if not women:
+            # sem mulher clara: nao mascara (evita swap errado pior)
+            print("[FaceSwap] nenhuma mulher detectada — swap normal", flush=True)
+            return target_bytes, []
+        if not others:
+            # so mulheres: pega a principal (maior area / mais central)
+            print("[FaceSwap] so mulheres — prioriza rosto principal", flush=True)
+            # ainda assim se >1 mulher, mascara as menores para trocar a principal
+            if len(women) == 1:
+                return target_bytes, []
+            primary = self._pick_primary_woman(women)
+            restore = [tuple(w["box"]) for w in women if w is not primary]
+            masked = self._mask_face_boxes(target_bytes, restore)
+            return masked, restore
+
+        # multi: mulher(es) + homem(ns) → mascara homens (e mulheres extras)
+        primary = self._pick_primary_woman(women)
+        restore = []
+        for f in faces:
+            if f is primary:
+                continue
+            restore.append(tuple(f["box"]))
+        masked = self._mask_face_boxes(target_bytes, restore)
+        print(
+            f"[FaceSwap] mascara {len(restore)} rosto(s) nao-alvo; "
+            f"swap so na mulher primary={primary.get('box')}",
+            flush=True,
+        )
+        return masked, restore
+
+    def _pick_primary_woman(self, women: list) -> dict:
+        """Maior rosto; empate → mais central."""
+        def score(f):
+            x0, y0, x1, y1 = f["box"]
+            area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            center = 1.0 - ((cx - 0.5) ** 2 + (cy - 0.45) ** 2) ** 0.5
+            return area * 2.0 + center
+        return max(women, key=score)
+
+    def _mask_face_boxes(self, image_bytes: bytes, boxes: list) -> bytes:
+        """Cobre rostos nao-alvo com blur forte p/ o detector nao achar face."""
+        if not boxes:
+            return image_bytes
+        try:
+            from PIL import Image, ImageFilter, ImageDraw
+            import io
+        except ImportError:
+            return image_bytes
+        im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        w, h = im.size
+        for box in boxes:
+            try:
+                x0, y0, x1, y1 = box
+            except Exception:
+                continue
+            # padding generoso
+            px0 = max(0, int((x0 - 0.02) * w))
+            py0 = max(0, int((y0 - 0.02) * h))
+            px1 = min(w, int((x1 + 0.02) * w))
+            py1 = min(h, int((y1 + 0.02) * h))
+            if px1 <= px0 + 4 or py1 <= py0 + 4:
+                continue
+            region = im.crop((px0, py0, px1, py1))
+            region = region.filter(ImageFilter.GaussianBlur(radius=28))
+            # escurece um pouco p/ matar landmarks
+            from PIL import ImageEnhance
+            region = ImageEnhance.Brightness(region).enhance(0.55)
+            im.paste(region, (px0, py0))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=95, optimize=True, subsampling=0)
+        return buf.getvalue()
+
+    def _restore_face_boxes(
+        self, swapped_bytes: bytes, original_bytes: bytes, boxes: list
+    ) -> bytes:
+        """Cola de volta os rostos originais (homens etc.) apos o swap na mulher."""
+        if not boxes or not swapped_bytes or not original_bytes:
+            return swapped_bytes
+        try:
+            from PIL import Image, ImageDraw
+            import io
+        except ImportError:
+            return swapped_bytes
+        out = Image.open(io.BytesIO(swapped_bytes)).convert("RGB")
+        orig = Image.open(io.BytesIO(original_bytes)).convert("RGB")
+        # se tamanhos diferem (prep), redimensiona orig para out
+        if orig.size != out.size:
+            orig = orig.resize(out.size, Image.Resampling.LANCZOS)
+        w, h = out.size
+        for box in boxes:
+            try:
+                x0, y0, x1, y1 = box
+            except Exception:
+                continue
+            # padding um pouco maior na restauracao
+            px0 = max(0, int((x0 - 0.03) * w))
+            py0 = max(0, int((y0 - 0.03) * h))
+            px1 = min(w, int((x1 + 0.03) * w))
+            py1 = min(h, int((y1 + 0.03) * h))
+            if px1 <= px0 + 4 or py1 <= py0 + 4:
+                continue
+            patch = orig.crop((px0, py0, px1, py1))
+            # mascara eliptica suave nas bordas
+            mask = Image.new("L", (px1 - px0, py1 - py0), 0)
+            draw = ImageDraw.Draw(mask)
+            draw.ellipse(
+                (2, 2, px1 - px0 - 3, py1 - py0 - 3),
+                fill=255,
+            )
+            try:
+                from PIL import ImageFilter
+                mask = mask.filter(ImageFilter.GaussianBlur(radius=4))
+            except Exception:
+                pass
+            out.paste(patch, (px0, py0), mask)
+        buf = io.BytesIO()
+        out.save(buf, format="JPEG", quality=95, optimize=True, subsampling=0)
+        print(f"[FaceSwap] restaurou {len(boxes)} rosto(s) nao-alvo", flush=True)
+        return buf.getvalue()
+
+    async def _detect_faces_gender(self, image_bytes: bytes) -> list:
+        """
+        Gemini Vision: lista faces com gender + box normalizado [x0,y0,x1,y1] 0..1.
+        """
+        import json
+        import re as _re
+        import base64 as _b64
+        import httpx
+
+        keys = self._gemini_keys()
+        if not keys:
+            print("[FaceSwap] woman-detect: sem GEMINI key", flush=True)
+            return []
+
+        raw = image_bytes[:3_500_000]
+        b64 = _b64.b64encode(raw).decode("ascii")
+        prompt = (
+            "Analise a imagem. Liste TODAS as faces de pessoas adultas visiveis. "
+            "Responda APENAS JSON valido, sem markdown, neste formato:\n"
+            '{"faces":[{"gender":"female"|"male"|"unknown","box":[x0,y0,x1,y1]}]}\n'
+            "box e normalizado 0 a 1 (fracao da largura/altura da imagem), "
+            "x0,y0 canto superior esquerdo, x1,y1 inferior direito. "
+            "gender=female para mulher, male para homem. "
+            "Se so uma pessoa, ainda assim retorne 1 face. "
+            "Se nao houver face, {\"faces\":[]}."
+        )
+
+        models = [
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-flash-latest",
+            "gemini-3.5-flash",
+        ]
+        try:
+            from app.config import settings
+            m = (getattr(settings, "gemini_model", None) or "").strip()
+            if m:
+                models = [m] + [x for x in models if x != m]
+        except Exception:
+            pass
+
+        parts = [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+        ]
+        payload = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 512,
+            },
+        }
+
+        text_out = ""
+        async with httpx.AsyncClient(timeout=60) as client:
+            for key in keys[:3]:
+                for model in models[:5]:
+                    for ver in ("v1beta", "v1"):
+                        url = (
+                            f"https://generativelanguage.googleapis.com/{ver}/"
+                            f"models/{model}:generateContent"
+                        )
+                        try:
+                            r = await client.post(
+                                url,
+                                headers={
+                                    "x-goog-api-key": key,
+                                    "Content-Type": "application/json",
+                                },
+                                json=payload,
+                            )
+                            if r.status_code != 200:
+                                continue
+                            data = r.json()
+                            cands = data.get("candidates") or []
+                            if not cands:
+                                continue
+                            parts_out = (
+                                (cands[0].get("content") or {}).get("parts") or []
+                            )
+                            text_out = "".join(
+                                (p.get("text") or "") for p in parts_out
+                            ).strip()
+                            if text_out:
+                                print(
+                                    f"[FaceSwap] woman-detect model={model} ok",
+                                    flush=True,
+                                )
+                                break
+                        except Exception as e:
+                            print(f"[FaceSwap] woman-detect err: {e}", flush=True)
+                            continue
+                    if text_out:
+                        break
+                if text_out:
+                    break
+
+        if not text_out:
+            return []
+
+        # extrai JSON
+        m = _re.search(r"\{[\s\S]*\}", text_out)
+        if not m:
+            return []
+        try:
+            obj = json.loads(m.group(0))
+        except Exception:
+            return []
+        faces_raw = obj.get("faces") or []
+        faces = []
+        for f in faces_raw:
+            if not isinstance(f, dict):
+                continue
+            g = (f.get("gender") or "unknown").lower().strip()
+            if g in ("woman", "girl", "f", "mulher", "female"):
+                g = "female"
+            elif g in ("man", "boy", "m", "homem", "male"):
+                g = "male"
+            else:
+                g = "unknown"
+            box = f.get("box") or f.get("bbox")
+            if not isinstance(box, (list, tuple)) or len(box) != 4:
+                continue
+            try:
+                x0, y0, x1, y1 = [float(v) for v in box]
+            except Exception:
+                continue
+            # clamp
+            x0, y0 = max(0.0, min(1.0, x0)), max(0.0, min(1.0, y0))
+            x1, y1 = max(0.0, min(1.0, x1)), max(0.0, min(1.0, y1))
+            if x1 <= x0 or y1 <= y0:
+                continue
+            faces.append({"gender": g, "box": [x0, y0, x1, y1]})
+        return faces
 
     async def _huggingface_swap(self, target_bytes: bytes) -> bytes | None:
         return await asyncio.to_thread(self._huggingface_swap_sync, target_bytes)
