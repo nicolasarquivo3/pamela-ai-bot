@@ -201,54 +201,49 @@ class FaceSwapService:
             return response.content
 
 
-    def _prepare_identity_reference(self, data: bytes) -> bytes:
+
+    def _prepare_identity_reference(self, data: bytes, mode: str = "raw") -> bytes:
         """
-        Prepara a foto-modelo para o swap copiar MELHOR a identidade:
-        - se for corpo inteiro, recorta a regiao da cabeca (centro-superior)
-        - garante lado min ~768 no rosto (sem unsharp agressivo)
-        - JPEG alta qualidade
-        Nao inventa pixels; so enquadra o rosto para o modelo ver detalhes.
+        mode:
+          raw   = referencia original (preferido — nao quebra deteccao)
+          mild  = so reencode JPEG HQ (sem crop)
+          crop  = crop cabeca so como fallback se raw falhar
+        O crop agressivo anterior fazia "No faces detected" no tonyassi.
         """
         try:
             from PIL import Image
             import io
         except ImportError:
             return data
+
         im = Image.open(io.BytesIO(data)).convert("RGB")
         w, h = im.size
-        # retrato corpo inteiro / 3/4: rosto costuma estar no terco superior
-        # se a imagem for bem alta (h > 1.25*w), crop cabeca
-        if h >= int(w * 1.15):
-            # faixa y: 2%..48%  x: 12%..88%  — foca rosto sem cortar orelhas
-            x0, x1 = int(w * 0.10), int(w * 0.90)
-            y0, y1 = int(h * 0.02), int(h * 0.48)
-            if y1 > y0 + 80 and x1 > x0 + 80:
-                face = im.crop((x0, y0, x1, y1))
-                print(
-                    f"[FaceSwap] ref crop identity {w}x{h} -> {face.size}",
-                    flush=True,
-                )
-                im = face
+
+        if mode == "crop" and h >= int(w * 1.15):
+            # crop mais generoso (nao corta o rosto)
+            x0, x1 = int(w * 0.05), int(w * 0.95)
+            y0, y1 = int(h * 0.0), int(h * 0.55)
+            if y1 > y0 + 100 and x1 > x0 + 100:
+                im = im.crop((x0, y0, x1, y1))
+                print(f"[FaceSwap] ref crop mild {w}x{h} -> {im.size}", flush=True)
                 w, h = im.size
-        # se rosto ainda pequeno, sobe so o enquadramento (LANCZOS suave)
+
+        # raw/mild: no crop; so reencode
         side = max(w, h)
-        if side < 768:
-            scale = 768 / float(side)
-            nw, nh = int(round(w * scale)), int(round(h * scale))
-            im = im.resize((nw, nh), Image.Resampling.LANCZOS)
-            print(f"[FaceSwap] ref upscale identity -> {im.size}", flush=True)
-        elif side > 1600:
-            # evita mandar 4k enorme (tonyassi comprime feio)
+        if side > 1600:
             scale = 1400 / float(side)
-            nw, nh = int(round(w * scale)), int(round(h * scale))
-            im = im.resize((nw, nh), Image.Resampling.LANCZOS)
-            print(f"[FaceSwap] ref downscale identity -> {im.size}", flush=True)
+            im = im.resize(
+                (int(round(w * scale)), int(round(h * scale))),
+                Image.Resampling.LANCZOS,
+            )
+            print(f"[FaceSwap] ref downscale -> {im.size}", flush=True)
+
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=95, optimize=True, subsampling=0)
         return buf.getvalue()
 
     def _prepare_target_for_identity(self, data: bytes) -> bytes:
-        """Target com lado razoavel: rosto destino maior = swap mais fiel."""
+        """Reencode target; evita target gigante. Sem crop (nao remover rosto)."""
         try:
             from PIL import Image
             import io
@@ -257,14 +252,7 @@ class FaceSwapService:
         im = Image.open(io.BytesIO(data)).convert("RGB")
         w, h = im.size
         side = max(w, h)
-        if side < 900:
-            scale = 900 / float(side)
-            im = im.resize(
-                (int(round(w * scale)), int(round(h * scale))),
-                Image.Resampling.LANCZOS,
-            )
-            print(f"[FaceSwap] target upscale for identity -> {im.size}", flush=True)
-        elif side > 1800:
+        if side > 1800:
             scale = 1600 / float(side)
             im = im.resize(
                 (int(round(w * scale)), int(round(h * scale))),
@@ -290,64 +278,73 @@ class FaceSwapService:
         with tempfile.TemporaryDirectory(prefix="face-swap-") as tmp:
             source = Path(tmp) / "source.jpg"
             target = Path(tmp) / "target.jpg"
-            ref_bytes = self.reference_path.read_bytes()
+            raw_ref = self.reference_path.read_bytes()
             try:
-                ref_bytes = self._prepare_identity_reference(ref_bytes)
-            except Exception as e:
-                print(f"[FaceSwap] ref prep skip: {e}", flush=True)
-            try:
-                target_bytes = self._prepare_target_for_identity(target_bytes)
+                tgt = self._prepare_target_for_identity(target_bytes)
             except Exception as e:
                 print(f"[FaceSwap] target prep skip: {e}", flush=True)
-            source.write_bytes(ref_bytes)
-            target.write_bytes(target_bytes)
-            print(
-                f"[FaceSwap] identity prep ref_bytes={len(ref_bytes)} "
-                f"target_bytes={len(target_bytes)}",
-                flush=True,
-            )
+                tgt = target_bytes
+            target.write_bytes(tgt)
+
+            # RAW primeiro (o crop agressivo quebrava: No faces detected)
+            ref_variants = []
+            for mode in ("raw", "mild", "crop"):
+                try:
+                    rb = self._prepare_identity_reference(raw_ref, mode=mode)
+                    ref_variants.append((mode, rb))
+                except Exception as e:
+                    print(f"[FaceSwap] ref mode={mode} skip: {e}", flush=True)
+            if not ref_variants:
+                ref_variants = [("raw", raw_ref)]
 
             last_err = None
             for space, api in swap_spaces:
                 try:
                     client = Client(space, **self._client_kwargs())
                     print(f"[FaceSwap] swap space={space} api={api}", flush=True)
-                    attempts = [
-                        lambda c=client, a=api: c.predict(
-                            handle_file(str(source)),
-                            handle_file(str(target)),
-                            api_name=a or "/swap_faces",
-                        ),
-                        lambda c=client: c.predict(
-                            handle_file(str(source)),
-                            handle_file(str(target)),
-                            api_name="/swap_faces",
-                        ),
-                        lambda c=client: c.predict(
-                            handle_file(str(source)),
-                            handle_file(str(target)),
-                            api_name="/swap_faces_1",
-                        ),
-                        lambda c=client: c.predict(
-                            src_img=handle_file(str(source)),
-                            dest_img=handle_file(str(target)),
-                            api_name="/swap_faces",
-                        ),
-                    ]
-                    for i, attempt in enumerate(attempts):
-                        try:
-                            result = attempt()
-                            data = self._read_result_sync(result)
-                            if data:
+                    for mode, ref_bytes in ref_variants:
+                        source.write_bytes(ref_bytes)
+                        print(
+                            f"[FaceSwap] try ref_mode={mode} ref={len(ref_bytes)} "
+                            f"target={len(tgt)}",
+                            flush=True,
+                        )
+                        attempts = [
+                            lambda c=client, a=api: c.predict(
+                                handle_file(str(source)),
+                                handle_file(str(target)),
+                                api_name=a or "/swap_faces",
+                            ),
+                            lambda c=client: c.predict(
+                                handle_file(str(source)),
+                                handle_file(str(target)),
+                                api_name="/swap_faces",
+                            ),
+                            lambda c=client: c.predict(
+                                src_img=handle_file(str(source)),
+                                dest_img=handle_file(str(target)),
+                                api_name="/swap_faces",
+                            ),
+                        ]
+                        for i, attempt in enumerate(attempts):
+                            try:
+                                result = attempt()
+                                data = self._read_result_sync(result)
+                                if data:
+                                    print(
+                                        f"[FaceSwap] swap OK space={space} "
+                                        f"ref_mode={mode} try={i+1} bytes={len(data)}",
+                                        flush=True,
+                                    )
+                                    return data
+                            except Exception as e:
+                                last_err = e
                                 print(
-                                    f"[FaceSwap] swap OK space={space} try={i+1} "
-                                    f"bytes={len(data)}",
+                                    f"[FaceSwap] swap {space} mode={mode} "
+                                    f"try={i+1}: {e}",
                                     flush=True,
                                 )
-                                return data
-                        except Exception as e:
-                            last_err = e
-                            print(f"[FaceSwap] swap {space} try={i+1}: {e}", flush=True)
+                                continue
                 except Exception as e:
                     last_err = e
                     print(f"[FaceSwap] swap space fail {space}: {e}", flush=True)
@@ -355,6 +352,7 @@ class FaceSwapService:
             if last_err:
                 raise last_err
             return None
+
 
     async def _enhance_free(self, image_bytes: bytes) -> bytes | None:
         return await asyncio.to_thread(self._enhance_free_sync, image_bytes)
