@@ -71,6 +71,10 @@ class FaceSwapService:
         self.replicate_version = replicate_version
         self.timeout = int(timeout)
 
+        if self.hf_token:
+            # algumas libs / Spaces leem só do ambiente
+            os.environ.setdefault("HF_TOKEN", self.hf_token)
+            os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", self.hf_token)
         tok = "yes" if self.hf_token else "NO"
         print(
             f"[FaceSwap] init space={self.hf_space} enhance={self.hf_enhance_space} "
@@ -180,9 +184,10 @@ class FaceSwapService:
         return []
 
     def _client_kwargs(self) -> dict:
+        # gradio_client >=1.x usa hf_token= (NÃO token=)
         kw = {}
         if self.hf_token:
-            kw["token"] = self.hf_token
+            kw["hf_token"] = self.hf_token
         return kw
 
     async def _get_image_bytes(self, generated: ImageResult) -> bytes | None:
