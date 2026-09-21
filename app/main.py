@@ -284,6 +284,11 @@ async def main():
                 hf_target_index=settings.hf_face_swap_target_index,
                 hf_restore_model=settings.hf_face_restore_model,
                 hf_restore_strength=settings.hf_face_restore_strength,
+                hf_pixel_boost=getattr(settings, 'hf_face_swap_pixel_boost', None) or '512x512',
+                post_upscale=float(getattr(settings, 'face_swap_post_upscale', 1.5) or 1.5),
+                min_target_side=int(getattr(settings, 'face_swap_min_target_side', 768) or 768),
+                max_output_side=int(getattr(settings, 'face_swap_max_output_side', 2048) or 2048),
+                jpeg_quality=int(getattr(settings, 'face_swap_jpeg_quality', 95) or 95),
                 replicate_token=settings.replicate_api_token,
                 replicate_version=settings.replicate_face_swap_version,
                 timeout=settings.face_swap_timeout_seconds,
@@ -313,28 +318,34 @@ async def main():
             )
             if reference_path and not str(reference_path).startswith("/"):
                 reference_path = f"/app/{reference_path}"
-            # so cria se arquivo de referencia existe ou settings permite
             import os as _os_fs
             ref_ok = _os_fs.path.isfile(reference_path) if reference_path else False
             if not ref_ok:
-                # tenta paths comuns
-                for cand in (
-                    "/app/app/assets/pamela_face.jpg",
-                    "/app/assets/pamela_face.jpg",
-                    "/app/pamela_face.jpg",
-                    "/app/app/assets/face.jpg",
-                ):
-                    if _os_fs.path.isfile(cand):
-                        reference_path = cand
-                        ref_ok = True
-                        break
+                alt = "/app/assets/pamela_face_reference.jpg"
+                if _os_fs.path.isfile(alt):
+                    reference_path = alt
+                    ref_ok = True
             face_swap_service = FaceSwapService(
-                reference_path=reference_path or "/app/app/assets/pamela_face.jpg",
+                reference_path=reference_path or "/app/assets/pamela_face_reference.jpg",
                 required=False,
                 provider=getattr(settings, "face_swap_provider", None) or "huggingface",
                 hf_space=getattr(settings, "hf_face_swap_space", None) or "tonyassi/face-swap",
                 hf_api_name=getattr(settings, "hf_face_swap_api_name", None) or "/swap_faces",
                 hf_token=getattr(settings, "hf_token", None),
+                hf_swap_model=getattr(settings, "hf_face_swap_model", None) or "hyperswap_1b_256.onnx",
+                hf_target_index=int(getattr(settings, "hf_face_swap_target_index", 0) or 0),
+                hf_restore_model=getattr(settings, "hf_face_restore_model", None) or "gfpgan_1.4",
+                hf_restore_strength=float(getattr(settings, "hf_face_restore_strength", 0.65) or 0.65),
+                hf_pixel_boost=getattr(settings, "hf_face_swap_pixel_boost", None) or "512x512",
+                post_upscale=float(getattr(settings, "face_swap_post_upscale", 1.5) or 1.5),
+                min_target_side=int(getattr(settings, "face_swap_min_target_side", 768) or 768),
+                max_output_side=int(getattr(settings, "face_swap_max_output_side", 2048) or 2048),
+                jpeg_quality=int(getattr(settings, "face_swap_jpeg_quality", 95) or 95),
+                replicate_token=getattr(settings, "replicate_api_token", None),
+                replicate_version=getattr(settings, "replicate_face_swap_version", None) or (
+                    "codeplugtech/face-swap:"
+                    "278a81e7ebb22db98bcba54de985d22cc1abeead2754eb1f2af717247be69b34"
+                ),
                 timeout=int(getattr(settings, "face_swap_timeout_seconds", None) or 180),
             )
             print(
