@@ -2,6 +2,35 @@ from datetime import datetime, timezone
 import random
 
 
+
+def _as_mapping(obj):
+    """RelationshipState / EmotionState / dict -> dict-like access."""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    # SQLAlchemy / pydantic / simple namespace
+    out = {}
+    for key in (
+        "closeness", "trust", "attraction", "stage", "level", "score",
+        "mood", "energy", "affection", "intimacy", "status",
+    ):
+        if hasattr(obj, key):
+            try:
+                out[key] = getattr(obj, key)
+            except Exception:
+                pass
+    # __dict__ without sa state
+    try:
+        for k, v in vars(obj).items():
+            if k.startswith("_"):
+                continue
+            out.setdefault(k, v)
+    except Exception:
+        pass
+    return out
+
+
 class DecisionEngine:
     """
     Decide se a personagem manda mensagem proativa.
@@ -38,8 +67,8 @@ class DecisionEngine:
                     "elapsed_min": round(elapsed, 1),
                 }
 
-        relationship = context.get("relationship") or {}
-        emotion = context.get("emotion") or {}
+        relationship = _as_mapping(context.get("relationship"))
+        emotion = _as_mapping(context.get("emotion"))
         messages = context.get("messages") or []
         memories = context.get("memories") or []
         semantic = context.get("semantic_memories") or []
