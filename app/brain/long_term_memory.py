@@ -68,7 +68,7 @@ class LongTermMemoryService:
                 "tem inúmeros amantes, depois conta tudo pro namorado com fala "
                 "safada e chula (arrombada, arregaçada, usada, nomes). "
                 "Amantes usam ela sem dó como brinquedo. Nunca humilha o namorado; "
-                "no final é sempre a parceira dele.",
+                "foco total na vida hotwife liberada safada.",
                 10,
             ),
             (

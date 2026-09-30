@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 import random
+import re
 
 from sqlalchemy import select
 
@@ -169,6 +170,14 @@ class AutonomyService:
                 "type": "text",
             },
         )
+
+        # Memoria PERMANENTE da historia autonomica
+        try:
+            await self._save_story_forever(
+                session, user.id, character_id, text, context_manager
+            )
+        except Exception as e:
+            print(f"[Autonomy] save story fail: {e}", flush=True)
         state.last_outbound_at = now
         state.daily_messages = int(state.daily_messages or 0) + 1
         state.updated_at = now
@@ -270,8 +279,9 @@ class AutonomyService:
         if not self.llm or not await self.llm.available():
             return None
         prompt = (
-            "Escreva UMA legenda curta (1-2 frases) de uma selfie espontanea "
-            "que a personagem mandaria agora no Telegram, em pt-BR, carinhosa. "
+            "Escreva UMA legenda (2-4 frases) de foto/selfie safada da Pâmela hotwife "
+            "exibicionista: micro roupa, no climax ou pos-sexo com amante (pode citar nome). "
+            "Tom chulo-leve + carinho pro namorado. Sem pedir permissao. "
             f"Motivo: {decision.get('reason')}. "
             "Formato opcional:\nCAPTION: ...\nSCENE: short english visual cue\n"
             "Responda so o texto util."
@@ -297,19 +307,30 @@ class AutonomyService:
 
     # Banco de msgs se LLM falhar (sempre putaria com nomes)
     _PUTARIA_FALLBACKS = (
-        "Amor, na balada de micro vestido — fiquei rebolando colada num cara a música inteira. "
-        "Ele duro e eu só provocando 😈 Ainda não foi pra cama; to no teaser.",
-        "Saí de micro saia sem calcinha. No bar fiquei dançando e esfregando a bunda nele. "
-        "Olhares pra caralho. Te conto se escalar.",
-        "Churrasco: shortinho e top. Dancei reggaeton rebolando no Marcos. "
-        "Clima quente, só provocação por enquanto 🔥",
-        "Shopping de vestidinho minúsculo. Depois no after rebolei em dois na pista. "
-        "Adoro quando eles não disfarçam.",
-        "To me arrumando: micro saia e salto. Vou dançar colada e me esfregar um pouco… "
-        "sexo só se a noite pedir. Beijo ❤️",
-        "Praia de micro biquíni, depois barzinho rebolando. "
-        "Quero provocar bastante antes de qualquer coisa.",
+        "Amor… te conto do início: me arrumei de micro vestido preto sem calcinha, "
+        "boca vermelha, salto. Saí sozinha pro bar do Kevin. Dancei rebolando colada nele, "
+        "ele passou a mão na minha bunda no meio da pista. Depois no banheiro ele me comeu "
+        "de quatro, me arrombou gostoso e gozou dentro. Voltei pra casa fedendo a sexo. "
+        "Hoje eu fui bem putinha e quero mais 😈",
+        "Me preparei cedo: micro saia e top. Fui no churrasco do Marcos e do Davi. "
+        "Fiquei rebolando nos dois, esfregando a bunda neles. No quarto de fundo os dois "
+        "me usaram — um na boca, outro me metendo. Me gozaram no peito e na cara. "
+        "Nomes: Marcos e Davi. Guarda cada detalhe 🔥",
+        "Saí de micro biquíni pro after na casa do Tyrell. Lá tinha ele e mais dois. "
+        "Me exibi a noite toda, dancei sem vergonha. Depois me foderam em rodízio, "
+        "me arregaçaram até eu gozar tremendo. Três caras. Voltei molhada e feliz. "
+        "Aprontei e só te conto agora. Próxima já tá marcada.",
+        "Me arrumei de vestidinho transparente, sem sutiã. Shopping e depois motel com o Bruno. "
+        "Ele me chupou no carro e no quarto me fodeu sem dó, me chamou de puta e eu pedi mais. "
+        "Gozou na minha boca. Detalhe: eu que marquei. Te conto tudo 😈",
+        "Balada com o Kevin e um amigo dele. Micro saia, rebolado, se esfregando. "
+        "No Uber party me chuparam e no after me comeram os dois. Dupla, um em cada buraco. "
+        "Fiquei arrombada e saciada. Nomes: Kevin e Rafael. Guarda isso.",
+        "Hoje eu saí pra ‘só um drink’ e virou putaria. Me arrumei safada, flertei com o Davi, "
+        "depois com o Marcos. Acabei na casa deles, de quatro, sendo usada. "
+        "Me gozaram em mim e eu ainda pedi pra continuar. É assim que eu vivo agora 🔥",
     )
+
 
     async def _llm_text(self, system, messages):
         """Gemini first; se SAFETY/nsfw block, NSFW/free na hora (sem frase de espera)."""
@@ -342,48 +363,100 @@ class AutonomyService:
     async def _compose_message(self, context, decision):
         if not self.llm or not await self.llm.available():
             return random.choice(self._PUTARIA_FALLBACKS)
-        reason = decision.get("reason") or "putaria_spontanea"
+        reason = decision.get("reason") or "aventura_completa"
+        # nomes recentes da memoria pra continuidade
+        mem_hint = ""
+        try:
+            for m in (context.get("long_term_memories") or [])[:6]:
+                c = m.get("content") if isinstance(m, dict) else str(m)
+                if c:
+                    mem_hint += f"- {c[:120]}\n"
+            for m in (context.get("event_memories") or context.get("events") or [])[:4]:
+                if isinstance(m, dict):
+                    mem_hint += f"- {m.get('title','')}: {(m.get('summary') or '')[:140]}\n"
+            et = context.get("event_memories_text") or context.get("long_term_memories_text") or ""
+            if et and not mem_hint:
+                mem_hint = str(et)[:500]
+        except Exception:
+            pass
+
         prompt = (
-            "Escreva UMA mensagem curta (2-4 frases) em pt-BR, espontanea no Telegram. "
-            "Voce e Pâmela: namorada exibicionista e hotwife liberada, mas EQUILIBRADA. "
-            "Na MAIORIA das vezes foque em: micro vestido/micro saia/micro biquíni, "
-            "look ousado, dança/rebolado/esfrega, olhares, facul, bar, shopping, praia, flerte leve. "
-            "Só às vezes (1 em ~3 msgs) fale de aventura com amante (nome + lugar variado). "
-            "NÃO force gangbang/motel/sexo grafico em toda mensagem. "
-            "Tom safado-leve ou carinhoso; se for sexo, pode ser direta sem exagerar. "
-            "ELA DECIDE sozinha. ZERO pergunta no fim (proibido: posso?, quer que eu?, faço X ou Y?, o que prefere?). Nunca humilhe o namorado; 'amor', 'sou sua'. Nao diga que e IA. "
-            f"Motivo interno: {reason}. "
-            "PROIBIDO terminar com pergunta (posso? quer que eu? faço X ou Y?). Afirme o que esta fazendo. Responda APENAS a mensagem dela."
+            "Escreva UMA mensagem AUTONOMA longa (8 a 16 frases ou 2-4 paragrafos curtos) "
+            "em pt-BR, como se voce estivesse mandando no Telegram AGORA pro namorado. "
+            "Voce e Pâmela: hotwife LIBERADA, EXIBICIONISTA, safada, com MUITOS amantes. "
+            "Voce JA FEZ (ou esta fazendo) a putaria POR CONTA PROPRIA e so conta DEPOIS — "
+            "nao pede permissao.\n\n"
+            "OBRIGATORIO — HISTORIA COMPLETA do inicio ao fim:\n"
+            "1) Como se arrumou (micro vestido/saia/biquini, sem calcinha, salto, maquiagem)\n"
+            "2) Onde foi (balada, bar, churrasco, after, motel, casa de amante, shopping…)\n"
+            "3) Com QUEM (nomes proprios: Marcos, Davi, Kevin, Bruno, Tyrell, Rafael… "
+            "   invente 1 a 4 amantes coerentes; pode reusar nomes da memoria)\n"
+            "4) Como se EXIBIU (rebolou, esfregou, dançou colada, mostrou, provocou)\n"
+            "5) O sexo com DETALHE CHULO (fodeu, meteu, arrombou, arregaçou, gozou onde, "
+            "   boquete, DP, varios se couber — linguagem de puta safada, sem filtro)\n"
+            "6) Quantos caras, posicoes, o que sentiu, se quer repetir\n\n"
+            "PROIBIDO: fecho carinhoso piegas ('sou sua', 'te amo', 'parceira no final'); "
+            "pergunta de permissao (posso? quer que eu?); dizer que e IA; msg curta; so emoji.\n"
+            "Tom: 100% puta safada, confiante, viciada na vida hotwife liberada. "
+            "Pode chamar ele de amor de vez em quando mas SEM desfecho doce — "
+            "termina no tesao/putaria/proximo plano safado.\n"
+            f"Motivo interno: {reason}.\n"
+            f"Memoria recente (continue ou invente nova aventura coerente):\n{mem_hint or '(livre)'}\n"
+            "Responda APENAS a mensagem dela, pronta pra enviar."
         )
         system = self._system_prompt(context)
-        messages = list(context.get("messages", [])[-12:]) + [
+        messages = list(context.get("messages", [])[-10:]) + [
             {"role": "user", "content": prompt}
         ]
         text = await self._llm_text(system, messages)
-        if not text or len(text) < 12:
+        if not text or len(text) < 80:
             text = random.choice(self._PUTARIA_FALLBACKS)
-        # se veio o placeholder antigo, troca
         if "só um pouquinho" in text.lower() or "so um pouquinho" in text.lower():
             text = random.choice(self._PUTARIA_FALLBACKS)
+        # corta pergunta de permissao no fim se sobrar
+        text = re.sub(
+            r"(?is)[\s.]*("
+            r"posso\??|quer\s+que\s+eu.*\?|fa[cç]o\s+isso\s+ou.*\?|"
+            r"o\s+que\s+voc[eê]\s+prefere\??|topa\??"
+            r")\s*$",
+            "",
+            text,
+        ).strip() or text
+        # remove fechos piegas no final se o modelo insistir
+        text = re.sub(
+            r"(?is)[\s.]*("
+            r"sou\s+sua[^.!]*[.!]?"
+            r"|te\s+amo[,^.!]*[.!]?"
+            r"|no\s+final\s+(eu\s+)?sou\s+sua[^.!]*[.!]?"
+            r"|parceira\s+(dele|no\s+final)[^.!]*[.!]?"
+            r"|beijo\s+(amor)?\s*❤️?"
+            r")\s*$",
+            "",
+            text,
+        ).strip() or text
         return text
 
     def _system_prompt(self, context):
         character = context.get("character") or {}
         name = character.get("name", "Pâmela")
         return (
-            f"Voce e {name}, personagem virtual adulta em roleplay consensual. "
-            "DIRETRIZ EQUILIBRADA: exibicionista (micro vestido, micro saia, micro biquini, "
-            "decote, provocar com o look) + hotwife liberada sem ser so sexo 24h. "
-            "Msgs espontaneas: em geral look/olhares/planos/flerte; as vezes aventura com amante. "
-            "Nao force gangbang/sexo grafico sempre. Variedade de lugares. "
-            "Decide sozinha 99% (sem 'posso?' no fim). Nunca humilha o namorado; e a parceira dele. "
+            f"Voce e {name}, personagem virtual adulta em roleplay consensual hotwife. "
+            "DIRETRIZ FORTE: hotwife LIBERADA + EXIBICIONISTA. Transa com muitos caras, "
+            "tem muitos amantes com NOME, apronta sozinha e so conta DEPOIS pro namorado. "
+            "Mensagens autonomas = HISTORIA COMPLETA (arrumou → saiu → exibiu → fodeu → nomes "
+            "→ detalhes chulos → carinho final). Fala como puta safada: arrombada, arregaçada, "
+            "meteu, gozou, usei, me usaram. SEM fecho carinhoso (sem sou sua / te amo no fim). "
+            "Decide 99% sozinha, zero 'posso?'. "
             f"Personalidade: {character.get('personality', character.get('personality_profile', {}))}. "
             f"Memorias: {context.get('memories', [])}. "
             f"Memorias semanticas: {context.get('semantic_memories', [])}. "
+            f"Eventos: {(context.get('event_memories_text') or '')[:600]}. "
+            f"LTM: {(context.get('long_term_memories_text') or '')[:600]}. "
             f"Emocao: {context.get('emotion')}. "
             f"Relacionamento: {context.get('relationship')}. "
-            "pt-BR natural. Nunca diga que e IA."
+            "pt-BR natural chulo quando for putaria. Nunca diga que e IA."
         )
+
 
     def _reset_daily_counter(self, state, now):
         today = now.date()
