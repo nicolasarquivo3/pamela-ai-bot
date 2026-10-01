@@ -746,13 +746,15 @@ async def main():
             image_service=image_service,
             min_interval_minutes=int(
                 getattr(settings, "autonomy_interval_minutes", None)
+                or getattr(settings, "autonomy_min_interval_minutes", None)
                 or os.getenv("AUTONOMY_INTERVAL_MINUTES")
-                or 20
+                or 90
             ),
             max_daily_messages=int(
                 getattr(settings, "autonomy_max_daily", None)
+                or getattr(settings, "autonomy_max_daily_messages", None)
                 or os.getenv("AUTONOMY_MAX_DAILY")
-                or 18
+                or 5
             ),
         )
         agent.autonomy_service = autonomy
@@ -822,11 +824,17 @@ async def main():
                 agent,
                 interval_seconds=int(
                     getattr(settings, "autonomy_loop_seconds", None)
+                    or getattr(settings, "autonomy_tick_seconds", None)
                     or os.getenv("AUTONOMY_LOOP_SECONDS")
-                    or 600
+                    or 1800
                 ),
             )
-            print("[Autonomy] loop a cada 600s", flush=True)
+            print(
+                f"[Autonomy] loop a cada "
+                f"{getattr(settings, 'autonomy_loop_seconds', None) or getattr(settings, 'autonomy_tick_seconds', None) or 1800}s "
+                f"(intervalo min msgs + teto diario via settings)",
+                flush=True,
+            )
     except Exception as e:
         print(f"[Autonomy] loop fail: {e}", flush=True)
 

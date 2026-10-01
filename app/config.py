@@ -24,9 +24,12 @@ class Settings(BaseSettings):
 
     # AUTONOMIA
     autonomy_token: str
-    autonomy_min_interval_minutes: int = 20
-    autonomy_max_daily_messages: int = 18
-    autonomy_tick_seconds: int = 300
+    autonomy_min_interval_minutes: int = 90  # min entre msgs autonomas
+    autonomy_interval_minutes: int = 90  # alias usado no main
+    autonomy_max_daily: int = 5  # alias
+    autonomy_loop_seconds: int = 1800
+    autonomy_max_daily_messages: int = 5  # teto por dia
+    autonomy_tick_seconds: int = 1800  # loop interno ~30min
 
     # IMAGENS
     cloudflare_account_id: str | None = None
