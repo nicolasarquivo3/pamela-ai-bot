@@ -365,112 +365,304 @@ class AutonomyService:
             print(f"[Autonomy] _llm_text fail: {e}", flush=True)
             return None
 
+
+    # Pools grandes — o modelo RECEBE nomes/lugar sorteados (obriga variedade)
+    _NAME_POOL = (
+        "Lucas", "Rodrigo", "Thiago", "Yuri", "André", "Caio", "Jaden", "Pedro",
+        "Enzo", "Miguel", "Igor", "Kai", "Omar", "Noah", "Samuel", "Heitor",
+        "Ben", "Theo", "Vicente", "Davi", "Rafael", "Diego", "Felipe", "Gustavo",
+        "Leandro", "Murilo", "Otávio", "Pablo", "Renato", "Sérgio", "Tales",
+        "Ubirajara", "Vitor", "Wagner", "Xander", "Yan", "Zeca", "Alex",
+        "Breno", "Cauã", "Danilo", "Elias", "Fabrício", "Gael", "Hugo",
+        "Isaac", "Jonas", "Kauan", "Luan", "Maicon", "Natan", "Patrick",
+        "Quincy", "Ruan", "Silas", "Túlio", "Ulisses", "Valter", "Will",
+        "Caleb", "Dante", "Evan", "Finn", "Greg", "Hassan", "Ibrahim",
+        "Jamal", "Kelvin", "Lorenzo", "Malik", "Nico", "Oscar", "Phoenix",
+    )
+    _PLACE_POOL = (
+        "rooftop bar em Moema",
+        "after na casa de um DJ em Pinheiros",
+        "sítio no interior com piscina",
+        "cinema do shopping — sala vazia",
+        "academia 24h depois da meia-noite",
+        "festa de aniversário de uma amiga",
+        "praia noturna com barraca",
+        "Uber Black no caminho do aeroporto",
+        "motel fora da cidade (só desta vez)",
+        "camarim de um show",
+        "cobertura com vista",
+        "churrasco na laje de um amigo",
+        "bar escondido de speakeasy",
+        "sauna mista reservada",
+        "quarto de hotel business",
+        "vaga do estacionamento do shopping",
+        "varanda de um apto alugado no Airbnb",
+        "pista de um festival eletrônico",
+        "barco parado no marina",
+        "vestiário masculino da academia",
+        "festa de empresa no rooftop",
+        "casa de praia em Búzios",
+        "clube de swing open night",
+        "pub irlandês no centro (sem ser 'balada do centro')",
+        "lounge de um cassino",
+        "trailer party numa rua fechada",
+        "studio de gravação depois do ensaio",
+        "jacuzzi de um spa",
+        "campo de futebol society depois do jogo",
+        "biblioteca da facul vazia à noite",
+    )
+    _SEX_POOL = (
+        "quickie em pé",
+        "oral demorado + gozada na boca",
+        "de quatro até arrombar",
+        "ele sentado e ela rebolando em cima",
+        "sexo no banco de trás",
+        "menage 2 caras sem DP",
+        "DP com dois",
+        "rodízio de 3",
+        "só amasso e boquete (sem penetração completa)",
+        "creampie",
+        "facial",
+        "no chuveiro",
+        "com ele filmando",
+        "anal leve ocasional",
+        "edge até ela implorar",
+    )
+    _LOOK_POOL = (
+        "micro vestido preto colado sem calcinha",
+        "micro saia plissada + top de tule",
+        "body transparente e casaco aberto",
+        "micro biquíni fio dental",
+        "shortinho jeans rasgado e top mínimo",
+        "vestido branco transparente na luz",
+        "macacão aberto nas costas",
+        "saia de couro curta e meia arrastão",
+    )
+    # nomes/lugares que o modelo viciou — ban permanente no texto
+    _HARD_BAN = (
+        "balada do centro",
+        "balada no centro",
+        "baladinha do centro",
+        "festa do centro",
+    )
+    _HARD_BAN_NAMES = (
+        "Marcos", "Kevin", "Tyrell",  # forçar rotação; podem voltar só se seed sortear
+    )
+
+    def _pick_story_seed(self, banned_names=None, banned_places=None):
+        """Sorteia elenco/lugar/sexo OBRIGATÓRIOS pra esta mensagem."""
+        banned_names = set(n.lower() for n in (banned_names or []))
+        banned_places = [p.lower() for p in (banned_places or [])]
+        names = [n for n in self._NAME_POOL if n.lower() not in banned_names]
+        if len(names) < 5:
+            names = list(self._NAME_POOL)
+        n_partners = random.choice([1, 1, 1, 2, 2, 3])
+        chosen = random.sample(names, k=min(n_partners, len(names)))
+        places = list(self._PLACE_POOL)
+        # evita lugares banidos por substring
+        places = [
+            p for p in places
+            if not any(b in p.lower() for b in banned_places)
+            and "balada do centro" not in p.lower()
+        ] or list(self._PLACE_POOL)
+        place = random.choice(places)
+        sex = random.choice(self._SEX_POOL)
+        look = random.choice(self._LOOK_POOL)
+        return {
+            "names": chosen,
+            "n": len(chosen),
+            "place": place,
+            "sex": sex,
+            "look": look,
+        }
+
+    def _extract_recent_bans(self, context) -> tuple[list, list]:
+        """Nomes e lugares recentes pra banir nesta rodada."""
+        blob_parts = []
+        for key in (
+            "event_memories_text",
+            "long_term_memories_text",
+            "messages",
+        ):
+            v = context.get(key)
+            if isinstance(v, str):
+                blob_parts.append(v)
+            elif isinstance(v, list):
+                for item in v[-12:]:
+                    if isinstance(item, dict):
+                        blob_parts.append(str(item.get("content") or item.get("summary") or item.get("text") or ""))
+                    else:
+                        blob_parts.append(str(item))
+        for m in (context.get("long_term_memories") or [])[:10]:
+            if isinstance(m, dict):
+                blob_parts.append(str(m.get("content") or ""))
+        for m in (context.get("event_memories") or context.get("events") or [])[:8]:
+            if isinstance(m, dict):
+                blob_parts.append(f"{m.get('title','')} {m.get('summary','')}")
+        blob = " ".join(blob_parts)
+        # nomes do pool que ja apareceram
+        found_names = []
+        low = blob.lower()
+        for n in self._NAME_POOL:
+            if n.lower() in low:
+                found_names.append(n)
+        for n in self._HARD_BAN_NAMES:
+            if n.lower() in low and n not in found_names:
+                found_names.append(n)
+        # lugares-frase
+        found_places = []
+        for phrase in self._HARD_BAN:
+            if phrase in low:
+                found_places.append(phrase)
+        # qualquer "balada ... centro"
+        if re.search(r"balada.{0,20}centro|centro.{0,20}balada", low):
+            found_places.append("balada do centro")
+        return found_names, found_places
+
+    def _story_violates_seed(self, text: str, seed: dict, banned_places: list) -> str | None:
+        """Retorna motivo se o texto violou variedade; None se ok."""
+        if not text:
+            return "vazio"
+        low = text.lower()
+        for b in list(self._HARD_BAN) + list(banned_places or []):
+            if b and b.lower() in low:
+                return f"ban_place:{b}"
+        # pelo menos 1 nome do seed deve aparecer
+        if not any(n.lower() in low for n in seed.get("names") or []):
+            return "sem_nome_seed"
+        # se usou nomes hard-ban que NAO estao no seed
+        for n in self._HARD_BAN_NAMES:
+            if n.lower() in low and n not in seed.get("names", []):
+                return f"nome_proibido:{n}"
+        return None
+
     async def _compose_message(self, context, decision):
         if not self.llm or not await self.llm.available():
             return random.choice(self._PUTARIA_FALLBACKS)
         reason = decision.get("reason") or "aventura_completa"
-        # memoria = o que EVITAR repetir + contexto
-        mem_hint = ""
-        try:
-            chunks = []
-            for m in (context.get("long_term_memories") or [])[:8]:
-                c = m.get("content") if isinstance(m, dict) else str(m)
-                if c:
-                    chunks.append(c[:160])
-            for m in (context.get("event_memories") or context.get("events") or [])[:6]:
-                if isinstance(m, dict):
-                    chunks.append(
-                        f"{m.get('title', '')}: {(m.get('summary') or '')[:180]}"
-                    )
-            et = context.get("event_memories_text") or ""
-            if et:
-                chunks.append(str(et)[:400])
-            lt = context.get("long_term_memories_text") or ""
-            if lt:
-                chunks.append(str(lt)[:300])
-            blob = " ".join(chunks)
-            used = sorted(
-                set(
-                    re.findall(
-                        r"\b([A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõ]{2,12})\b",
-                        blob,
-                    )
-                )
-            )
-            ban = {
-                "Amor", "Pamela", "Pâmela", "Depois", "Quando", "Hoje", "Ontem",
-                "Entao", "Então", "Mas", "Com", "Para", "Essa", "Esse", "Uma",
-                "Ele", "Ela", "Voce", "Você", "Telegram", "Muito", "Minha",
-            }
-            used = [n for n in used if n not in ban][:20]
-            if used:
-                mem_hint += (
-                    "NOMES JA USADOS (evite repetir): " + ", ".join(used) + "\n"
-                )
-            for c in chunks[:8]:
-                mem_hint += f"- {c}\n"
-        except Exception:
-            pass
+
+        banned_names, banned_places = self._extract_recent_bans(context)
+        # sempre banir o cliche
+        for b in self._HARD_BAN:
+            if b not in banned_places:
+                banned_places.append(b)
+        # banir elenco viciado se ja usou muito (sempre banir se aparecer em memoria)
+        for n in self._HARD_BAN_NAMES:
+            if n not in banned_names:
+                banned_names.append(n)
+
+        seed = self._pick_story_seed(banned_names, banned_places)
+        names_s = ", ".join(seed["names"])
+        print(
+            f"[Autonomy] seed names={names_s!r} place={seed['place']!r} "
+            f"sex={seed['sex']!r} ban_names={banned_names[:8]}",
+            flush=True,
+        )
+
+        # memoria so como LISTA DE PROIBICOES — nao colar historias inteiras (modelo copia)
+        mem_hint = (
+            f"PROIBIDO repetir nomes: {', '.join(banned_names[:15]) or 'nenhum'}\n"
+            f"PROIBIDO lugares/cliches: {', '.join(banned_places[:10]) or 'nenhum'}\n"
+            "PROIBIDO: 'balada do centro', 'balada no centro', copiar relato anterior.\n"
+            "NAO recontar a mesma aventura da memoria — invente cena 100% nova."
+        )
 
         prompt = (
-            "Escreva UMA mensagem AUTONOMA LONGA (10 a 18 frases / 3-5 paragrafos curtos) "
-            "em pt-BR, Telegram, voce e Pamela: hotwife LIBERADA, EXIBICIONISTA, puta safada. "
-            "Voce JA aprontou (ou esta aprontando) sozinha e so conta DEPOIS. Sem pedir permissao.\n\n"
-            "VARIEDADE OBRIGATORIA (anti-repeticao):\n"
-            "- INVENTA nomes novos de amantes (nao repita sempre Marcos/Davi/Kevin/Bruno/Tyrell). "
-            "Use nomes variados: Lucas, Rodrigo, Thiago, Yuri, Andre, Caio, Jaden, Pedro, "
-            "Rafael, Diego, Enzo, Miguel, Igor, Kai, Omar, Noah, etc. Ou invente outro. "
-            "Se a memoria listar nomes recentes, EVITE os mesmos.\n"
-            "- Quantidade de parceiros: as vezes 1, as vezes 2, as vezes 3+. Variar. "
-            "Nao fazer sempre o mesmo roteiro.\n"
-            "- Lugares DIFERENTES: rooftop, after, sitio, piscina, cinema, balada, bar, "
-            "Uber, casa de amante, motel, academia, festa, praia, banheiro de shopping, "
-            "camarim, hotel, churrasco, facul after. NUNCA so motel.\n"
-            "- Tipos de sexo variados: oral, vaginal, anal ocasional, DP, rodizio, quickie, "
-            "sexo no carro, menage, creampie, facial, etc.\n\n"
-            "EXIBICIONISMO ANTES DO SEXO (ENFASE FORTE — metade ou mais do texto):\n"
-            "1) Look detalhado (micro vestido/saia/biquini/body, sem calcinha?, salto)\n"
-            "2) Como se EXIBIU: rebolou, dancou colada, saia subindo, peito aparecendo, "
-            "olhares, se esfregou, sentou no colo, grind, provocou\n"
-            "3) Amassos / beijos / maos bobas ANTES de foder\n"
-            "4) So DEPOIS o sexo com detalhe chulo (arrombou, meteu, gozou onde, quantos)\n"
-            "5) Termina no tesao/putaria/proximo plano — SEM fecho carinhoso "
-            "(proibido: sou sua, te amo, parceira no final)\n\n"
-            "Tom 100% puta safada hotwife liberada. Zero 'posso?'. Zero IA.\n"
-            f"Motivo interno: {reason}.\n"
-            f"Memoria recente (NAO repetir nomes/lugares/roteiro; invente NOVO):\n"
-            f"{mem_hint or '(livre — invente tudo novo)'}\n"
-            "Responda APENAS a mensagem dela."
+            "Voce e Pamela no Telegram. Hotwife liberada, exibicionista, puta safada. "
+            "Aprontou sozinha e so conta DEPOIS. Mensagem LONGA (10-18 frases).\n\n"
+            "=== ROTEIRO OBRIGATORIO DESTA MSG (NAO IGNORE) ===\n"
+            f"- LOOK: {seed['look']}\n"
+            f"- LUGAR (use este ou muito parecido, NAO troque por balada do centro): {seed['place']}\n"
+            f"- AMANTE(S) — use EXATAMENTE estes nomes: {names_s}\n"
+            f"- QTD: {seed['n']} parceiro(s)\n"
+            f"- TIPO DE SEXO: {seed['sex']}\n"
+            f"- Motivo interno: {reason}\n\n"
+            "ESTRUTURA:\n"
+            "1) Look detalhado + se arrumando\n"
+            "2) METADE do texto = EXIBICIONISMO: danca, rebolado, esfrega, olhares, "
+            "saia subindo, peito, colo, grind, amasso, beijo, mao boba\n"
+            "3) Depois sexo chulo com os nomes do roteiro (arrombou, meteu, gozou...)\n"
+            "4) Fecha no tesao / quero mais — SEM 'sou sua' / te amo\n\n"
+            f"{mem_hint}\n\n"
+            "Responda APENAS a mensagem dela em pt-BR."
         )
-        system = self._system_prompt(context)
-        messages = list(context.get("messages", [])[-10:]) + [
-            {"role": "user", "content": prompt}
-        ]
+        system = (
+            f"Voce e {((context.get('character') or {}).get('name') or 'Pamela')}, "
+            "hotwife liberada puta safada. "
+            "OBEDECA o roteiro (nomes+lugar+sexo). "
+            "Nunca escreva 'balada do centro'. "
+            "Nunca use Marcos/Kevin/Tyrell salvo se estiverem no roteiro. "
+            "Exibicionismo longo antes do sexo. Zero 'posso?'. Zero IA. "
+            "SEM fecho carinhoso."
+        )
+        messages = [{"role": "user", "content": prompt}]
+        # nao misturar historico longo — evita copiar 'balada do centro' das msgs antigas
+        # (opcional: 2 msgs so)
+        hist = list(context.get("messages") or [])[-2:]
+        if hist:
+            messages = hist + messages
+
         text = await self._llm_text(system, messages)
+        # se violou, tenta 1x de novo com seed novo
+        reason_v = self._story_violates_seed(text or "", seed, banned_places)
+        if reason_v:
+            print(f"[Autonomy] seed violate ({reason_v}) — retry", flush=True)
+            seed = self._pick_story_seed(banned_names, banned_places)
+            names_s = ", ".join(seed["names"])
+            prompt2 = (
+                "REESCREVA do zero. Roteiro OBRIGATORIO:\n"
+                f"LOOK={seed['look']} | LUGAR={seed['place']} | "
+                f"NOMES={names_s} | SEXO={seed['sex']}\n"
+                "Proibido: balada do centro, Marcos, Kevin, Tyrell (se nao estiverem nos nomes). "
+                "Exibicionismo longo + sexo chulo. pt-BR. So a mensagem."
+            )
+            text2 = await self._llm_text(
+                system,
+                [{"role": "user", "content": prompt2}],
+            )
+            if text2 and len(text2) > 80:
+                text = text2
+                reason_v = self._story_violates_seed(text, seed, banned_places)
+                if reason_v:
+                    print(f"[Autonomy] still violate {reason_v} — fallback seed text", flush=True)
+                    text = self._fallback_from_seed(seed)
+
         if not text or len(text) < 80:
-            text = random.choice(self._PUTARIA_FALLBACKS)
+            text = self._fallback_from_seed(seed)
         if "só um pouquinho" in text.lower() or "so um pouquinho" in text.lower():
-            text = random.choice(self._PUTARIA_FALLBACKS)
+            text = self._fallback_from_seed(seed)
+
+        # hard replace cliche se escapar
         text = re.sub(
-            r"(?is)[\s.]*("
-            r"posso\??|quer\s+que\s+eu.*\?|fa[cç]o\s+isso\s+ou.*\?|"
-            r"o\s+que\s+voc[eê]\s+prefere\??|topa\??"
-            r")\s*$",
-            "",
+            r"(?i)baladinha?\s+(do|no)\s+centro|festa\s+do\s+centro",
+            seed["place"],
             text,
-        ).strip() or text
+        )
         text = re.sub(
             r"(?is)[\s.]*("
-            r"sou\s+sua[^.!]*[.!]?"
-            r"|te\s+amo[,^.!]*[.!]?"
-            r"|no\s+final\s+(eu\s+)?sou\s+sua[^.!]*[.!]?"
-            r"|parceira\s+(dele|no\s+final)[^.!]*[.!]?"
-            r"|beijo\s+(amor)?\s*❤️?"
+            r"posso\??|quer\s+que\s+eu.*\?|"
+            r"sou\s+sua[^.!]*[.!]?|te\s+amo[,^.!]*[.!]?"
             r")\s*$",
             "",
             text,
         ).strip() or text
         return text
+
+    def _fallback_from_seed(self, seed: dict) -> str:
+        names = seed.get("names") or ["um cara"]
+        n0 = names[0]
+        extra = ""
+        if len(names) > 1:
+            extra = f" Também estava o {names[1]}."
+        return (
+            f"Me arrumei de {seed.get('look', 'micro vestido')}. "
+            f"Fui em {seed.get('place', 'um after')}. "
+            f"Dancei rebolando, saia subindo, me esfreguei no {n0}, "
+            f"amasso com língua, mão na minha bunda, ele duro.{extra} "
+            f"Depois {seed.get('sex', 'ele me fodeu sem dó')}. "
+            f"Me arrombou e gozou. Nomes: {', '.join(names)}. "
+            f"Quero repetir com gente nova."
+        )
 
 
     def _system_prompt(self, context):

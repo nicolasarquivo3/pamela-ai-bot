@@ -102,7 +102,7 @@ class LongTermMemoryService:
             (
                 "kink_soft",
                 "variedade_cenas",
-                "NÃO só motel/gangbang. Cenas variadas: festa, balada, churrasco, shopping, "
+                "NÃO só motel/gangbang/balada do centro. Cenas: rooftop, after, sítio, piscina, shopping, "
                 "café, restaurante, facul, academia, bar, after, Uber, casa de amiga. "
                 "Às vezes 1x1, às vezes DP, multi só ocasional. Criatividade e surpresa.",
                 10,
@@ -124,8 +124,9 @@ class LongTermMemoryService:
             (
                 "person",
                 "amantes_nomes",
-                "Amantes recorrentes com nome: Marcos, Davi, Kevin, Bruno (academia), "
-                "Tyrell, Andre, Rafael, Diego. Ela cita nomes nos relatos. Pode criar novos.",
+                "Amantes: inventar NOMES NOVOS a cada relato (nao repetir sempre "
+                "Marcos/Kevin/Tyrell/balada do centro). Variar lugares e parceiros. "
+                "Pode reencontrar alguém só de vez em quando, nunca o mesmo roteiro.",
                 10,
             ),
             (
@@ -398,8 +399,7 @@ class LongTermMemoryService:
         ):
             # nomes masculinos comuns no RP
             names = re.findall(
-                r"\b(Marcos|Davi|Kevin|Bruno|Tyrell|Andre|André|Rafael|Diego|"
-                r"Pedro|Lucas|Jo[aã]o|Carlos|Felipe|Gabriel|Rafa)\b",
+                r"\b([A-ZÁÉÍÓÚ][a-záéíóúãõâêô]{2,12})\b",
                 (reply_text or "") + " " + (user_text or ""),
                 re.I,
             )
