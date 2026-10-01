@@ -29,8 +29,8 @@ class AutonomyService:
         llm,
         memory_manager_factory,
         image_service=None,
-        min_interval_minutes=30,
-        max_daily_messages=12,
+        min_interval_minutes=90,
+        max_daily_messages=5,
         photo_chance=0.55,
     ):
         self.session_factory = session_factory
