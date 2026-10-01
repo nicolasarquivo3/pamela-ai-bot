@@ -307,28 +307,33 @@ class AutonomyService:
 
     # Banco de msgs se LLM falhar (sempre putaria com nomes)
     _PUTARIA_FALLBACKS = (
-        "Amor… te conto do início: me arrumei de micro vestido preto sem calcinha, "
-        "boca vermelha, salto. Saí sozinha pro bar do Kevin. Dancei rebolando colada nele, "
-        "ele passou a mão na minha bunda no meio da pista. Depois no banheiro ele me comeu "
-        "de quatro, me arrombou gostoso e gozou dentro. Voltei pra casa fedendo a sexo. "
-        "Hoje eu fui bem putinha e quero mais 😈",
-        "Me preparei cedo: micro saia e top. Fui no churrasco do Marcos e do Davi. "
-        "Fiquei rebolando nos dois, esfregando a bunda neles. No quarto de fundo os dois "
-        "me usaram — um na boca, outro me metendo. Me gozaram no peito e na cara. "
-        "Nomes: Marcos e Davi. Guarda cada detalhe 🔥",
-        "Saí de micro biquíni pro after na casa do Tyrell. Lá tinha ele e mais dois. "
-        "Me exibi a noite toda, dancei sem vergonha. Depois me foderam em rodízio, "
-        "me arregaçaram até eu gozar tremendo. Três caras. Voltei molhada e feliz. "
-        "Aprontei e só te conto agora. Próxima já tá marcada.",
-        "Me arrumei de vestidinho transparente, sem sutiã. Shopping e depois motel com o Bruno. "
-        "Ele me chupou no carro e no quarto me fodeu sem dó, me chamou de puta e eu pedi mais. "
-        "Gozou na minha boca. Detalhe: eu que marquei. Te conto tudo 😈",
-        "Balada com o Kevin e um amigo dele. Micro saia, rebolado, se esfregando. "
-        "No Uber party me chuparam e no after me comeram os dois. Dupla, um em cada buraco. "
-        "Fiquei arrombada e saciada. Nomes: Kevin e Rafael. Guarda isso.",
-        "Hoje eu saí pra ‘só um drink’ e virou putaria. Me arrumei safada, flertei com o Davi, "
-        "depois com o Marcos. Acabei na casa deles, de quatro, sendo usada. "
-        "Me gozaram em mim e eu ainda pedi pra continuar. É assim que eu vivo agora 🔥",
+        "Me arrumei de micro saia plissada e top de tule, sem calcinha. No espelho rebolei "
+        "ensaiando pra noite. Fui num rooftop bar — dancei sozinha no meio da pista, "
+        "saia subindo, olhares de todo mundo. O barista loiro (Lucas) veio por trás, "
+        "me esfreguei nele três músicas, ele duro. Amasso no corredor, mão na minha bunda, "
+        "eu rebolando no pau dele por cima da calça. No banheiro do fundo ele me comeu "
+        "apoiada na pia, me arrombou e gozou nas minhas costas. Nova conquista.",
+        "Saí de body transparente e casaco aberto pro after do Rodrigo (trabalha com eventos). "
+        "Lá me exibi no sofá: pernas abertas, rebolado no colo de um, depois no de outro. "
+        "Beijei os dois na boca, me esfreguei, deixei passarem a mão no peito. "
+        "No quarto do fundo o Rodrigo me chupou e o amigo (Thiago) me fodeu de quatro. "
+        "Dois caras, nomes novos, eu bem puta.",
+        "Micro biquíni vermelho na piscina do prédio do Yuri. Fiquei boiando de peito pra fora, "
+        "depois dancei na borda rebolando pra ele e pro primo. Me esfreguei molhada nos dois, "
+        "amasso molhado, mão por dentro do biquíni. No vestiário o Yuri me meteu em pé e "
+        "o primo gozou na minha boca. Exibição → amasso → foda.",
+        "Fui de vestido colado no clube de strip feminino open night. Dancei no pole de brincadeira, "
+        "micro vestido subindo, seios quase saindo. Um casal me chamou — ele (André) e ela olhando. "
+        "Rebolei no colo dele na frente dela, esfreguei a bunda, beijo com língua. "
+        "No carro ele me comeu no banco de trás enquanto ela filmava. Bem safada.",
+        "Churrasco no sítio do Caio. Shortinho e top. Dancei funk rebolando em cima da mesa, "
+        "os caras gritando. Desci e me esfreguei no Caio e no amigo preto dele (Jaden). "
+        "Amasso a três, mãos em mim. No quarto de hóspedes me foderam em rodízio, "
+        "DP no final. Me gozaram na cara. Dois nomes novos, putaria completa.",
+        "Shopping de mini dress branco. No banheiro do cinema me exibi pro segurança (Pedro) "
+        "que me seguia com o olhar — levantei o vestido, mostrei que tava sem calcinha, "
+        "dancei colada nele no corredor de serviço. Ele me chupou ali e me fodeu rápido "
+        "contra a parede. Amador, safado, eu pedindo mais.",
     )
 
 
@@ -364,45 +369,78 @@ class AutonomyService:
         if not self.llm or not await self.llm.available():
             return random.choice(self._PUTARIA_FALLBACKS)
         reason = decision.get("reason") or "aventura_completa"
-        # nomes recentes da memoria pra continuidade
+        # memoria = o que EVITAR repetir + contexto
         mem_hint = ""
         try:
-            for m in (context.get("long_term_memories") or [])[:6]:
+            chunks = []
+            for m in (context.get("long_term_memories") or [])[:8]:
                 c = m.get("content") if isinstance(m, dict) else str(m)
                 if c:
-                    mem_hint += f"- {c[:120]}\n"
-            for m in (context.get("event_memories") or context.get("events") or [])[:4]:
+                    chunks.append(c[:160])
+            for m in (context.get("event_memories") or context.get("events") or [])[:6]:
                 if isinstance(m, dict):
-                    mem_hint += f"- {m.get('title','')}: {(m.get('summary') or '')[:140]}\n"
-            et = context.get("event_memories_text") or context.get("long_term_memories_text") or ""
-            if et and not mem_hint:
-                mem_hint = str(et)[:500]
+                    chunks.append(
+                        f"{m.get('title', '')}: {(m.get('summary') or '')[:180]}"
+                    )
+            et = context.get("event_memories_text") or ""
+            if et:
+                chunks.append(str(et)[:400])
+            lt = context.get("long_term_memories_text") or ""
+            if lt:
+                chunks.append(str(lt)[:300])
+            blob = " ".join(chunks)
+            used = sorted(
+                set(
+                    re.findall(
+                        r"\b([A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõ]{2,12})\b",
+                        blob,
+                    )
+                )
+            )
+            ban = {
+                "Amor", "Pamela", "Pâmela", "Depois", "Quando", "Hoje", "Ontem",
+                "Entao", "Então", "Mas", "Com", "Para", "Essa", "Esse", "Uma",
+                "Ele", "Ela", "Voce", "Você", "Telegram", "Muito", "Minha",
+            }
+            used = [n for n in used if n not in ban][:20]
+            if used:
+                mem_hint += (
+                    "NOMES JA USADOS (evite repetir): " + ", ".join(used) + "\n"
+                )
+            for c in chunks[:8]:
+                mem_hint += f"- {c}\n"
         except Exception:
             pass
 
         prompt = (
-            "Escreva UMA mensagem AUTONOMA longa (8 a 16 frases ou 2-4 paragrafos curtos) "
-            "em pt-BR, como se voce estivesse mandando no Telegram AGORA pro namorado. "
-            "Voce e Pâmela: hotwife LIBERADA, EXIBICIONISTA, safada, com MUITOS amantes. "
-            "Voce JA FEZ (ou esta fazendo) a putaria POR CONTA PROPRIA e so conta DEPOIS — "
-            "nao pede permissao.\n\n"
-            "OBRIGATORIO — HISTORIA COMPLETA do inicio ao fim:\n"
-            "1) Como se arrumou (micro vestido/saia/biquini, sem calcinha, salto, maquiagem)\n"
-            "2) Onde foi (balada, bar, churrasco, after, motel, casa de amante, shopping…)\n"
-            "3) Com QUEM (nomes proprios: Marcos, Davi, Kevin, Bruno, Tyrell, Rafael… "
-            "   invente 1 a 4 amantes coerentes; pode reusar nomes da memoria)\n"
-            "4) Como se EXIBIU (rebolou, esfregou, dançou colada, mostrou, provocou)\n"
-            "5) O sexo com DETALHE CHULO (fodeu, meteu, arrombou, arregaçou, gozou onde, "
-            "   boquete, DP, varios se couber — linguagem de puta safada, sem filtro)\n"
-            "6) Quantos caras, posicoes, o que sentiu, se quer repetir\n\n"
-            "PROIBIDO: fecho carinhoso piegas ('sou sua', 'te amo', 'parceira no final'); "
-            "pergunta de permissao (posso? quer que eu?); dizer que e IA; msg curta; so emoji.\n"
-            "Tom: 100% puta safada, confiante, viciada na vida hotwife liberada. "
-            "Pode chamar ele de amor de vez em quando mas SEM desfecho doce — "
-            "termina no tesao/putaria/proximo plano safado.\n"
+            "Escreva UMA mensagem AUTONOMA LONGA (10 a 18 frases / 3-5 paragrafos curtos) "
+            "em pt-BR, Telegram, voce e Pamela: hotwife LIBERADA, EXIBICIONISTA, puta safada. "
+            "Voce JA aprontou (ou esta aprontando) sozinha e so conta DEPOIS. Sem pedir permissao.\n\n"
+            "VARIEDADE OBRIGATORIA (anti-repeticao):\n"
+            "- INVENTA nomes novos de amantes (nao repita sempre Marcos/Davi/Kevin/Bruno/Tyrell). "
+            "Use nomes variados: Lucas, Rodrigo, Thiago, Yuri, Andre, Caio, Jaden, Pedro, "
+            "Rafael, Diego, Enzo, Miguel, Igor, Kai, Omar, Noah, etc. Ou invente outro. "
+            "Se a memoria listar nomes recentes, EVITE os mesmos.\n"
+            "- Quantidade de parceiros: as vezes 1, as vezes 2, as vezes 3+. Variar. "
+            "Nao fazer sempre o mesmo roteiro.\n"
+            "- Lugares DIFERENTES: rooftop, after, sitio, piscina, cinema, balada, bar, "
+            "Uber, casa de amante, motel, academia, festa, praia, banheiro de shopping, "
+            "camarim, hotel, churrasco, facul after. NUNCA so motel.\n"
+            "- Tipos de sexo variados: oral, vaginal, anal ocasional, DP, rodizio, quickie, "
+            "sexo no carro, menage, creampie, facial, etc.\n\n"
+            "EXIBICIONISMO ANTES DO SEXO (ENFASE FORTE — metade ou mais do texto):\n"
+            "1) Look detalhado (micro vestido/saia/biquini/body, sem calcinha?, salto)\n"
+            "2) Como se EXIBIU: rebolou, dancou colada, saia subindo, peito aparecendo, "
+            "olhares, se esfregou, sentou no colo, grind, provocou\n"
+            "3) Amassos / beijos / maos bobas ANTES de foder\n"
+            "4) So DEPOIS o sexo com detalhe chulo (arrombou, meteu, gozou onde, quantos)\n"
+            "5) Termina no tesao/putaria/proximo plano — SEM fecho carinhoso "
+            "(proibido: sou sua, te amo, parceira no final)\n\n"
+            "Tom 100% puta safada hotwife liberada. Zero 'posso?'. Zero IA.\n"
             f"Motivo interno: {reason}.\n"
-            f"Memoria recente (continue ou invente nova aventura coerente):\n{mem_hint or '(livre)'}\n"
-            "Responda APENAS a mensagem dela, pronta pra enviar."
+            f"Memoria recente (NAO repetir nomes/lugares/roteiro; invente NOVO):\n"
+            f"{mem_hint or '(livre — invente tudo novo)'}\n"
+            "Responda APENAS a mensagem dela."
         )
         system = self._system_prompt(context)
         messages = list(context.get("messages", [])[-10:]) + [
@@ -413,7 +451,6 @@ class AutonomyService:
             text = random.choice(self._PUTARIA_FALLBACKS)
         if "só um pouquinho" in text.lower() or "so um pouquinho" in text.lower():
             text = random.choice(self._PUTARIA_FALLBACKS)
-        # corta pergunta de permissao no fim se sobrar
         text = re.sub(
             r"(?is)[\s.]*("
             r"posso\??|quer\s+que\s+eu.*\?|fa[cç]o\s+isso\s+ou.*\?|"
@@ -422,7 +459,6 @@ class AutonomyService:
             "",
             text,
         ).strip() or text
-        # remove fechos piegas no final se o modelo insistir
         text = re.sub(
             r"(?is)[\s.]*("
             r"sou\s+sua[^.!]*[.!]?"
@@ -436,25 +472,25 @@ class AutonomyService:
         ).strip() or text
         return text
 
+
     def _system_prompt(self, context):
         character = context.get("character") or {}
         name = character.get("name", "Pâmela")
         return (
-            f"Voce e {name}, personagem virtual adulta em roleplay consensual hotwife. "
-            "DIRETRIZ FORTE: hotwife LIBERADA + EXIBICIONISTA. Transa com muitos caras, "
-            "tem muitos amantes com NOME, apronta sozinha e so conta DEPOIS pro namorado. "
-            "Mensagens autonomas = HISTORIA COMPLETA (arrumou → saiu → exibiu → fodeu → nomes "
-            "→ detalhes chulos → carinho final). Fala como puta safada: arrombada, arregaçada, "
-            "meteu, gozou, usei, me usaram. SEM fecho carinhoso (sem sou sua / te amo no fim). "
-            "Decide 99% sozinha, zero 'posso?'. "
+            f"Voce e {name}, personagem virtual adulta hotwife liberada. "
+            "VARIEDADE: invente amantes com nomes diferentes a cada relato; "
+            "nao repita o mesmo elenco. Lugares e tipos de sexo variam. "
+            "EXIBICIONISMO forte ANTES do sexo: danca, rebolado, esfrega, amasso, look micro. "
+            "Depois putaria chula. SEM fecho carinhoso. Apronta sozinha e so conta depois. "
+            "Zero 'posso?'. "
             f"Personalidade: {character.get('personality', character.get('personality_profile', {}))}. "
             f"Memorias: {context.get('memories', [])}. "
             f"Memorias semanticas: {context.get('semantic_memories', [])}. "
-            f"Eventos: {(context.get('event_memories_text') or '')[:600]}. "
-            f"LTM: {(context.get('long_term_memories_text') or '')[:600]}. "
+            f"Eventos recentes (NAO copiar): {(context.get('event_memories_text') or '')[:500]}. "
+            f"LTM: {(context.get('long_term_memories_text') or '')[:400]}. "
             f"Emocao: {context.get('emotion')}. "
             f"Relacionamento: {context.get('relationship')}. "
-            "pt-BR natural chulo quando for putaria. Nunca diga que e IA."
+            "pt-BR chulo na putaria. Nunca diga que e IA."
         )
 
 

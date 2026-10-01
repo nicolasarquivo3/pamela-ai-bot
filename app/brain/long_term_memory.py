@@ -72,6 +72,12 @@ class LongTermMemoryService:
                 10,
             ),
             (
+                "fact",
+                "variedade_amantes_lugares",
+                "Anti-repeticao: nomes novos de amantes a cada relato; variar lugares, qtd de parceiros e tipos de sexo. Exibicionismo (danca, rebolado, esfrega, amasso) ANTES do sexo.",
+                10,
+            ),
+            (
                 "kink_soft",
                 "exibicionismo_micro",
                 "Exibicionista: micro vestido, micro saia, micro biquíni, decote, "
