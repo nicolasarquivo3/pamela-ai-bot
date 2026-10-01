@@ -815,11 +815,12 @@ CANONE JÁ ACONTECEU
             kind = "empty"
 
         if primary_text:
-            if self._looks_like_meta_reply(primary_text):
+            clean = self._sanitize_character_reply(primary_text)
+            if not clean:
                 print("[Agent] PRIMARY meta descartado", flush=True)
             else:
                 self._gemini_safety_strikes[uid] = 0
-                return primary_text
+                return clean
 
         is_safety = kind in ("safety", "refusal")
         if hasattr(router, "primary") and router.primary is not None:
@@ -838,15 +839,19 @@ CANONE JÁ ACONTECEU
             # NUNCA devolver "Só um pouquinho amor, já respondo!"
             if hasattr(router, "generate_nsfw"):
                 t = await router.generate_nsfw(system, messages)
-                if t and not self._looks_like_meta_reply(t):
-                    self._gemini_safety_strikes[uid] = 0
-                    return t
-            # FREE pula se for a mesma lista (evita cascata 2x) — so tenta 1 modelo extra
+                if t:
+                    clean = self._sanitize_character_reply(t)
+                    if clean:
+                        self._gemini_safety_strikes[uid] = 0
+                        return clean
+                    print("[Agent] NSFW meta apos sanitize", flush=True)
             if hasattr(router, "generate_free"):
                 t = await router.generate_free(system, messages)
-                if t and not self._looks_like_meta_reply(t):
-                    self._gemini_safety_strikes[uid] = 0
-                    return t
+                if t:
+                    clean = self._sanitize_character_reply(t)
+                    if clean:
+                        self._gemini_safety_strikes[uid] = 0
+                        return clean
             print("[Agent] fallbacks falharam -> local rapido", flush=True)
             return self._fallback_reply(context)
 
@@ -854,12 +859,16 @@ CANONE JÁ ACONTECEU
         print(f"[Agent] Gemini falhou kind={kind} -> fallbacks imediatos", flush=True)
         if hasattr(router, "generate_nsfw"):
             t = await router.generate_nsfw(system, messages)
-            if t and not self._looks_like_meta_reply(t):
-                return t
+            if t:
+                clean = self._sanitize_character_reply(t)
+                if clean:
+                    return clean
         if hasattr(router, "generate_free"):
             t = await router.generate_free(system, messages)
-            if t and not self._looks_like_meta_reply(t):
-                return t
+            if t:
+                clean = self._sanitize_character_reply(t)
+                if clean:
+                    return clean
         return self._fallback_reply(context)
 
 
@@ -1671,6 +1680,40 @@ Essa resposta deve ser evitada.
         return [text]
 
 
+
+    def _sanitize_character_reply(self, text: str) -> str | None:
+        """Remove thinking EN do OpenRouter/Nemotron; None se so meta."""
+        if not text or not str(text).strip():
+            return None
+        t = str(text).strip()
+        if not self._looks_like_meta_reply(t):
+            return t
+        try:
+            from app.llm.openrouter import strip_cot_and_extract_character
+            cleaned = strip_cot_and_extract_character(t)
+            if cleaned and not self._looks_like_meta_reply(cleaned):
+                print(
+                    f"[Agent] sanitizou CoT EN -> PT chars={len(cleaned)}",
+                    flush=True,
+                )
+                return cleaned
+        except Exception as e:
+            print(f"[Agent] sanitize fail: {e}", flush=True)
+        # tenta cortar no primeiro marcador
+        m = re.search(
+            r"(?is)(here'?s\s+a\s+thinking|thinking\s+process\s*:|let\s+me\s+review|"
+            r"i\s+need\s+to\s+respond|key\s+rules\s*:)",
+            t,
+        )
+        if m and m.start() > 40:
+            head = t[: m.start()].strip()
+            if len(head) >= 40 and re.search(
+                r"(?i)(amor|puta|fode|saia|rebol|to |tô )|[áàâãéêíóôõúç]",
+                head,
+            ):
+                return head
+        return None
+
     def _looks_like_meta_reply(self, text: str) -> bool:
         """Detecta raciocinio em ingles / analise de memoria do prompt."""
         t = (text or "").strip()
@@ -1679,6 +1722,9 @@ Essa resposta deve ser evitada.
         if re.search(
             r"(?is)("
             r"okay,?\s+let'?s\s+see|"
+            r"here'?s\s+a\s+thinking\s+process|"
+            r"thinking\s+process\s*:|"
+            r"let\s+me\s+(review|craft|check|think|analyze)|"
             r"looking at the|"
             r"semantic\s+memor|"
             r"referencing\s+a\s+memory|"
@@ -1686,9 +1732,14 @@ Essa resposta deve ser evitada.
             r"provided in the prompt|"
             r"there are several entries|"
             r"entries about this scenario|"
-            r"i need to stay in character|"
+            r"i need to (stay in character|respond as|craft)|"
             r"based on the (context|memories|prompt)|"
             r"the user is asking|"
+            r"the user (now )?says|"
+            r"key rules\s*:|"
+            r"continue the roleplay|"
+            r"respond as pamela|"
+            r"roleplay as|"
             r"<think>"
             r")",
             t,
