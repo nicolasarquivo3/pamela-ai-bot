@@ -87,12 +87,19 @@ class LLMRouter:
         if not text:
             return True
         t = text.strip()
+        # PT/hotwife = NAO e CoT
+        if re.search(
+            r"(?i)(amor|puta|fode|safad|bunda|goz|arromb|micro|saia|vestido|"
+            r"namorad|to |tô |nao |não )|[áàâãéêíóôõúç]",
+            t,
+        ) and len(t) >= 40:
+            return False
         if _COT_RE.search(t):
             return True
         en = len(
             re.findall(
-                r"\b(the|they|this|looking|memory|memories|prompt|should|user|"
-                r"referencing|semantic|scenario|entries)\b",
+                r"(the|they|this|looking|memory|memories|prompt|should|user|"
+                r"referencing|semantic|scenario|entries)",
                 t,
                 re.I,
             )
@@ -100,9 +107,8 @@ class LLMRouter:
         pt = len(re.findall(r"[áàâãéêíóôõúçÁÉÍÓÚ]", t))
         if en >= 3 and pt < 2 and len(t) > 80:
             return True
-        if t.lstrip().startswith("- ") and en >= 2:
-            return True
         return False
+
 
     def _ok(self, text: str | None) -> bool:
         return bool(
@@ -161,6 +167,17 @@ class LLMRouter:
         if self._ok(text):
             print("[LLMRouter] usando NSFW tier (menos filtro)", flush=True)
             return text.strip()
+        # aceita texto longo PT mesmo se heuristica CoT falhar (nemotron)
+        if text and len(str(text).strip()) >= 60:
+            if re.search(
+                r"(?i)(amor|puta|fode|safad|bunda|goz|micro|saia)|[áàâãéêíóôõúç]",
+                str(text),
+            ):
+                print(
+                    f"[LLMRouter] NSFW aceito soft chars={len(str(text).strip())}",
+                    flush=True,
+                )
+                return str(text).strip()
         print("[LLMRouter] NSFW tier falhou/CoT", flush=True)
         return None
 
@@ -182,8 +199,7 @@ class LLMRouter:
 
     async def generate(self, system_instruction, messages):
         """
-        Compat: tenta primary; se falhar (qualquer motivo) nsfw depois free.
-        Agent usa generate_primary + strikes para o fluxo especial SAFETY.
+        Compat: primary -> nsfw. FREE so se nsfw None (mesma lista enxuta).
         """
         t = await self.generate_primary(system_instruction, messages)
         if t:
@@ -191,4 +207,5 @@ class LLMRouter:
         t = await self.generate_nsfw(system_instruction, messages)
         if t:
             return t
+        # free so se instancia diferente ainda tiver modelo vivo
         return await self.generate_free(system_instruction, messages)
