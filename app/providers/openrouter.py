@@ -9,31 +9,21 @@ import httpx
 
 
 NSFW_FREE_MODELS = [
-    "openrouter/free",
-    "deepseek/deepseek-v4-flash-0731:free",
-    "qwen/qwen3.8-27b:free",
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "z-ai/glm-5.2:free",
-    "thinkingmachines/inkling:free",
     "nvidia/nemotron-3.5-lightning:free",
-    "nex-agi/nex-n2.5-mini:free",
+    "openrouter/free",
+    "liquid/lfm-2.5-2.6b:free",
+    "qwen/qwen3.8-27b:free",
+    "google/gemma-4-26b-a4b-it:free",
 ]
 
 DEFAULT_FREE_MODELS = [
+    "nvidia/nemotron-3.5-lightning:free",
     "openrouter/free",
-    "google/gemma-4-31b-it:free",
+    "liquid/lfm-2.5-2.6b:free",
     "google/gemma-4-26b-a4b-it:free",
     "qwen/qwen3.8-27b:free",
-    "deepseek/deepseek-v4-flash-0731:free",
-    "z-ai/glm-5.2:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "nvidia/nemotron-3.5-lightning:free",
-    "thinkingmachines/inkling:free",
-    "nex-agi/nex-n2.5-mini:free",
-    "poolside/laguna-xs-2.1:free",
 ]
+
 
 
 
