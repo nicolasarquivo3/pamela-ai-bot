@@ -550,8 +550,8 @@ async def main():
         api_key=gemini_key or None,
         api_keys=gemini_keys or None,
         model=gemini_model,
-        timeout=int(getattr(settings, "llm_timeout_seconds", 90) or 90),
-        max_output_tokens=int(getattr(settings, "llm_max_output_tokens", 1000) or 1000),
+        timeout=int(getattr(settings, "llm_timeout_seconds", 35) or 35),
+        max_output_tokens=int(getattr(settings, "llm_max_output_tokens", 900) or 900),
     )
 
     try:
@@ -576,8 +576,9 @@ async def main():
         getattr(settings, "openrouter_api_key", None)
         or os.getenv("OPENROUTER_API_KEY")
     )
-    _or_timeout = int(getattr(settings, "llm_timeout_seconds", 90) or 90)
-    _or_max = int(getattr(settings, "llm_max_output_tokens", 1000) or 1000)
+    _or_timeout = int(getattr(settings, "llm_timeout_seconds", 28) or 28)
+    _or_max = int(getattr(settings, "llm_max_output_tokens", 900) or 900)
+    _or_timeout = max(12, min(_or_timeout, 40))
 
     def _make_openrouter(model_list, label):
         import inspect as _ins
