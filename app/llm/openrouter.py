@@ -35,60 +35,196 @@ _KNOWN_DEAD = {
     "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
 }
 
+
 _COT_RE = re.compile(
     r"(?is)("
     r"okay,?\s+let'?s\s+see|"
+    r"here'?s\s+a\s+thinking\s+process|"
+    r"thinking\s+process\s*:|"
+    r"let\s+me\s+(review|craft|check|think|analyze)|"
     r"looking at the conversation|"
-    r"i need to stay in character|"
+    r"i need to (stay in character|respond as|craft)|"
     r"according to the safety|"
-    r"check the behavior guidelines|"
+    r"check the (behavior )?guidelines|"
     r"the user is asking|"
+    r"the user (now )?says|"
+    r"key rules\s*:|"
     r"^\s*reasoning\s*:|"
     r"<think>|</think>|"
     r"chain[- ]of[- ]thought|"
     r"as an ai language model|"
-    r"i'?m an? (ai|assistant|language model)"
+    r"i'?m an? (ai|assistant|language model)|"
+    r"continue the roleplay|"
+    r"respond as pamela|"
+    r"something like\s*:|"
+    r"let me craft|"
+    r"i should (move|respond|be careful)|"
+    r"actually,?\s+i need|"
+    r"but i need to be careful|"
+    r"the last (message|thing)|"
+    r"roleplay as"
     r")"
 )
 
 _PT_HINT = re.compile(
     r"(?i)\b(amor|puta|fode|trans|safad|bunda|goz|arromb|micro|saia|vestido|"
-    r"hoje|ontem|fui|to |tô |nao |não |voce|você|ele |ela |comigo|namorad)\b"
+    r"hoje|ontem|fui|to |tô |nao |não |voce|você|ele |ela |comigo|namorad|"
+    r"rebol|esfreg|beijo|pista|balada|depois|quero|ja |já )\b"
     r"|[áàâãéêíóôõúçÁÉÍÓÚ]"
 )
 
+# blocos meta em ingles para cortar
+_META_BLOCK_RE = re.compile(
+    r"(?is)("
+    r"here'?s\s+a\s+thinking\s+process\s*:.*|"
+    r"thinking\s+process\s*:.*"
+    r")"
+)
+
+
+def _is_mostly_english_meta(t: str) -> bool:
+    if not t:
+        return True
+    if _COT_RE.search(t):
+        # se so um pouco no meio, ainda pode extrair PT
+        en = len(re.findall(r"\b(the|and|with|that|this|user|should|need|rules|character|roleplay|message|response)\b", t, re.I))
+        pt = len(re.findall(r"[áàâãéêíóôõúç]|(\b(que|nao|não|com|uma|para|ela|ele|foi|to|tô|já|ja)\b)", t, re.I))
+        if en >= 8 and en > pt:
+            return True
+    # muitas palavras EN tipicas de CoT
+    if re.search(r"(?i)here'?s a thinking|let me review|i need to respond as|key rules", t):
+        return True
+    return False
+
+
+def _extract_portuguese_speech(t: str) -> str | None:
+    """Pega so trechos que parecem fala da personagem em PT."""
+    if not t:
+        return None
+    # corta a partir de marcadores de thinking
+    cut_markers = [
+        r"(?is)here'?s\s+a\s+thinking\s+process.*",
+        r"(?is)\bthinking\s+process\s*:.*",
+        r"(?is)\blet\s+me\s+review\b.*",
+        r"(?is)\blet\s+me\s+craft\b.*",
+        r"(?is)\bi\s+need\s+to\s+respond\s+as\b.*",
+        r"(?is)\bkey\s+rules\s*:.*",
+        r"(?is)\bthe\s+user\s+(is asking|now says)\b.*",
+        r"(?is)\bi\s+should\b.*",
+        r"(?is)\bsomething\s+like\s*:.*",
+        r"(?is)\bcontinue\s+the\s+roleplay\b.*",
+        r"(?is)<think>.*",
+    ]
+    cleaned = t
+    for pat in cut_markers:
+        cleaned = re.sub(pat, "\n", cleaned)
+    # se o thinking veio NO COMECO e a fala PT no comeco antes do thinking
+    # pega texto ANTES do primeiro marcador
+    m = re.search(
+        r"(?is)(here'?s\s+a\s+thinking|thinking\s+process\s*:|let\s+me\s+review|"
+        r"i\s+need\s+to\s+respond|key\s+rules\s*:|the\s+user\s+is\s+asking)",
+        t,
+    )
+    if m and m.start() > 30:
+        before = t[: m.start()].strip()
+        if _PT_HINT.search(before) and len(before) >= 40:
+            cleaned = before
+
+    # remove linhas claramente em ingles meta
+    lines = []
+    for line in cleaned.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if _COT_RE.search(s):
+            continue
+        if re.search(
+            r"(?i)^(the user|i need|let me|key rules|okay|actually|something like|"
+            r"continue the|respond as|based on|according to|rule \d)",
+            s,
+        ):
+            continue
+        # linha majoritariamente ingles sem acento e com palavras EN
+        en_w = len(re.findall(r"\b[a-zA-Z]{3,}\b", s))
+        pt_w = len(re.findall(r"[áàâãéêíóôõúçÁÉÍÓÚ]|\b(que|não|nao|com|uma|pra|pro|ele|ela|meu|minha|já|to|tô)\b", s, re.I))
+        if en_w >= 8 and pt_w == 0 and re.search(r"\b(the|and|with|should|user|rules)\b", s, re.I):
+            continue
+        lines.append(s)
+    out = " ".join(lines).strip()
+    out = re.sub(r"\s{2,}", " ", out)
+    # aspas com fala PT
+    if len(out) < 40:
+        quotes = re.findall(r'["“”]([^"“”]{30,600})["“”]', t)
+        for q in quotes:
+            if _PT_HINT.search(q):
+                out = q.strip()
+                break
+    if not out or len(out) < 25:
+        return None
+    if not _PT_HINT.search(out):
+        return None
+    # se ainda tem muito ingles meta no meio
+    if re.search(r"(?i)thinking process|let me review|i need to respond as|key rules", out):
+        out = re.split(
+            r"(?i)thinking process|let me review|i need to respond|key rules",
+            out,
+            maxsplit=1,
+        )[0].strip()
+    if len(out) < 25 or not _PT_HINT.search(out):
+        return None
+    out = re.sub(r"^(P[aâ]mela|Pamela)\s*:\s*", "", out, flags=re.I).strip()
+    return out[:2500]
+
 
 def strip_cot_and_extract_character(text: str) -> str | None:
+    """Remove thinking/ingles e devolve so a fala da personagem em PT."""
     if not text:
         return None
     t = text.strip()
     t = re.sub(r"(?is)<think>.*?</think>", "", t).strip()
     t = re.sub(r"(?is)</?think>", "", t).strip()
 
-    # Se tem PT/hotwife forte, ACEITA mesmo com algum ingles misturado
-    if _PT_HINT.search(t) and len(t) >= 40:
-        t = re.sub(r"^(P[aâ]mela|Pamela)\s*:\s*", "", t, flags=re.I).strip()
-        return t[:4000]
-
-    if _COT_RE.search(t) or (
-        len(t) > 400
-        and re.search(r"\b(the user|guidelines|in character|I should)\b", t)
-        and not _PT_HINT.search(t[:300])
+    # caso classico nemotron: fala PT + "Here's a thinking process..."
+    if re.search(
+        r"(?i)here'?s\s+a\s+thinking|thinking\s+process\s*:|let\s+me\s+review|"
+        r"i\s+need\s+to\s+respond\s+as|key\s+rules\s*:",
+        t,
     ):
-        for pat in (
-            r"(?is)(?:final response|resposta final|reply|output)\s*[:\-]\s*(.+)$",
-            r'(?is)"([^"]{40,800})"',
-        ):
-            m = re.search(pat, t)
-            if m:
-                cand = m.group(1).strip()
-                if cand and (_PT_HINT.search(cand) or len(cand) > 60):
-                    return cand[:4000]
+        extracted = _extract_portuguese_speech(t)
+        if extracted:
+            print(
+                f"[OpenRouter] extraiu fala PT de CoT chars={len(extracted)}",
+                flush=True,
+            )
+            return extracted
+        print("[OpenRouter] CoT ingles sem fala PT util — descarta", flush=True)
+        return None
+
+    # misturado mas com marcadores
+    if _COT_RE.search(t) and _is_mostly_english_meta(t):
+        extracted = _extract_portuguese_speech(t)
+        if extracted:
+            print(f"[OpenRouter] limpou meta chars={len(extracted)}", flush=True)
+            return extracted
         print("[OpenRouter] descartou CoT/ingles (nao personagem)", flush=True)
         return None
 
-    t = re.sub(r"^(P[aâ]mela|Pamela)\s*:\s*", "", t, flags=re.I).strip()
-    return t if t else None
+    # PT limpo
+    if _PT_HINT.search(t) and len(t) >= 40:
+        # ainda remove frases meta se grudaram no fim
+        t2 = re.split(
+            r"(?i)\n\s*(here'?s a thinking|let me review|i need to|key rules)",
+            t,
+            maxsplit=1,
+        )[0].strip()
+        t2 = re.sub(r"^(P[aâ]mela|Pamela)\s*:\s*", "", t2, flags=re.I).strip()
+        return t2[:2500]
+
+    extracted = _extract_portuguese_speech(t)
+    if extracted:
+        return extracted
+    return None
+
 
 
 class OpenRouterLLM:
@@ -220,10 +356,17 @@ class OpenRouterLLM:
 
         cleaned = strip_cot_and_extract_character(text)
         if not cleaned:
-            # aceita bruto se parece PT
-            if _PT_HINT.search(text) and len(text) > 50:
-                cleaned = text[:4000]
-                print("[OpenRouter] aceitou bruto PT", flush=True)
+            # NUNCA devolver thinking em ingles; so tenta extrair de novo
+            if re.search(r"(?i)thinking process|let me review|key rules", text or ""):
+                print("[OpenRouter] recusou bruto com thinking EN", flush=True)
+                return None
+            if _PT_HINT.search(text or "") and len(text or "") > 50:
+                # so se NAO tem bloco meta
+                if not _COT_RE.search(text):
+                    cleaned = text[:2500]
+                    print("[OpenRouter] aceitou bruto PT limpo", flush=True)
+                else:
+                    return None
             else:
                 return None
 

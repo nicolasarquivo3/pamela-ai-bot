@@ -169,15 +169,32 @@ class LLMRouter:
             return text.strip()
         # aceita texto longo PT mesmo se heuristica CoT falhar (nemotron)
         if text and len(str(text).strip()) >= 60:
+            raw = str(text).strip()
+            # nunca soft-accept com thinking EN
             if re.search(
+                r"(?i)thinking process|let me review|key rules|i need to respond as",
+                raw,
+            ):
+                try:
+                    from app.llm.openrouter import strip_cot_and_extract_character
+                    cleaned = strip_cot_and_extract_character(raw)
+                    if cleaned and len(cleaned) >= 40:
+                        print(
+                            f"[LLMRouter] NSFW soft apos strip chars={len(cleaned)}",
+                            flush=True,
+                        )
+                        return cleaned
+                except Exception:
+                    pass
+            elif re.search(
                 r"(?i)(amor|puta|fode|safad|bunda|goz|micro|saia)|[áàâãéêíóôõúç]",
-                str(text),
+                raw,
             ):
                 print(
-                    f"[LLMRouter] NSFW aceito soft chars={len(str(text).strip())}",
+                    f"[LLMRouter] NSFW aceito soft chars={len(raw)}",
                     flush=True,
                 )
-                return str(text).strip()
+                return raw
         print("[LLMRouter] NSFW tier falhou/CoT", flush=True)
         return None
 
