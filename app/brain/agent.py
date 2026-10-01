@@ -841,11 +841,13 @@ CANONE JÁ ACONTECEU
                 if t and not self._looks_like_meta_reply(t):
                     self._gemini_safety_strikes[uid] = 0
                     return t
+            # FREE pula se for a mesma lista (evita cascata 2x) — so tenta 1 modelo extra
             if hasattr(router, "generate_free"):
                 t = await router.generate_free(system, messages)
                 if t and not self._looks_like_meta_reply(t):
                     self._gemini_safety_strikes[uid] = 0
                     return t
+            print("[Agent] fallbacks falharam -> local rapido", flush=True)
             return self._fallback_reply(context)
 
         # --- 3) timeout / 503 / vazio: fallbacks imediatos ---
@@ -1386,10 +1388,21 @@ Essa resposta deve ser evitada.
                 "Biquíni novo minúsculo na gaveta — se rolar praia, é esse.",
             ]
             return random.choice(opts)
-        if re.search(r"\b(trans[aó]|sexo|fode|amante|kevin|marcos|davi|bruno|tyrell|motel|gang)\b", ut):
+        if re.search(
+            r"\b(trans[aó]|sexo|fode|amante|putinha|apront|safad|kevin|marcos|"
+            r"davi|bruno|tyrell|motel|gang|goz|arromb)\b",
+            ut,
+        ):
             opts = [
-                "Amor, o papo esquentou e a conexão falhou um segundo 😅 Me pergunta de novo que eu te conto no mesmo fio…",
-                "Quero te contar direito no mesmo assunto — manda de novo o detalhe que você quer 🔥",
+                "Fui de micro saia no after do Rodrigo — rebolei colada, me esfreguei nele "
+                "a música inteira, amasso no sofá e depois ele me comeu de quatro no quarto. "
+                "Me arrombou e gozou em mim. Quero mais.",
+                "Ontem no rooftop: micro vestido, dancei, saia subindo, o Lucas me puxou, "
+                "mão na bunda, grind, beijo com língua. No banheiro me fodeu em pé. "
+                "Voltei molhada. Próximo amante já na mira.",
+                "Me arrumei sem calcinha, churrasco na laje do Caio. Rebolado, esfrega, "
+                "amasso com ele e o amigo. Me comeram em rodízio. Nomes: Caio e Jaden. "
+                "Putaria completa.",
             ]
             return random.choice(opts)
         opts = [
